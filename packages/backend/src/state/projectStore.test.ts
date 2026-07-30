@@ -1,0 +1,869 @@
+import { ProjectStore, TaskNotFoundError, InvalidDependencyError, InvalidIndexError } from "./projectStore";
+import { GOAL_ID, Task } from "@blossom/common";
+
+describe("ProjectStore", () => {
+    let store: ProjectStore;
+
+    beforeEach(() => {
+        store = new ProjectStore();
+    });
+
+    describe("initial state", () => {
+        it("should start at version 1 with an empty goal and inbox", () => {
+            const state = store.getState();
+
+            expect(state.version).toBe(1);
+            expect(state.activeProject).toBeNull();
+            expect(state.goal.id).toBe(GOAL_ID);
+            expect(state.goal.name).toBe("");
+            expect(state.goal.completionState).toBe(false);
+            expect(state.goal.plan).toBeNull();
+            expect(state.inbox).toEqual([]);
+        });
+
+        it("should report the version through getVersion", () => {
+            expect(store.getVersion()).toBe(1);
+        });
+    });
+
+    describe("setGoal", () => {
+        it("should set the goal name and create an empty plan", () => {
+            store.setGoal("Test Goal");
+
+            const state = store.getState();
+            expect(state.goal.name).toBe("Test Goal");
+            expect(state.goal.plan).toEqual({ tasksList: [], dependenciesList: [] });
+        });
+
+        it("should set the goal description when provided", () => {
+            store.setGoal("Test Goal", "Test Description");
+
+            expect(store.getState().goal.description).toBe("Test Description");
+        });
+
+        it("should not overwrite an existing plan", () => {
+            store.setGoal("Test Goal");
+            store.addTask(GOAL_ID, "Task 1");
+
+            store.setGoal("Renamed Goal");
+
+            const state = store.getState();
+            expect(state.goal.name).toBe("Renamed Goal");
+            expect(state.goal.plan!.tasksList).toHaveLength(1);
+        });
+
+        it("should bump the version", () => {
+            const before = store.getVersion();
+
+            store.setGoal("Test Goal");
+
+            expect(store.getVersion()).toBe(before + 1);
+        });
+    });
+
+    describe("version bumping", () => {
+        it("should bump the version on every mutation", () => {
+            store.setGoal("Goal");
+            expect(store.getVersion()).toBe(2);
+
+            const task = store.addTask(GOAL_ID, "Task 1");
+            expect(store.getVersion()).toBe(3);
+
+            store.updateTask(task.id, { name: "Renamed" });
+            expect(store.getVersion()).toBe(4);
+
+            store.setTaskCompletion(task.id, true);
+            expect(store.getVersion()).toBe(5);
+
+            store.addIdea("idea");
+            expect(store.getVersion()).toBe(6);
+
+            store.undo();
+            expect(store.getVersion()).toBe(7);
+        });
+    });
+
+    describe("addTask", () => {
+        beforeEach(() => {
+            store.setGoal("Goal");
+        });
+
+        it("should add a task to the root goal's plan", () => {
+            const task = store.addTask(GOAL_ID, "Task 1");
+
+            const state = store.getState();
+            expect(state.goal.plan!.tasksList).toHaveLength(1);
+            expect(state.goal.plan!.tasksList[0].name).toBe("Task 1");
+            expect(state.goal.plan!.tasksList[0].id).toBe(task.id);
+            expect(task.completionState).toBe(false);
+            expect(task.plan).toBeNull();
+        });
+
+        it("should set the description when provided", () => {
+            const task = store.addTask(GOAL_ID, "Task 1", "A description");
+
+            expect(task.description).toBe("A description");
+            expect(store.getState().goal.plan!.tasksList[0].description).toBe("A description");
+        });
+
+        it("should add a nested task via parentId, creating a subplan if needed", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+
+            const child = store.addTask(parent.id, "Child");
+
+            const state = store.getState();
+            const storedParent = state.goal.plan!.tasksList[0];
+            expect(storedParent.plan!.tasksList).toHaveLength(1);
+            expect(storedParent.plan!.tasksList[0].id).toBe(child.id);
+            expect(storedParent.plan!.tasksList[0].name).toBe("Child");
+        });
+
+        it("should reset the parent's completionState when a new task is added", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+            store.setTaskCompletion(child.id, true);
+            expect(store.findTask(parent.id)!.completionState).toBe(true);
+
+            store.addTask(parent.id, "Another child");
+
+            expect(store.findTask(parent.id)!.completionState).toBe(false);
+        });
+
+        it("should throw TaskNotFoundError for an unknown parent", () => {
+            expect(() => store.addTask("unknown", "Task")).toThrow(TaskNotFoundError);
+        });
+
+        it("should return a deep clone that does not alias store state", () => {
+            const task = store.addTask(GOAL_ID, "Task 1");
+
+            task.name = "Mutated";
+
+            expect(store.getState().goal.plan!.tasksList[0].name).toBe("Task 1");
+        });
+    });
+
+    describe("updateTask", () => {
+        beforeEach(() => {
+            store.setGoal("Goal");
+        });
+
+        it("should update the task name", () => {
+            const task = store.addTask(GOAL_ID, "Original");
+
+            store.updateTask(task.id, { name: "Renamed" });
+
+            expect(store.findTask(task.id)!.name).toBe("Renamed");
+        });
+
+        it("should update the task description", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+
+            store.updateTask(task.id, { description: "New description" });
+
+            expect(store.findTask(task.id)!.description).toBe("New description");
+        });
+
+        it("should ignore an empty name", () => {
+            const task = store.addTask(GOAL_ID, "Original");
+
+            store.updateTask(task.id, { name: "" });
+
+            expect(store.findTask(task.id)!.name).toBe("Original");
+        });
+
+        it("should update the goal via GOAL_ID", () => {
+            store.updateTask(GOAL_ID, { name: "New Goal Name", description: "Desc" });
+
+            const state = store.getState();
+            expect(state.goal.name).toBe("New Goal Name");
+            expect(state.goal.description).toBe("Desc");
+        });
+
+        it("should throw TaskNotFoundError for an unknown task", () => {
+            expect(() => store.updateTask("unknown", { name: "X" })).toThrow(TaskNotFoundError);
+        });
+    });
+
+    describe("setTaskCompletion", () => {
+        beforeEach(() => {
+            store.setGoal("Goal");
+        });
+
+        it("should set completion with an explicit boolean", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+
+            store.setTaskCompletion(task.id, true);
+            expect(store.findTask(task.id)!.completionState).toBe(true);
+
+            // Setting the same value again is a no-op on state but still allowed
+            store.setTaskCompletion(task.id, true);
+            expect(store.findTask(task.id)!.completionState).toBe(true);
+
+            store.setTaskCompletion(task.id, false);
+            expect(store.findTask(task.id)!.completionState).toBe(false);
+        });
+
+        it("should propagate completion up through parents when all subtasks complete", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const mid = store.addTask(parent.id, "Mid");
+            const leaf = store.addTask(mid.id, "Leaf");
+
+            store.setTaskCompletion(leaf.id, true);
+
+            expect(store.findTask(leaf.id)!.completionState).toBe(true);
+            expect(store.findTask(mid.id)!.completionState).toBe(true);
+            expect(store.findTask(parent.id)!.completionState).toBe(true);
+        });
+
+        it("should not complete a parent while a sibling subtask is incomplete", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child1 = store.addTask(parent.id, "Child 1");
+            store.addTask(parent.id, "Child 2");
+
+            store.setTaskCompletion(child1.id, true);
+
+            expect(store.findTask(child1.id)!.completionState).toBe(true);
+            expect(store.findTask(parent.id)!.completionState).toBe(false);
+        });
+
+        it("should propagate incompleteness up through parents", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const mid = store.addTask(parent.id, "Mid");
+            const leaf = store.addTask(mid.id, "Leaf");
+            store.setTaskCompletion(leaf.id, true);
+            expect(store.findTask(parent.id)!.completionState).toBe(true);
+
+            store.setTaskCompletion(leaf.id, false);
+
+            expect(store.findTask(leaf.id)!.completionState).toBe(false);
+            expect(store.findTask(mid.id)!.completionState).toBe(false);
+            expect(store.findTask(parent.id)!.completionState).toBe(false);
+        });
+
+        it("should throw when trying to set completion of the goal", () => {
+            expect(() => store.setTaskCompletion(GOAL_ID, true)).toThrow(InvalidDependencyError);
+        });
+
+        it("should throw TaskNotFoundError for an unknown task", () => {
+            expect(() => store.setTaskCompletion("unknown", true)).toThrow(TaskNotFoundError);
+        });
+    });
+
+    describe("removeTask", () => {
+        beforeEach(() => {
+            store.setGoal("Goal");
+        });
+
+        it("should remove the task from its container's plan", () => {
+            const task1 = store.addTask(GOAL_ID, "Task 1");
+            store.addTask(GOAL_ID, "Task 2");
+
+            store.removeTask(task1.id);
+
+            const tasksList = store.getState().goal.plan!.tasksList;
+            expect(tasksList).toHaveLength(1);
+            expect(tasksList[0].name).toBe("Task 2");
+        });
+
+        it("should remove dependencies referencing the task in its scope", () => {
+            const task1 = store.addTask(GOAL_ID, "Task 1");
+            const task2 = store.addTask(GOAL_ID, "Task 2");
+            const task3 = store.addTask(GOAL_ID, "Task 3");
+            store.addDependency(task1.id, task2.id);
+            store.addDependency(task2.id, task3.id);
+            store.addDependency(task1.id, task3.id);
+
+            store.removeTask(task2.id);
+
+            const dependenciesList = store.getState().goal.plan!.dependenciesList;
+            expect(dependenciesList).toEqual([{ source: task1.id, target: task3.id }]);
+        });
+
+        it("should recompute the container's completionState", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const done = store.addTask(parent.id, "Done");
+            const notDone = store.addTask(parent.id, "Not done");
+            store.setTaskCompletion(done.id, true);
+            expect(store.findTask(parent.id)!.completionState).toBe(false);
+
+            store.removeTask(notDone.id);
+
+            expect(store.findTask(parent.id)!.completionState).toBe(true);
+        });
+
+        it("should remove a nested task from within a subplan", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+
+            store.removeTask(child.id);
+
+            expect(store.findTask(child.id)).toBeNull();
+            expect(store.findTask(parent.id)!.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should throw TaskNotFoundError for an unknown task", () => {
+            expect(() => store.removeTask("unknown")).toThrow(TaskNotFoundError);
+        });
+    });
+
+    describe("createSubplan", () => {
+        beforeEach(() => {
+            store.setGoal("Goal");
+        });
+
+        it("should give a task an empty subplan", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+
+            store.createSubplan(task.id);
+
+            expect(store.findTask(task.id)!.plan).toEqual({ tasksList: [], dependenciesList: [] });
+        });
+
+        it("should not overwrite an existing subplan", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            store.addTask(parent.id, "Child");
+
+            store.createSubplan(parent.id);
+
+            expect(store.findTask(parent.id)!.plan!.tasksList).toHaveLength(1);
+        });
+
+        it("should throw TaskNotFoundError for an unknown task", () => {
+            expect(() => store.createSubplan("unknown")).toThrow(TaskNotFoundError);
+        });
+    });
+
+    describe("pasteTasks", () => {
+        beforeEach(() => {
+            store.setGoal("Goal");
+        });
+
+        it("should paste tasks with fresh ids, remap dependencies and preserve nested plans", () => {
+            const subtask1: Task = { id: "s1", name: "Subtask 1", completionState: false, plan: null };
+            const subtask2: Task = { id: "s2", name: "Subtask 2", completionState: true, plan: null };
+            const parentTask: Task = {
+                id: "t2",
+                name: "Parent",
+                completionState: false,
+                plan: {
+                    tasksList: [subtask1, subtask2],
+                    dependenciesList: [
+                        { source: "s1", target: "s2" },
+                        { source: "s2", target: GOAL_ID },
+                    ],
+                },
+            };
+            const simpleTask: Task = { id: "t1", name: "Simple", completionState: true, plan: null };
+            const dependencies = [
+                { source: "t1", target: "t2" }, // valid: both pasted
+                { source: "t1", target: "missing" }, // invalid: should be dropped
+            ];
+
+            store.pasteTasks(GOAL_ID, [simpleTask, parentTask], dependencies);
+
+            const plan = store.getState().goal.plan!;
+            expect(plan.tasksList).toHaveLength(2);
+            const pastedSimple = plan.tasksList.find((t) => t.name === "Simple")!;
+            const pastedParent = plan.tasksList.find((t) => t.name === "Parent")!;
+            expect(pastedSimple.id).not.toBe("t1");
+            expect(pastedParent.id).not.toBe("t2");
+
+            // Only the valid dependency survives, remapped to the new ids
+            expect(plan.dependenciesList).toEqual([{ source: pastedSimple.id, target: pastedParent.id }]);
+
+            // Nested subplan preserved with remapped ids; GOAL_ID target kept
+            const pastedSub1 = pastedParent.plan!.tasksList.find((t) => t.name === "Subtask 1")!;
+            const pastedSub2 = pastedParent.plan!.tasksList.find((t) => t.name === "Subtask 2")!;
+            expect(pastedSub1.id).not.toBe("s1");
+            expect(pastedSub2.id).not.toBe("s2");
+            expect(pastedParent.plan!.dependenciesList).toEqual([
+                { source: pastedSub1.id, target: pastedSub2.id },
+                { source: pastedSub2.id, target: GOAL_ID },
+            ]);
+        });
+
+        it("should mark the parent complete when all pasted tasks are complete", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const completed1: Task = { id: "c1", name: "Done 1", completionState: true, plan: null };
+            const completed2: Task = { id: "c2", name: "Done 2", completionState: true, plan: null };
+
+            store.pasteTasks(parent.id, [completed1, completed2], [{ source: "c1", target: "c2" }]);
+
+            const storedParent = store.findTask(parent.id)!;
+            expect(storedParent.plan!.tasksList).toHaveLength(2);
+            expect(storedParent.plan!.dependenciesList).toHaveLength(1);
+            expect(storedParent.completionState).toBe(true);
+        });
+
+        it("should append pasted tasks without altering existing ones", () => {
+            const existing = store.addTask(GOAL_ID, "Existing");
+            const newTask: Task = { id: "n1", name: "New", completionState: false, plan: null };
+
+            store.pasteTasks(GOAL_ID, [newTask], []);
+
+            const tasksList = store.getState().goal.plan!.tasksList;
+            expect(tasksList).toHaveLength(2);
+            expect(tasksList.find((t) => t.id === existing.id)).toBeDefined();
+            const pastedNew = tasksList.find((t) => t.name === "New")!;
+            expect(pastedNew.id).not.toBe("n1");
+        });
+
+        it("should throw TaskNotFoundError for an unknown parent", () => {
+            expect(() => store.pasteTasks("unknown", [], [])).toThrow(TaskNotFoundError);
+        });
+    });
+
+    describe("dependencies", () => {
+        let task1: Task;
+        let task2: Task;
+        let task3: Task;
+
+        beforeEach(() => {
+            store.setGoal("Goal");
+            task1 = store.addTask(GOAL_ID, "Task 1");
+            task2 = store.addTask(GOAL_ID, "Task 2");
+            task3 = store.addTask(GOAL_ID, "Task 3");
+        });
+
+        describe("addDependency", () => {
+            it("should add a dependency between siblings", () => {
+                store.addDependency(task1.id, task2.id);
+
+                expect(store.getState().goal.plan!.dependenciesList).toEqual([{ source: task1.id, target: task2.id }]);
+            });
+
+            it("should allow the goal as a target", () => {
+                store.addDependency(task1.id, GOAL_ID);
+
+                expect(store.getState().goal.plan!.dependenciesList).toEqual([{ source: task1.id, target: GOAL_ID }]);
+            });
+
+            it("should throw InvalidDependencyError for a self-dependency", () => {
+                expect(() => store.addDependency(task1.id, task1.id)).toThrow(InvalidDependencyError);
+                expect(store.getState().goal.plan!.dependenciesList).toHaveLength(0);
+            });
+
+            it("should throw TaskNotFoundError when the source does not exist", () => {
+                expect(() => store.addDependency("unknown", task1.id)).toThrow(TaskNotFoundError);
+            });
+
+            it("should throw InvalidDependencyError when the target is not a sibling", () => {
+                const child = store.addTask(task1.id, "Child");
+
+                // Target lives in a different scope than the source
+                expect(() => store.addDependency(task2.id, child.id)).toThrow(InvalidDependencyError);
+                expect(() => store.addDependency(child.id, task2.id)).toThrow(InvalidDependencyError);
+                expect(() => store.addDependency(task2.id, "unknown")).toThrow(InvalidDependencyError);
+            });
+
+            it("should throw InvalidDependencyError when the dependency would create a cycle", () => {
+                store.addDependency(task1.id, task2.id);
+                store.addDependency(task2.id, task3.id);
+
+                expect(() => store.addDependency(task3.id, task1.id)).toThrow(InvalidDependencyError);
+                expect(store.getState().goal.plan!.dependenciesList).toHaveLength(2);
+            });
+        });
+
+        describe("removeDependency", () => {
+            it("should remove only the matching dependency", () => {
+                store.addDependency(task1.id, task2.id);
+                store.addDependency(task2.id, task3.id);
+
+                store.removeDependency(task1.id, task2.id);
+
+                expect(store.getState().goal.plan!.dependenciesList).toEqual([{ source: task2.id, target: task3.id }]);
+            });
+
+            it("should throw TaskNotFoundError when the source does not exist", () => {
+                expect(() => store.removeDependency("unknown", task1.id)).toThrow(TaskNotFoundError);
+            });
+        });
+
+        describe("updateDependency", () => {
+            it("should update an existing dependency", () => {
+                store.addDependency(task1.id, task2.id);
+
+                store.updateDependency(task1.id, task2.id, task1.id, task3.id);
+
+                expect(store.getState().goal.plan!.dependenciesList).toEqual([{ source: task1.id, target: task3.id }]);
+            });
+
+            it("should throw InvalidDependencyError when the dependency does not exist", () => {
+                store.addDependency(task1.id, task2.id);
+
+                expect(() => store.updateDependency(task1.id, task3.id, task2.id, task3.id)).toThrow(
+                    InvalidDependencyError,
+                );
+                expect(store.getState().goal.plan!.dependenciesList).toEqual([{ source: task1.id, target: task2.id }]);
+            });
+
+            it("should throw TaskNotFoundError when the old source does not exist", () => {
+                expect(() => store.updateDependency("unknown", task1.id, task2.id, task3.id)).toThrow(
+                    TaskNotFoundError,
+                );
+            });
+        });
+    });
+
+    describe("inbox", () => {
+        it("should prepend new ideas", () => {
+            store.addIdea("first");
+            store.addIdea("second");
+
+            expect(store.getState().inbox).toEqual(["second", "first"]);
+        });
+
+        it("should update an idea at an index", () => {
+            store.addIdea("first");
+            store.addIdea("second");
+
+            store.updateIdea(1, "updated");
+
+            expect(store.getState().inbox).toEqual(["second", "updated"]);
+        });
+
+        it("should remove an idea at an index", () => {
+            store.addIdea("first");
+            store.addIdea("second");
+
+            store.removeIdea(0);
+
+            expect(store.getState().inbox).toEqual(["first"]);
+        });
+
+        it("should promote an idea to a task under the root goal by default", () => {
+            store.setGoal("Goal");
+            store.addIdea("great idea");
+
+            const task = store.promoteIdea(0);
+
+            const state = store.getState();
+            expect(state.inbox).toEqual([]);
+            expect(state.goal.plan!.tasksList).toHaveLength(1);
+            expect(state.goal.plan!.tasksList[0].id).toBe(task.id);
+            expect(state.goal.plan!.tasksList[0].name).toBe("great idea");
+            expect(task.completionState).toBe(false);
+        });
+
+        it("should promote an idea under a specific parent and reset its completionState", () => {
+            store.setGoal("Goal");
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+            store.setTaskCompletion(child.id, true);
+            expect(store.findTask(parent.id)!.completionState).toBe(true);
+            store.addIdea("promoted");
+
+            const task = store.promoteIdea(0, parent.id);
+
+            const storedParent = store.findTask(parent.id)!;
+            expect(storedParent.plan!.tasksList).toHaveLength(2);
+            expect(storedParent.plan!.tasksList[1].id).toBe(task.id);
+            expect(storedParent.completionState).toBe(false);
+            expect(store.getState().inbox).toEqual([]);
+        });
+
+        it("should throw TaskNotFoundError when promoting to an unknown parent", () => {
+            store.addIdea("idea");
+
+            expect(() => store.promoteIdea(0, "unknown")).toThrow(TaskNotFoundError);
+            expect(store.getState().inbox).toEqual(["idea"]);
+        });
+
+        it("should throw InvalidIndexError for out-of-range or non-integer indices", () => {
+            store.addIdea("idea");
+
+            expect(() => store.updateIdea(-1, "x")).toThrow(InvalidIndexError);
+            expect(() => store.updateIdea(1, "x")).toThrow(InvalidIndexError);
+            expect(() => store.updateIdea(0.5, "x")).toThrow(InvalidIndexError);
+            expect(() => store.removeIdea(1)).toThrow(InvalidIndexError);
+            expect(() => store.promoteIdea(1)).toThrow(InvalidIndexError);
+        });
+    });
+
+    describe("undo", () => {
+        it("should return false when there is nothing to undo", () => {
+            const before = store.getVersion();
+
+            expect(store.undo()).toBe(false);
+            expect(store.getVersion()).toBe(before);
+        });
+
+        it("should undo adding a task", () => {
+            store.setGoal("Goal");
+            store.addTask(GOAL_ID, "Task 1");
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(1);
+
+            expect(store.undo()).toBe(true);
+
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should undo removing a task", () => {
+            store.setGoal("Goal");
+            const task = store.addTask(GOAL_ID, "Task 1");
+            store.removeTask(task.id);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+
+            store.undo();
+
+            const tasksList = store.getState().goal.plan!.tasksList;
+            expect(tasksList).toHaveLength(1);
+            expect(tasksList[0].name).toBe("Task 1");
+        });
+
+        it("should restore both the goal and the inbox", () => {
+            store.setGoal("Goal");
+            store.addIdea("idea");
+
+            store.promoteIdea(0);
+            expect(store.getState().inbox).toEqual([]);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(1);
+
+            store.undo();
+
+            expect(store.getState().inbox).toEqual(["idea"]);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should support multiple undos in sequence", () => {
+            store.setGoal("Goal");
+            store.addTask(GOAL_ID, "Task 1");
+            store.addTask(GOAL_ID, "Task 2");
+            store.addTask(GOAL_ID, "Task 3");
+
+            store.undo();
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(2);
+            store.undo();
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(1);
+            store.undo();
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should bump the version on a successful undo", () => {
+            store.addIdea("idea");
+            const before = store.getVersion();
+
+            store.undo();
+
+            expect(store.getVersion()).toBe(before + 1);
+        });
+
+        it("should cap the undo stack at 50 snapshots", () => {
+            for (let i = 0; i < 55; i++) {
+                store.addIdea(`idea ${i}`);
+            }
+
+            let undoCount = 0;
+            while (store.undo()) {
+                undoCount++;
+            }
+
+            expect(undoCount).toBe(50);
+            // Oldest 5 snapshots were dropped, so 5 ideas remain
+            expect(store.getState().inbox).toHaveLength(5);
+        });
+    });
+
+    describe("load", () => {
+        it("should load a goal and inbox and set the active project", () => {
+            const goal: Task = {
+                id: GOAL_ID,
+                name: "Loaded Goal",
+                completionState: false,
+                plan: {
+                    tasksList: [{ id: "1", name: "Task 1", completionState: false, plan: null }],
+                    dependenciesList: [{ source: "1", target: GOAL_ID }],
+                },
+            };
+
+            store.load(goal, ["idea"], "myProject");
+
+            const state = store.getState();
+            expect(state.goal.name).toBe("Loaded Goal");
+            expect(state.goal.plan!.tasksList).toHaveLength(1);
+            expect(state.inbox).toEqual(["idea"]);
+            expect(state.activeProject).toBe("myProject");
+            expect(store.activeProject).toBe("myProject");
+        });
+
+        it("should normalize a legacy empty root id to GOAL_ID", () => {
+            const legacyGoal: Task = {
+                id: "",
+                name: "Legacy",
+                completionState: false,
+                plan: { tasksList: [], dependenciesList: [] },
+            };
+
+            store.load(legacyGoal, [], "legacy");
+
+            expect(store.getState().goal.id).toBe(GOAL_ID);
+            expect(store.findTask(GOAL_ID)!.name).toBe("Legacy");
+        });
+
+        it("should tolerate a null plan", () => {
+            const goal: Task = { id: GOAL_ID, name: "No plan", completionState: false, plan: null };
+
+            store.load(goal, [], null);
+
+            expect(store.getState().goal.plan).toBeNull();
+        });
+
+        it("should clear the undo stack and bump the version", () => {
+            store.addIdea("idea");
+            const before = store.getVersion();
+            const goal: Task = { id: GOAL_ID, name: "Loaded", completionState: false, plan: null };
+
+            store.load(goal, [], "project");
+
+            expect(store.getVersion()).toBe(before + 1);
+            expect(store.undo()).toBe(false);
+        });
+
+        it("should not alias the caller's goal object", () => {
+            const goal: Task = { id: GOAL_ID, name: "Loaded", completionState: false, plan: null };
+
+            store.load(goal, [], null);
+            goal.name = "Mutated";
+
+            expect(store.getState().goal.name).toBe("Loaded");
+        });
+    });
+
+    describe("reset", () => {
+        it("should restore the empty initial state and clear the undo stack", () => {
+            store.setGoal("Goal");
+            store.addTask(GOAL_ID, "Task");
+            store.addIdea("idea");
+            store.setActiveProject("project");
+            const before = store.getVersion();
+
+            store.reset();
+
+            const state = store.getState();
+            expect(state.goal.name).toBe("");
+            expect(state.goal.plan).toBeNull();
+            expect(state.inbox).toEqual([]);
+            expect(state.activeProject).toBeNull();
+            expect(store.getVersion()).toBe(before + 1);
+            expect(store.undo()).toBe(false);
+        });
+    });
+
+    describe("setActiveProject", () => {
+        it("should set the active project and bump the version", () => {
+            const before = store.getVersion();
+
+            store.setActiveProject("myProject");
+
+            expect(store.activeProject).toBe("myProject");
+            expect(store.getVersion()).toBe(before + 1);
+        });
+    });
+
+    describe("getNextTasks", () => {
+        it("should return an empty list when there is no plan", () => {
+            expect(store.getNextTasks()).toEqual([]);
+        });
+
+        it("should return unblocked leaf tasks, descending into unblocked subplans", () => {
+            const goal: Task = {
+                id: GOAL_ID,
+                name: "Goal",
+                completionState: false,
+                plan: {
+                    tasksList: [
+                        { id: "0", name: "Task 1", completionState: true, plan: null },
+                        {
+                            id: "1",
+                            name: "Task 2",
+                            completionState: false,
+                            plan: {
+                                tasksList: [{ id: "3", name: "Subtask 1", completionState: false, plan: null }],
+                                dependenciesList: [{ source: "3", target: GOAL_ID }],
+                            },
+                        },
+                        { id: "2", name: "Task 3", completionState: false, plan: null },
+                    ],
+                    dependenciesList: [
+                        { source: "0", target: "1" },
+                        { source: "1", target: GOAL_ID },
+                        { source: "2", target: GOAL_ID },
+                    ],
+                },
+            };
+            store.load(goal, [], null);
+
+            const nextTasks = store.getNextTasks();
+
+            expect(nextTasks.map((task) => task.id)).toEqual(["3", "2"]);
+        });
+
+        it("should exclude tasks blocked by incomplete dependencies", () => {
+            store.setGoal("Goal");
+            const task1 = store.addTask(GOAL_ID, "Task 1");
+            const task2 = store.addTask(GOAL_ID, "Task 2");
+            store.addDependency(task1.id, task2.id);
+            store.addDependency(task2.id, GOAL_ID);
+
+            expect(store.getNextTasks().map((task) => task.id)).toEqual([task1.id]);
+
+            store.setTaskCompletion(task1.id, true);
+
+            expect(store.getNextTasks().map((task) => task.id)).toEqual([task2.id]);
+        });
+
+        it("should return deep clones", () => {
+            store.setGoal("Goal");
+            const task = store.addTask(GOAL_ID, "Task 1");
+            store.addDependency(task.id, GOAL_ID);
+
+            const nextTasks = store.getNextTasks();
+            nextTasks[0].name = "Mutated";
+
+            expect(store.getState().goal.plan!.tasksList[0].name).toBe("Task 1");
+        });
+    });
+
+    describe("getState", () => {
+        it("should return a deep clone that does not alias internal state", () => {
+            store.setGoal("Goal");
+            store.addTask(GOAL_ID, "Task 1");
+            store.addIdea("idea");
+
+            const state = store.getState();
+            state.goal.name = "Mutated";
+            state.goal.plan!.tasksList.pop();
+            state.inbox.pop();
+
+            const fresh = store.getState();
+            expect(fresh.goal.name).toBe("Goal");
+            expect(fresh.goal.plan!.tasksList).toHaveLength(1);
+            expect(fresh.inbox).toEqual(["idea"]);
+        });
+    });
+
+    describe("findTask", () => {
+        it("should return the goal for GOAL_ID even without a plan", () => {
+            const found = store.findTask(GOAL_ID);
+
+            expect(found).not.toBeNull();
+            expect(found!.id).toBe(GOAL_ID);
+        });
+
+        it("should find deeply nested tasks", () => {
+            store.setGoal("Goal");
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+            const grandchild = store.addTask(child.id, "Grandchild");
+
+            expect(store.findTask(grandchild.id)!.name).toBe("Grandchild");
+        });
+
+        it("should return null for unknown ids", () => {
+            store.setGoal("Goal");
+
+            expect(store.findTask("unknown")).toBeNull();
+        });
+    });
+});
