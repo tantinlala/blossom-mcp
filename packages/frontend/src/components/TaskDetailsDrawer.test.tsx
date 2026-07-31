@@ -91,7 +91,7 @@ describe("TaskDetailsDrawer Component", () => {
         fireEvent.click(completionCheckbox);
 
         // Save button should be enabled after modifications
-        expect(screen.getByTestId("save-task-button")).not.toBeDisabled();
+        expect(screen.getByTestId("update-task-button")).not.toBeDisabled();
     });
 
     it("calls updateTaskDetails when save button is clicked", async () => {
@@ -109,7 +109,7 @@ describe("TaskDetailsDrawer Component", () => {
         fireEvent.change(nameInput, { target: { value: "Updated Task Name" } });
 
         // Click save button
-        const saveButton = screen.getByTestId("save-task-button");
+        const saveButton = screen.getByTestId("update-task-button");
         fireEvent.click(saveButton);
 
         // Check if updateTaskDetails was called with correct parameters
@@ -131,7 +131,7 @@ describe("TaskDetailsDrawer Component", () => {
         fireEvent.change(nameInput, { target: { value: "Updated Task With Plan" } });
 
         // Click save button
-        const saveButton = screen.getByTestId("save-task-button");
+        const saveButton = screen.getByTestId("update-task-button");
         fireEvent.click(saveButton);
 
         // Check if updateTaskDetails was called with correct parameters
@@ -185,7 +185,7 @@ describe("TaskDetailsDrawer Component", () => {
         fireEvent.change(nameInput, { target: { value: "Changed name" } });
 
         // Save button should be enabled
-        expect(screen.getByTestId("save-task-button")).not.toBeDisabled();
+        expect(screen.getByTestId("update-task-button")).not.toBeDisabled();
 
         // Rerender with a different task
         rerender(
@@ -198,6 +198,6 @@ describe("TaskDetailsDrawer Component", () => {
         );
 
         // Save button should be disabled again for new task
-        expect(screen.getByTestId("save-task-button")).toBeDisabled();
+        expect(screen.getByTestId("update-task-button")).toBeDisabled();
     });
 });

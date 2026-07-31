@@ -1,7 +1,9 @@
-const TASK_BLOCKED_COLOR = "#D3D3D3"; // Light grey
-const TASK_UNBLOCKED_COLOR = "#7FBDEB"; // Sky blue
-const TASK_COMPLETED_COLOR = "#4682B4"; // Medium blue
-const GOAL_COLOR = "#1D4E89"; // Deep royal blue
-const GOAL_FONT_COLOR = "white"; // white
+import { palette } from "../theme/tokens";
+
+const TASK_BLOCKED_COLOR = palette.task.blocked;
+const TASK_UNBLOCKED_COLOR = palette.task.unblocked;
+const TASK_COMPLETED_COLOR = palette.task.completed;
+const GOAL_COLOR = palette.goal.fill;
+const GOAL_FONT_COLOR = palette.goal.text;
 
 export { TASK_BLOCKED_COLOR, TASK_UNBLOCKED_COLOR, TASK_COMPLETED_COLOR, GOAL_COLOR, GOAL_FONT_COLOR };

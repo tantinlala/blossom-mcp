@@ -19,6 +19,16 @@ After implementing new functionality, do the following in order:
 5. When significant changes to the application architecture are made, update relevant documentation inside the [docs](../docs) folder after having confirmed that the implemented functionality works as intended. Do not document minor changes e.g. style changes.
 6. Summarize what you have done in a changelog.md file in the root of the repository. Newest changes should be at the top of the file.
 
+## Removing Functionality
+
+When you remove a feature, remove it cleanly and leave no trace of it in the codebase:
+
+- Do not write unit tests asserting that the removed feature no longer exists. Delete the tests that covered it. Tests should describe how the code behaves now, not what it used to do.
+- Do not leave comments that reference the removed feature or explain what the code used to do. Comments should describe the current implementation on its own terms.
+- Delete any types, props, helpers, constants, or CSS that only existed to serve the removed feature, rather than leaving them unused.
+
+The changelog is the exception: it is a historical record, so it should say what was removed.
+
 ## Installing New Dependencies
 
 If you need to install any new dependencies, prefer to install the dependency in the subpackage that needs it. For example, run `yarn workspace @blossom/<name of package> add <dependency name>` in the root directory of the repository.

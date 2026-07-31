@@ -1,42 +1,71 @@
 body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans",
+        "Droid Sans", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+    font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
 
-html, body, #root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-  font-family: sans-serif;
+html,
+body,
+#root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: sans-serif;
 }
 
 .context-menu {
-  background: white;
-  border-style: solid;
-  box-shadow: 10px 19px 20px rgba(0, 0, 0, 10%);
-  position: absolute;
-  z-index: 10;
+    background: white;
+    border: 1px solid #e3e6eb;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 12%);
+    min-width: 180px;
+    overflow: hidden;
+    padding: 4px;
+    position: absolute;
+    z-index: 10;
+}
+
+.context-menu-title {
+    color: #6b7280;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 0;
+    overflow: hidden;
+    padding: 6px 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .context-menu button {
-  border: none;
-  display: block;
-  padding: 0.5em;
-  text-align: left;
-  width: 100%;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    display: block;
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 8px;
+    text-align: left;
+    width: 100%;
 }
 
 .context-menu button:hover {
-  background: white;
+    background: #f0f2f5;
+}
+
+.context-menu-destructive {
+    color: #b3261e;
+}
+
+.context-menu-destructive:hover {
+    background: #fdecea;
 }

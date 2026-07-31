@@ -34,14 +34,14 @@ describe("TaskDetailsForm Component", () => {
         expect(completionCheckbox).not.toBeChecked();
 
         // Save button should be disabled when modified is false
-        const saveButton = screen.getByTestId("save-task-button");
+        const saveButton = screen.getByTestId("update-task-button");
         expect(saveButton).toBeDisabled();
     });
 
     it("renders form with enabled save button when modified is true", () => {
         render(<TaskDetailsForm {...defaultProps} modified={true} />);
 
-        const saveButton = screen.getByTestId("save-task-button");
+        const saveButton = screen.getByTestId("update-task-button");
         expect(saveButton).not.toBeDisabled();
     });
 
@@ -81,7 +81,7 @@ describe("TaskDetailsForm Component", () => {
         render(<TaskDetailsForm {...defaultProps} modified={true} />);
 
         // Click save button
-        const saveButton = screen.getByTestId("save-task-button");
+        const saveButton = screen.getByTestId("update-task-button");
         fireEvent.click(saveButton);
         expect(defaultProps.onSave).toHaveBeenCalled();
     });

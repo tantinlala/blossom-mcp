@@ -1,5 +1,6 @@
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
+import "@testing-library/jest-dom";
 import Header from "./Header";
 
 describe("Header component", () => {
@@ -9,6 +10,7 @@ describe("Header component", () => {
         handleProjectChange: jest.fn(),
         onSave: jest.fn(),
         onRestore: jest.fn(),
+        saveState: "saved" as const,
     };
 
     it("renders correctly", () => {
@@ -17,28 +19,48 @@ describe("Header component", () => {
         // Check if the app title is rendered
         expect(screen.getByText("Blossom")).toBeInTheDocument();
 
-        // Check if project dropdown is rendered
-        expect(screen.getByRole("button", { name: /project 1/i })).toBeInTheDocument();
+        // Check if project dropdown is rendered showing the current project
+        expect(screen.getByRole("combobox")).toHaveTextContent("Project 1");
 
         // Check if buttons are rendered
-        expect(screen.getByRole("button", { name: /save/i })).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: /open/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /reload/i })).toBeInTheDocument();
     });
 
     it("calls onSave when Save button is clicked", () => {
         render(<Header {...mockProps} />);
-        fireEvent.click(screen.getByRole("button", { name: /save/i }));
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
         expect(mockProps.onSave).toHaveBeenCalled();
     });
 
-    it("calls onRestore when Open button is clicked", () => {
+    it("calls onRestore when Reload button is clicked", () => {
         render(<Header {...mockProps} />);
-        fireEvent.click(screen.getByRole("button", { name: /open/i }));
+        fireEvent.click(screen.getByRole("button", { name: /reload/i }));
         expect(mockProps.onRestore).toHaveBeenCalled();
     });
 
-    it("enables Open button when no project is selected", () => {
+    it("enables Reload button when no project is selected", () => {
         render(<Header {...mockProps} selectedProject="" />);
-        expect(screen.getByRole("button", { name: /open/i })).toBeEnabled();
+        expect(screen.getByRole("button", { name: /reload/i })).toBeEnabled();
+    });
+
+    it("reports whether there is anything unsaved", () => {
+        const { rerender } = render(<Header {...mockProps} saveState="saved" />);
+        expect(screen.getByTestId("save-state")).toHaveTextContent("Saved");
+
+        rerender(<Header {...mockProps} saveState="unsaved" />);
+        expect(screen.getByTestId("save-state")).toHaveTextContent("Unsaved changes");
+
+        rerender(<Header {...mockProps} saveState="neverSaved" />);
+        expect(screen.getByTestId("save-state")).toHaveTextContent("Not saved yet");
+    });
+
+    it("passes the chosen project name up when the dropdown changes", () => {
+        render(<Header {...mockProps} />);
+
+        fireEvent.mouseDown(screen.getByRole("combobox"));
+        fireEvent.click(screen.getByTestId("project-option-Project 2"));
+
+        expect(mockProps.handleProjectChange).toHaveBeenCalledWith("Project 2");
     });
 });

@@ -1,12 +1,23 @@
 import React from "react";
-import { Paper, Button, Box, Select, MenuItem, FormControl, Typography } from "@material-ui/core";
+import { Paper, Button, Box, Select, MenuItem, FormControl, Typography, Tooltip } from "@mui/material";
+import { SelectChangeEvent } from "@mui/material/Select";
+import SaveIcon from "@mui/icons-material/Save";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import { SaveState } from "../hooks/useServerSync";
+
+const SAVE_STATE_LABEL: Record<SaveState, string> = {
+    neverSaved: "Not saved yet",
+    saved: "Saved",
+    unsaved: "Unsaved changes",
+};
 
 interface HeaderProps {
     existingProjects: string[];
     selectedProject: string;
-    handleProjectChange: (event: React.ChangeEvent<{ value: unknown }>) => void;
+    handleProjectChange: (filename: string) => void;
     onSave: () => void;
     onRestore: () => void;
+    saveState: SaveState;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -15,29 +26,38 @@ const Header: React.FC<HeaderProps> = ({
     handleProjectChange,
     onSave,
     onRestore,
+    saveState,
 }) => {
     return (
         <Paper
             square
-            style={{
-                marginBottom: "1px",
-                padding: "0 16px",
+            sx={{
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
+                gap: 2,
+                px: 2,
+                py: 1,
+                borderBottom: 1,
+                borderColor: "divider",
             }}
         >
-            {/* Left column: app title */}
-            <Box display="flex" alignItems="center" flexGrow={1}>
+            {/* Three columns of equal weight so the project selector sits centred */}
+            <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
                 <Typography variant="h6">Blossom</Typography>
             </Box>
 
-            {/* Middle column: project selection, fixed width to maintain center position */}
-            <Box display="flex" justifyContent="center" alignItems="center" flexGrow={1} style={{ padding: "8px 0" }}>
-                <FormControl variant="outlined" size="small" style={{ minWidth: 150, marginRight: "8px" }}>
-                    {/* Apply data-testid to the FormControl which is the parent of the dropdown */}
+            <Box sx={{ display: "flex", justifyContent: "center", flex: 1 }}>
+                <FormControl size="small" sx={{ minWidth: 200 }}>
                     <div data-testid="project-select-container">
-                        <Select value={selectedProject} onChange={handleProjectChange} displayEmpty>
+                        <Select
+                            value={selectedProject}
+                            onChange={(event: SelectChangeEvent<string>) => handleProjectChange(event.target.value)}
+                            displayEmpty
+                            size="small"
+                            fullWidth
+                            inputProps={{ "aria-label": "Project" }}
+                        >
                             <MenuItem value="" data-testid="new-project-option">
                                 New Project
                             </MenuItem>
@@ -49,12 +69,21 @@ const Header: React.FC<HeaderProps> = ({
                         </Select>
                     </div>
                 </FormControl>
-                <Button variant="contained" onClick={onSave} style={{ marginRight: "8px" }}>
+            </Box>
+
+            <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1, flex: 1 }}>
+                <Typography variant="caption" color="text.secondary" data-testid="save-state">
+                    {SAVE_STATE_LABEL[saveState]}
+                </Typography>
+                <Button variant="contained" startIcon={<SaveIcon />} onClick={onSave}>
                     Save
                 </Button>
-                <Button variant="contained" onClick={onRestore}>
-                    Open
-                </Button>
+                {/* Selecting a project loads it; this re-reads it from disk, discarding edits */}
+                <Tooltip title="Discard changes and reload this project from disk">
+                    <Button variant="outlined" startIcon={<RefreshIcon />} onClick={onRestore}>
+                        Reload
+                    </Button>
+                </Tooltip>
             </Box>
         </Paper>
     );

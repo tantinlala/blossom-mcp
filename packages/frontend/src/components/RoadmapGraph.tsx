@@ -2,6 +2,8 @@ import { useCallback, useRef, useState, useEffect, useMemo, KeyboardEvent } from
 import {
     ReactFlow,
     Background,
+    Controls,
+    MiniMap,
     useNodesState,
     useEdgesState,
     Panel,
@@ -12,27 +14,82 @@ import {
     useNodesInitialized,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Breadcrumbs, Button, Link, Paper, Typography } from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import AutoAwesomeMosaicIcon from "@mui/icons-material/AutoAwesomeMosaic";
+import ChecklistIcon from "@mui/icons-material/Checklist";
+import InboxIcon from "@mui/icons-material/Inbox";
 
 import ContextMenu from "./ContextMenu";
+import StatusLegend from "./StatusLegend";
+import CanvasEmptyState from "./CanvasEmptyState";
 import { getLayoutedElements } from "../utils/layouter";
 import { createTaskNode, createTaskNodeFromExisting, createEdge } from "../utils/taskNodeUtils";
 import { GOAL_ID, createGoalNode } from "../utils/goalNodeUtils";
-import { TaskAndState } from "../types/extendedTasks";
+import { TaskAndState, TaskState } from "../types/extendedTasks";
 import { Dependency, Task } from "@blossom/common";
 import { Roadmap } from "../types/roadmap";
-import TaskNode, { NODE_HALF_WIDTH, EDGE_TYPE, Position } from "./TaskNode";
+import TaskNode, { NODE_HALF_WIDTH, EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, DIMMED_OPACITY, Position } from "./TaskNode";
+import { useGraphHighlight } from "../hooks/useGraphHighlight";
+import { PromptForText } from "../hooks/useTextPrompt";
+import { palette } from "../theme/tokens";
 
 // Menu position constants
 const MENU_OFFSET_THRESHOLD = 200;
 
+// Leaves a margin around the graph when fitting it into the viewport
+const FIT_VIEW_PADDING = 0.15;
+
+const UNNAMED_GOAL_LABEL = "Goal";
+
+// Toolbars float over the canvas, so they need their own surface to stay legible.
+// fit-content stops the bar stretching to the width of the breadcrumb above it.
+const CANVAS_TOOLBAR_SX = {
+    display: "flex",
+    width: "fit-content",
+    alignItems: "center",
+    gap: 0.5,
+    p: 0.5,
+    border: 1,
+    borderColor: "divider",
+    borderRadius: 2,
+    bgcolor: "background.paper",
+    boxShadow: "0 1px 2px rgba(16, 24, 40, 0.06)",
+} as const;
+
 // Prompt strings
-const TASK_NAME_PROMPT = "Task Name";
-const NEW_TASK_DEFAULT = "New Task";
-const GOAL_NAME_PROMPT = "Goal Name";
-const NEW_GOAL_DEFAULT = "New Goal";
+const TASK_PROMPT = { title: "Add a task", label: "Task name", defaultValue: "New Task", confirmLabel: "Add task" };
+const GOAL_PROMPT = { title: "Name your goal", label: "Goal", defaultValue: "New Goal", confirmLabel: "Create goal" };
 
 const NODE_TYPE_MAPPING = {
     customTaskNode: TaskNode,
+};
+
+/** Mirrors the node fills so the minimap reads as a shrunken copy of the graph. */
+const miniMapNodeColor = (node: Node): string => {
+    if (node.id === GOAL_ID) {
+        return palette.goal.fill;
+    }
+    if (node.data?.taskState === TaskState.COMPLETED) {
+        return palette.task.completed;
+    }
+    if (node.data?.taskState === TaskState.UNBLOCKED) {
+        return palette.task.unblocked;
+    }
+    return palette.task.blocked;
+};
+
+/**
+ * ReactFlow's store holds whatever is on screen, dimming included. That is
+ * presentation only, so it has to be stripped before anything is written back
+ * as real state or the graph stays faded once the chain loses focus.
+ */
+const withoutDimming = (node: Node): Node => {
+    if (!node.style || !("opacity" in node.style)) {
+        return node;
+    }
+    const { opacity, ...style } = node.style;
+    return { ...node, style };
 };
 
 interface RoadmapGraphProps {
@@ -49,8 +106,10 @@ interface RoadmapGraphProps {
     handleSelectTask: (taskId: string) => void;
     showTaskDetails: () => void;
     showNextTasks: () => void;
+    toggleInbox: () => void;
     handlePaste: (tasks: Task[], dependencies: Dependency[]) => void;
     handleUndo: () => void;
+    promptForText: PromptForText;
 }
 
 const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
@@ -67,15 +126,19 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     handleSelectTask,
     showTaskDetails: toggleTaskDetails,
     showNextTasks: toggleNextTaskDrawer,
+    toggleInbox,
     handlePaste,
     handleUndo,
+    promptForText,
 }) => {
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [selectedNodes, setSelectedNodes] = useState([]);
+    const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [menu, setMenu] = useState(null as any);
     const ref = useRef(null);
-    const { getNodes, getEdges, screenToFlowPosition } = useReactFlow();
+    const pendingFitRef = useRef(false);
+    const { getNodes, getEdges, screenToFlowPosition, fitView } = useReactFlow();
     const nodesInitialized = useNodesInitialized();
 
     // Go through presently shown plan update the nodes and edges
@@ -127,7 +190,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             }
 
             // Connection dropped on the pane
-            const taskLabel = window.prompt(TASK_NAME_PROMPT, NEW_TASK_DEFAULT);
+            const taskLabel = await promptForText(TASK_PROMPT);
             if (!taskLabel) {
                 return;
             }
@@ -163,7 +226,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 handleConnect(sourceId, targetId);
             }
         },
-        [screenToFlowPosition, handleAddTask, handleConnect],
+        [screenToFlowPosition, handleAddTask, handleConnect, promptForText],
     );
 
     const showDetails = useCallback(
@@ -174,14 +237,38 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [handleSelectTask, toggleTaskDetails],
     );
 
+    // Hover and selection refer to the plan being left behind, and the ids in
+    // them do not exist in the plan being entered.
+    const changeContext = useCallback(
+        (taskId: string) => {
+            setHoveredNodeId(null);
+            setSelectedNodes([]);
+            handleChangeRoadmapContext(taskId);
+        },
+        [handleChangeRoadmapContext],
+    );
+
     const onNodeContextMenu = useCallback(
         (event, node: Node) => {
             // Prevent native context menu from showing
             event.preventDefault();
 
+            const taskEntry = presentlyShownRoadmap.tasksList.find((entry) => entry.task.id === node.id);
+
+            // The goal node is the plan itself - it can neither be nested nor removed
             let createPlanForTaskCallback = null;
+            let openSubplanCallback = null;
+            let deleteCallback = null;
             if (node.id !== GOAL_ID) {
-                createPlanForTaskCallback = handleCreatePlanForTask;
+                deleteCallback = handleRemoveTask;
+                // A task holds at most one subplan, so offering to add a second
+                // would be an action the backend quietly ignores. Offer the way
+                // into the existing one instead.
+                if (taskEntry?.task.plan) {
+                    openSubplanCallback = changeContext;
+                } else {
+                    createPlanForTaskCallback = handleCreatePlanForTask;
+                }
             }
 
             let currentRef: any = ref.current;
@@ -193,7 +280,10 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
             setMenu({
                 createPlanForTaskCallback,
+                openSubplanCallback,
+                deleteCallback,
                 showDetailsCallback: showDetails,
+                name: taskEntry?.task.name ?? UNNAMED_GOAL_LABEL,
                 id: node.id,
                 top: y < pane.height - MENU_OFFSET_THRESHOLD ? y : undefined,
                 left: x < pane.width - MENU_OFFSET_THRESHOLD ? x : undefined,
@@ -201,11 +291,18 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 bottom: y >= pane.height - MENU_OFFSET_THRESHOLD ? pane.height - y : undefined,
             });
         },
-        [handleCreatePlanForTask, showDetails],
+        [handleCreatePlanForTask, handleRemoveTask, presentlyShownRoadmap, showDetails, changeContext],
     );
 
     // Close the context menu if it's open whenever the window is clicked.
     const onPaneClick = useCallback(() => setMenu(null), [setMenu]);
+
+    // The menu is anchored to a node, so leaving it up while a panel opens over
+    // the canvas strands it on screen.
+    const onToggleNextTasks = useCallback(() => {
+        setMenu(null);
+        toggleNextTaskDrawer();
+    }, [toggleNextTaskDrawer]);
 
     const onReconnect = useCallback(
         (oldConnection, newConnection) => {
@@ -219,20 +316,39 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         const currentNodes = getNodes();
         const currentEdges = getEdges();
 
-        // Get the layouted elements
-        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(currentNodes, currentEdges);
+        // Get the layouted elements. Only positions change, so the edges the
+        // layouter hands back are left alone.
+        const { nodes: layoutedNodes } = getLayoutedElements(currentNodes, currentEdges);
 
-        // Force a re-render by setting completely new nodes and edges arrays
-        setNodes([...layoutedNodes]);
-        setEdges([...layoutedEdges]);
-    }, [getNodes, getEdges, setNodes, setEdges]);
+        // Force a re-render by setting a completely new nodes array
+        setNodes(layoutedNodes.map(withoutDimming));
+
+        // Laying out moves nodes out from under a stationary cursor without ever
+        // firing mouse-leave, which would strand the highlight and leave the
+        // graph dimmed until the user happened to move the mouse.
+        setHoveredNodeId(null);
+    }, [getNodes, getEdges, setNodes]);
 
     useEffect(() => {
         // Only run this effect when nodes are initialized
-        if (nodesInitialized) {
-            onLayout();
+        if (!nodesInitialized) {
+            return;
         }
+        onLayout();
+        pendingFitRef.current = true;
     }, [nodesInitialized, onLayout]);
+
+    // Laying out moves every node, so the viewport has to be refitted or the graph
+    // ends up parked off-screen. This has to wait for the laid-out positions to
+    // reach ReactFlow's store, which happens in its effects - and those run before
+    // ours, so reading `nodes` here means the store is already in sync.
+    useEffect(() => {
+        if (!pendingFitRef.current || nodes.length === 0) {
+            return;
+        }
+        pendingFitRef.current = false;
+        fitView({ padding: FIT_VIEW_PADDING });
+    }, [nodes, fitView]);
 
     const onNodeClick = useCallback(
         (event, node: Node) => {
@@ -246,31 +362,34 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     const onNodeDoubleClick = useCallback(
         (event, node: Node) => {
             if (node.id !== GOAL_ID) {
-                handleChangeRoadmapContext(node.id);
+                changeContext(node.id);
             }
         },
-        [handleChangeRoadmapContext],
+        [changeContext],
     );
 
     const onCreateTask = useCallback(async (): Promise<Task | null> => {
-        const taskLabel = window.prompt(TASK_NAME_PROMPT, NEW_TASK_DEFAULT);
+        const taskLabel = await promptForText(TASK_PROMPT);
         if (!taskLabel) {
             return null;
         }
         return await handleAddTask(taskLabel);
-    }, [handleAddTask]);
+    }, [handleAddTask, promptForText]);
 
-    const onCreateGoal = useCallback(() => {
-        const goalLabel = window.prompt(GOAL_NAME_PROMPT, NEW_GOAL_DEFAULT);
+    const onCreateGoal = useCallback(async () => {
+        const goalLabel = await promptForText(GOAL_PROMPT);
         if (!goalLabel) {
             return;
         }
         handleSetGoal(goalLabel);
-    }, [handleSetGoal]);
+    }, [handleSetGoal, promptForText]);
 
-    const onBack = useCallback(() => {
-        handleChangeRoadmapContext(GOAL_ID);
-    }, [handleChangeRoadmapContext]);
+    const onCrumbClick = useCallback(
+        (taskId: string) => () => {
+            changeContext(taskId);
+        },
+        [changeContext],
+    );
 
     // Find connecting edge between two selected nodes
     const findConnectingEdge = useCallback(
@@ -480,11 +599,62 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     let goalNodeExists = useMemo(() => nodes.find((node) => node.id === GOAL_ID), [nodes]);
 
+    const onNodeMouseEnter = useCallback((event, node: Node) => setHoveredNodeId(node.id), []);
+    const onNodeMouseLeave = useCallback(() => setHoveredNodeId(null), []);
+
+    // Hovering is the quick, throwaway way to trace a chain; selecting keeps it
+    // traced while you work. Selecting several nodes traces nothing.
+    const focusedNodeId = useMemo(() => {
+        const candidate = hoveredNodeId ?? (selectedNodes.length === 1 ? selectedNodes[0] : null);
+        if (!candidate) {
+            return null;
+        }
+        // A focus on a task that is no longer on screen - deleted, or left
+        // behind by a drill-down - would match nothing and dim the whole graph.
+        return nodes.some((node) => node.id === candidate) ? candidate : null;
+    }, [hoveredNodeId, selectedNodes, nodes]);
+
+    const highlight = useGraphHighlight(edges, focusedNodeId);
+
+    // An unconnected task has no chain to pick out, so dimming would just blank
+    // the graph and tell the user nothing.
+    const isTracingChain = focusedNodeId !== null && highlight.edgeIds.size > 0;
+
+    // Dimming is applied to copies so it never becomes part of the real state
+    const displayNodes = useMemo(() => {
+        if (!isTracingChain) {
+            return nodes;
+        }
+        return nodes.map((node) =>
+            highlight.nodeIds.has(node.id) ? node : { ...node, style: { ...node.style, opacity: DIMMED_OPACITY } },
+        );
+    }, [nodes, highlight, isTracingChain]);
+
+    const displayEdges = useMemo(() => {
+        if (!isTracingChain) {
+            return edges;
+        }
+        return edges.map((edge) =>
+            highlight.edgeIds.has(edge.id)
+                ? {
+                      ...edge,
+                      style: {
+                          ...edge.style,
+                          stroke: palette.edge.highlighted,
+                          strokeWidth: EDGE_WIDTH_HIGHLIGHTED,
+                      },
+                      markerEnd: { ...(edge.markerEnd as object), color: palette.edge.highlighted },
+                      zIndex: 1,
+                  }
+                : { ...edge, style: { ...edge.style, opacity: DIMMED_OPACITY } },
+        );
+    }, [edges, highlight, isTracingChain]);
+
     return (
         <ReactFlow
             ref={ref}
-            nodes={nodes}
-            edges={edges}
+            nodes={displayNodes}
+            edges={displayEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onReconnect={onReconnect}
@@ -494,7 +664,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             onNodeContextMenu={onNodeContextMenu}
             onNodeClick={onNodeClick}
             onNodeDoubleClick={onNodeDoubleClick}
+            onNodeMouseEnter={onNodeMouseEnter}
+            onNodeMouseLeave={onNodeMouseLeave}
             deleteKeyCode={null}
+            // Double-click is the drill-into-subplan gesture, so the default
+            // double-click-to-zoom would fire at the same time and fight it
+            zoomOnDoubleClick={false}
             connectionLineType={EDGE_TYPE}
             nodeTypes={NODE_TYPE_MAPPING}
             nodeOrigin={[0.5, 0.5]}
@@ -503,18 +678,79 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             fitView
         >
             <Background />
+            <Controls />
+            <MiniMap pannable zoomable nodeColor={miniMapNodeColor} nodeStrokeWidth={0} />
             <Panel position="top-left">
-                {goalNodeExists ? (
-                    <button onClick={onCreateTask}>Add Task</button>
-                ) : (
-                    <button onClick={onCreateGoal}>Add Goal</button>
+                {/* Fixed height, always rendered: letting the row appear and disappear
+                    with the nesting level would shift the toolbar under it. */}
+                <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
+                    {goalNodeExists ? (
+                        <Button size="small" startIcon={<AddIcon />} onClick={onCreateTask}>
+                            Add Task
+                        </Button>
+                    ) : (
+                        <Button size="small" startIcon={<AddIcon />} onClick={onCreateGoal}>
+                            Add Goal
+                        </Button>
+                    )}
+                    {goalNodeExists && (
+                        <Button size="small" startIcon={<AutoAwesomeMosaicIcon />} onClick={() => onLayout()}>
+                            Autoformat
+                        </Button>
+                    )}
+                </Paper>
+                {/* Below the toolbar, so growing or losing the path never shifts the buttons */}
+                {presentlyShownRoadmap.ancestors.length > 0 && (
+                    <Breadcrumbs
+                        aria-label="plan location"
+                        data-testid="plan-breadcrumbs"
+                        sx={{ mt: 0.75, ml: 0.5, fontSize: 13, color: "text.secondary" }}
+                    >
+                        {presentlyShownRoadmap.ancestors.map((crumb, index) => {
+                            const label = crumb.name || UNNAMED_GOAL_LABEL;
+                            const isCurrent = index === presentlyShownRoadmap.ancestors.length - 1;
+                            return isCurrent ? (
+                                <Typography key={crumb.id} color="text.primary" sx={{ fontSize: "inherit" }}>
+                                    {label}
+                                </Typography>
+                            ) : (
+                                <Link
+                                    key={crumb.id}
+                                    component="button"
+                                    underline="hover"
+                                    color="inherit"
+                                    onClick={onCrumbClick(crumb.id)}
+                                    sx={{ fontSize: "inherit", fontFamily: "inherit" }}
+                                >
+                                    {label}
+                                </Link>
+                            );
+                        })}
+                    </Breadcrumbs>
                 )}
-                {goalNodeExists && <button onClick={() => onLayout()}>Autoformat</button>}
-                {presentlyShownRoadmap.isSubplan && <button onClick={onBack}>Back To Top Level</button>}
             </Panel>
+            {/* Both toggle the single panel slot beside the canvas */}
             <Panel position="top-right">
-                <button onClick={toggleNextTaskDrawer}>Next Tasks List</button>
+                <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
+                    <Button size="small" startIcon={<ChecklistIcon />} onClick={onToggleNextTasks}>
+                        Next Tasks List
+                    </Button>
+                    <Button size="small" startIcon={<InboxIcon />} onClick={toggleInbox}>
+                        Inbox
+                    </Button>
+                </Paper>
             </Panel>
+            {/* Bottom-centre keeps it clear of the zoom controls and the minimap */}
+            {goalNodeExists && (
+                <Panel position="bottom-center">
+                    <StatusLegend />
+                </Panel>
+            )}
+            {!goalNodeExists && (
+                <Panel position="top-center" style={{ top: "35%" }}>
+                    <CanvasEmptyState onCreateGoal={onCreateGoal} />
+                </Panel>
+            )}
             {menu && <ContextMenu onClick={onPaneClick} {...menu} />}
         </ReactFlow>
     );

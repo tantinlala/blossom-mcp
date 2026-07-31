@@ -2,23 +2,27 @@ import { useCallback, useState } from "react";
 import { PlanManager } from "../utils/PlanManager";
 import { APIClient } from "../utils/APIClient";
 import { Task, Dependency, ProjectState } from "@blossom/common";
-import { Roadmap } from "../types/roadmap";
+import { NextTask, Roadmap } from "../types/roadmap";
 
 const EMPTY_ROADMAP: Roadmap = {
     tasksList: [],
     dependenciesList: [],
     isSubplan: false,
+    ancestors: [],
 };
 
 export function useRoadmap(planManager: PlanManager, apiClient: APIClient, applyState: (state: ProjectState) => void) {
     const [presentlyShownRoadmap, setPresentlyShownRoadmap] = useState<Roadmap>(EMPTY_ROADMAP);
-    const [unblockedTasks, setUnblockedTasks] = useState<Task[]>([]);
+    const [unblockedTasks, setUnblockedTasks] = useState<NextTask[]>([]);
     const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-    const [drawerOpen, setDrawerOpen] = useState(false);
-    const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
 
+    // Runs on every applied server state, so both the graph and the "next task"
+    // list stay in step with the plan. Snapshotting the list when its panel
+    // opened instead left it stale as soon as anything changed underneath it,
+    // including edits arriving over MCP.
     const syncRoadmap = useCallback(() => {
         setPresentlyShownRoadmap({ ...planManager.presentContextRoadmap });
+        setUnblockedTasks(planManager.allUnblockedTasks);
     }, [planManager]);
 
     // Applies a mutation response; on failure (the APIClient swallows errors
@@ -95,7 +99,6 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
                 return;
             }
             await applyResult(await apiClient.setTaskCompletion(taskId, !task.completionState));
-            setUnblockedTasks(planManager.allUnblockedTasks);
         },
         [planManager, apiClient, applyResult],
     );
@@ -170,7 +173,6 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
             return;
         }
         applyState(state);
-        setUnblockedTasks(planManager.allUnblockedTasks);
 
         setSelectedTask((prev) => {
             if (!prev) return null;
@@ -179,29 +181,10 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
         });
     }, [planManager, apiClient, applyState]);
 
-    const toggleNextTasksDrawer = useCallback(
-        (open: boolean) => () => {
-            setDrawerOpen(open);
-            if (open) {
-                setUnblockedTasks(planManager.allUnblockedTasks);
-            }
-        },
-        [planManager],
-    );
-
-    const toggleDetailsDrawer = useCallback(
-        (open: boolean) => () => {
-            setDetailsDrawerOpen(open);
-        },
-        [],
-    );
-
     return {
         presentlyShownRoadmap,
         unblockedTasks,
         selectedTask,
-        drawerOpen,
-        detailsDrawerOpen,
         syncRoadmap,
         setSelectedTask,
         setGoal,
@@ -218,7 +201,5 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
         updateTaskDetails,
         handlePaste,
         handleUndo,
-        toggleNextTasksDrawer,
-        toggleDetailsDrawer,
     };
 }

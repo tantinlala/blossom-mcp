@@ -6,6 +6,7 @@ import { GOAL_ID } from "../utils/goalNodeUtils";
 import { Dependency, Task } from "@blossom/common";
 import { TASK_COMPLETED_COLOR, TASK_BLOCKED_COLOR, TASK_UNBLOCKED_COLOR, GOAL_COLOR } from "../utils/colors";
 import { TaskAndState, TaskState } from "../types/extendedTasks";
+import { Roadmap } from "../types/roadmap";
 
 // Fake callbacks
 const setGoal = jest.fn();
@@ -48,12 +49,27 @@ const handlePaste = (tasks: Task[], dependencies: Dependency[]) => {
 const handleUndo = () => {
     /* ... */
 };
+const toggleInbox = () => {
+    /* ... */
+};
+const promptForText = jest.fn(async () => "New Task" as string | null);
 
-const renderRoadmapGraph = (tasksList: TaskAndState[], dependenciesList: Dependency[]) => {
+const renderRoadmapGraph = (
+    tasksList: TaskAndState[],
+    dependenciesList: Dependency[],
+    roadmapOverrides: Partial<Roadmap> = {},
+    propOverrides: Record<string, any> = {},
+) => {
     return render(
         <ReactFlowProvider>
             <RoadmapGraph
-                presentlyShownRoadmap={{ tasksList, dependenciesList, isSubplan: false }}
+                presentlyShownRoadmap={{
+                    tasksList,
+                    dependenciesList,
+                    isSubplan: false,
+                    ancestors: [],
+                    ...roadmapOverrides,
+                }}
                 handleSetGoal={setGoal}
                 handleAddTask={addTask}
                 handleRemoveTask={removeTask}
@@ -68,6 +84,9 @@ const renderRoadmapGraph = (tasksList: TaskAndState[], dependenciesList: Depende
                 showNextTasks={toggleNextTaskDrawer}
                 handlePaste={handlePaste}
                 handleUndo={handleUndo}
+                toggleInbox={toggleInbox}
+                promptForText={promptForText}
+                {...propOverrides}
             />
         </ReactFlowProvider>,
     );
@@ -88,6 +107,154 @@ describe("RoadmapGraph", () => {
         const dependenciesList: Dependency[] = [];
 
         renderRoadmapGraph(tasksList, dependenciesList);
+    });
+
+    describe("chain highlighting", () => {
+        const task = (id: string, name: string): TaskAndState => ({
+            task: { name, id, completionState: false, plan: null },
+            state: TaskState.UNBLOCKED,
+        });
+
+        const opacityOf = (label: string) => {
+            const node = screen.getByText(label).closest(".react-flow__node") as HTMLElement;
+            return node.style.opacity;
+        };
+
+        test("renders nothing dimmed when no task is focused", async () => {
+            renderRoadmapGraph([task("a", "Task A"), task("b", "Task B")], [{ source: "a", target: "b" }]);
+
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            expect(opacityOf("Task A")).toBe("");
+            expect(opacityOf("Task B")).toBe("");
+        });
+
+        test("does not dim anything when the focused task has no chain to trace", async () => {
+            // An unconnected task picks out nothing, so fading the rest of the
+            // graph would blank it for no benefit.
+            renderRoadmapGraph([task("a", "Task A"), task("lonely", "Lonely Task")], []);
+
+            await waitFor(() => expect(screen.getByText("Lonely Task")).toBeInTheDocument());
+            fireEvent.mouseEnter(screen.getByText("Lonely Task").closest(".react-flow__node") as HTMLElement);
+
+            expect(opacityOf("Task A")).toBe("");
+            expect(opacityOf("Lonely Task")).toBe("");
+        });
+
+        test("drops a stale hover when the layout moves nodes out from under the cursor", async () => {
+            // Autoformat only exists once there is a goal to lay the plan out around
+            renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B"), task(GOAL_ID, "My goal")],
+                [{ source: "a", target: "b" }],
+            );
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            fireEvent.mouseEnter(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            fireEvent.click(screen.getByText("Autoformat"));
+
+            await waitFor(() => expect(opacityOf("Task B")).toBe(""));
+        });
+
+        test("does not dim the graph when a focused task is not in the current plan", async () => {
+            // Drilling into a subplan leaves the selection pointing at a task from
+            // the plan above, which matches nothing here.
+            const { rerender } = renderRoadmapGraph([task("a", "Task A")], []);
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            rerender(
+                <ReactFlowProvider>
+                    <RoadmapGraph
+                        presentlyShownRoadmap={{
+                            tasksList: [task("sub1", "Subtask One"), task("sub2", "Subtask Two")],
+                            dependenciesList: [{ source: "sub1", target: "sub2" }],
+                            isSubplan: true,
+                            ancestors: [
+                                { id: GOAL_ID, name: "Goal" },
+                                { id: "a", name: "Task A" },
+                            ],
+                        }}
+                        handleSetGoal={setGoal}
+                        handleAddTask={addTask}
+                        handleRemoveTask={removeTask}
+                        handleConnect={connect}
+                        handleRemoveEdge={edgeRemove}
+                        handleUpdateEdge={edgeUpdate}
+                        handleToggleComplete={toggleComplete}
+                        handleChangeRoadmapContext={changeRoadmapContext}
+                        handleCreatePlanForTask={createPlanForTask}
+                        handleSelectTask={selectTask}
+                        showTaskDetails={toggleTaskDetails}
+                        showNextTasks={toggleNextTaskDrawer}
+                        handlePaste={handlePaste}
+                        handleUndo={handleUndo}
+                        toggleInbox={toggleInbox}
+                        promptForText={promptForText}
+                    />
+                </ReactFlowProvider>,
+            );
+
+            await waitFor(() => expect(screen.getByText("Subtask One")).toBeInTheDocument());
+
+            expect(opacityOf("Subtask One")).toBe("");
+            expect(opacityOf("Subtask Two")).toBe("");
+        });
+    });
+
+    describe("subplan breadcrumb", () => {
+        const ancestors = [
+            { id: GOAL_ID, name: "Ship product" },
+            { id: "t2", name: "Prepare for departure" },
+        ];
+
+        test("is hidden before a goal exists", () => {
+            renderRoadmapGraph([], []);
+
+            expect(screen.queryByTestId("plan-breadcrumbs")).not.toBeInTheDocument();
+        });
+
+        test("shows the goal on its own at the top level", () => {
+            renderRoadmapGraph([], [], { isSubplan: false, ancestors: [ancestors[0]] });
+
+            expect(screen.getByTestId("plan-breadcrumbs")).toBeInTheDocument();
+            expect(screen.getByText("Ship product")).toBeInTheDocument();
+        });
+
+        test("keeps the toolbar in place regardless of the nesting depth", () => {
+            const { unmount } = renderRoadmapGraph([], [], { isSubplan: false, ancestors: [ancestors[0]] });
+            const atRoot = screen.getByText("Add Goal").getBoundingClientRect().top;
+            unmount();
+
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors });
+            const inSubplan = screen.getByText("Add Goal").getBoundingClientRect().top;
+
+            expect(inSubplan).toBe(atRoot);
+        });
+
+        test("shows every ancestor when viewing a subplan", () => {
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors });
+
+            expect(screen.getByTestId("plan-breadcrumbs")).toBeInTheDocument();
+            expect(screen.getByText("Ship product")).toBeInTheDocument();
+            expect(screen.getByText("Prepare for departure")).toBeInTheDocument();
+        });
+
+        test("navigates to an ancestor when its crumb is clicked", () => {
+            const changeContext = jest.fn();
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors }, { handleChangeRoadmapContext: changeContext });
+
+            fireEvent.click(screen.getByText("Ship product"));
+
+            expect(changeContext).toHaveBeenCalledWith(GOAL_ID);
+        });
+
+        test("renders the current plan as plain text rather than a link", () => {
+            const changeContext = jest.fn();
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors }, { handleChangeRoadmapContext: changeContext });
+
+            fireEvent.click(screen.getByText("Prepare for departure"));
+
+            expect(changeContext).not.toHaveBeenCalled();
+        });
     });
 
     describe("node context menu positioning", () => {
@@ -149,6 +316,22 @@ describe("RoadmapGraph", () => {
     });
 
     describe("goal vs task creation button", () => {
+        test("explains what to do first when the canvas is empty", () => {
+            renderRoadmapGraph([], []);
+
+            expect(screen.getByTestId("canvas-empty-state")).toBeInTheDocument();
+        });
+
+        test("drops the empty state once a goal exists", async () => {
+            const goal: TaskAndState = {
+                task: { name: "My goal", id: GOAL_ID, completionState: false, plan: null },
+                state: TaskState.BLOCKED,
+            };
+            renderRoadmapGraph([goal], []);
+
+            await waitFor(() => expect(screen.queryByTestId("canvas-empty-state")).not.toBeInTheDocument());
+        });
+
         test("shows only Add Goal when no goal exists yet", () => {
             renderRoadmapGraph([], []);
 
@@ -172,21 +355,22 @@ describe("RoadmapGraph", () => {
             expect(screen.queryByText("Add Goal")).not.toBeInTheDocument();
         });
 
-        test("Add Goal prompts for a name and calls handleSetGoal", () => {
-            window.prompt = jest.fn().mockReturnValue("My new goal");
+        test("Add Goal asks for a name and calls handleSetGoal", async () => {
+            promptForText.mockResolvedValueOnce("My new goal");
 
             renderRoadmapGraph([], []);
             fireEvent.click(screen.getByText("Add Goal"));
 
-            expect(setGoal).toHaveBeenCalledWith("My new goal");
+            await waitFor(() => expect(setGoal).toHaveBeenCalledWith("My new goal"));
         });
 
-        test("Add Goal does nothing when the prompt is cancelled", () => {
-            window.prompt = jest.fn().mockReturnValue(null);
+        test("Add Goal does nothing when the prompt is cancelled", async () => {
+            promptForText.mockResolvedValueOnce(null);
 
             renderRoadmapGraph([], []);
             fireEvent.click(screen.getByText("Add Goal"));
 
+            await waitFor(() => expect(promptForText).toHaveBeenCalled());
             expect(setGoal).not.toHaveBeenCalled();
         });
     });
@@ -269,6 +453,7 @@ describe("RoadmapGraph", () => {
                         tasksList: newTasksList,
                         dependenciesList: newDependenciesList,
                         isSubplan: false,
+                        ancestors: [],
                     }}
                     handleSetGoal={setGoal}
                     handleAddTask={addTask}
@@ -284,6 +469,8 @@ describe("RoadmapGraph", () => {
                     showNextTasks={toggleNextTaskDrawer}
                     handlePaste={handlePaste}
                     handleUndo={handleUndo}
+                    toggleInbox={toggleInbox}
+                    promptForText={promptForText}
                 />
             </ReactFlowProvider>,
         );
@@ -311,7 +498,7 @@ describe("RoadmapGraph", () => {
 
     test("positions node with handle at drop location when dropping an edge on pane", async () => {
         // Mock the screenToFlowPosition function that is called in onConnectEnd
-        global.window.prompt = jest.fn().mockReturnValue("New Task");
+        promptForText.mockResolvedValueOnce("New Task");
 
         // Set up a spy on the setNodes function
         const mockSetNodes = jest.fn();
@@ -352,7 +539,12 @@ describe("RoadmapGraph", () => {
         render(
             <ReactFlowProvider>
                 <RoadmapGraph
-                    presentlyShownRoadmap={{ tasksList: testTasksList, dependenciesList: [], isSubplan: false }}
+                    presentlyShownRoadmap={{
+                        tasksList: testTasksList,
+                        dependenciesList: [],
+                        isSubplan: false,
+                        ancestors: [],
+                    }}
                     handleAddTask={mockAddTask}
                     handleConnect={mockHandleConnect}
                     // Include required props with mock functions
@@ -368,6 +560,8 @@ describe("RoadmapGraph", () => {
                     showNextTasks={toggleNextTaskDrawer}
                     handlePaste={handlePaste}
                     handleUndo={handleUndo}
+                    toggleInbox={toggleInbox}
+                    promptForText={promptForText}
                 />
             </ReactFlowProvider>,
         );

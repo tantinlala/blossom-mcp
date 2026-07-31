@@ -4,6 +4,8 @@ import "@testing-library/jest-dom";
 import InboxPanel from "./InboxPanel";
 
 describe("InboxPanel Component", () => {
+    const mockOnClose = jest.fn();
+
     const defaultProps = {
         ideaList: ["Task 1", "Task 2"],
         addIdea: jest.fn(),
@@ -19,7 +21,7 @@ describe("InboxPanel Component", () => {
     });
 
     it("renders the inbox panel with title and buttons", () => {
-        render(<InboxPanel {...defaultProps} />);
+        render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
         // Check if the title is rendered
         expect(screen.getByText("Inbox")).toBeInTheDocument();
@@ -30,34 +32,34 @@ describe("InboxPanel Component", () => {
     });
 
     it("calls addIdea when Add button is clicked", () => {
-        render(<InboxPanel {...defaultProps} />);
+        render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
         fireEvent.click(screen.getByTestId("add-idea-button"));
         expect(defaultProps.addIdea).toHaveBeenCalledTimes(1);
     });
 
     it("calls addAllIdeasToPlan when Move button is clicked", () => {
-        render(<InboxPanel {...defaultProps} />);
+        render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
         fireEvent.click(screen.getByTestId("move-all-button"));
         expect(defaultProps.addAllIdeasToPlan).toHaveBeenCalledTimes(1);
     });
 
     it("disables Move button when ideaList is empty", () => {
-        render(<InboxPanel {...defaultProps} ideaList={[]} />);
+        render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} ideaList={[]} />);
 
         expect(screen.getByTestId("move-all-button")).toBeDisabled();
     });
 
     it("enables Move button when ideaList has items", () => {
-        render(<InboxPanel {...defaultProps} />);
+        render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
         expect(screen.getByTestId("move-all-button")).not.toBeDisabled();
     });
 
     describe("Inbox rendering", () => {
         it("renders an input for each idea", () => {
-            render(<InboxPanel {...defaultProps} />);
+            render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
             const inputs = screen.getAllByPlaceholderText("New idea");
             expect(inputs).toHaveLength(2);
@@ -66,7 +68,7 @@ describe("InboxPanel Component", () => {
         });
 
         it("calls changeIdea when an idea input is edited", () => {
-            render(<InboxPanel {...defaultProps} />);
+            render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
             const inputs = screen.getAllByPlaceholderText("New idea");
             fireEvent.change(inputs[1], { target: { value: "Updated Task" } });
@@ -75,7 +77,7 @@ describe("InboxPanel Component", () => {
         });
 
         it("calls commitIdea when an idea input is blurred", () => {
-            render(<InboxPanel {...defaultProps} />);
+            render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
             const inputs = screen.getAllByPlaceholderText("New idea");
             fireEvent.blur(inputs[0]);
@@ -84,7 +86,7 @@ describe("InboxPanel Component", () => {
         });
 
         it("calls commitIdea when Enter is pressed in an idea input", () => {
-            render(<InboxPanel {...defaultProps} />);
+            render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
             const inputs = screen.getAllByPlaceholderText("New idea");
             fireEvent.keyDown(inputs[1], { key: "Enter" });
@@ -93,18 +95,18 @@ describe("InboxPanel Component", () => {
         });
 
         it("calls deleteIdea when the delete button is clicked", () => {
-            render(<InboxPanel {...defaultProps} />);
+            render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
-            const deleteButtons = screen.getAllByTitle("Remove from inbox");
+            const deleteButtons = screen.getAllByLabelText("Remove from inbox");
             fireEvent.click(deleteButtons[0]);
 
             expect(defaultProps.deleteIdea).toHaveBeenCalledWith(0);
         });
 
         it("calls addTaskToContextAndRemove when the add-to-context button is clicked", () => {
-            render(<InboxPanel {...defaultProps} />);
+            render(<InboxPanel open={true} onClose={mockOnClose} {...defaultProps} />);
 
-            const addButtons = screen.getAllByTitle("Add to project and remove from inbox");
+            const addButtons = screen.getAllByLabelText("Add to plan and remove from inbox");
             fireEvent.click(addButtons[1]);
 
             expect(defaultProps.addTaskToContextAndRemove).toHaveBeenCalledWith(1);

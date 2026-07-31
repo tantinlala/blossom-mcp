@@ -7,6 +7,7 @@ import * as useRoadmapModule from "../hooks/useRoadmap";
 import * as useInboxModule from "../hooks/useInbox";
 import * as useServerSyncModule from "../hooks/useServerSync";
 import * as useProjectManagementModule from "../hooks/useProjectManagement";
+import * as useSidePanelModule from "../hooks/useSidePanel";
 
 jest.mock("../utils/APIClient");
 jest.mock("../utils/PlanManager");
@@ -14,6 +15,7 @@ jest.mock("../hooks/useRoadmap");
 jest.mock("../hooks/useInbox");
 jest.mock("../hooks/useServerSync");
 jest.mock("../hooks/useProjectManagement");
+jest.mock("../hooks/useSidePanel");
 
 // Mock child components to isolate App-level logic
 jest.mock("./NextTasksDrawer", () => (props: any) => <div data-testid="next-tasks-drawer" data-open={props.open} />);
@@ -37,7 +39,7 @@ jest.mock("@xyflow/react", () => ({
 }));
 jest.mock("./RoadmapGraph", () => () => <div data-testid="roadmap-graph" />);
 jest.mock("./InboxPanel", () => (props: any) => (
-    <div data-testid="inbox-panel" data-idea-count={props.ideaList.length} />
+    <div data-testid="inbox-panel" data-open={props.open} data-idea-count={props.ideaList.length} />
 ));
 
 describe("App", () => {
@@ -49,22 +51,29 @@ describe("App", () => {
     let mockRoadmap: ReturnType<typeof createMockRoadmap>;
     let mockInbox: ReturnType<typeof createMockInbox>;
     let mockProject: ReturnType<typeof createMockProject>;
+    let mockPanel: ReturnType<typeof createMockPanel>;
 
     function createMockServerSync() {
         return {
             applyState: jest.fn(),
             registerTargets: jest.fn(),
             setEditingPaused: jest.fn(),
+            saveState: "saved" as const,
+            markSaved: jest.fn(),
+            markNeverSaved: jest.fn(),
         };
     }
 
     function createMockRoadmap() {
         return {
-            presentlyShownRoadmap: { tasksList: [], dependenciesList: [], isSubplan: false },
+            presentlyShownRoadmap: {
+                tasksList: [],
+                dependenciesList: [],
+                isSubplan: false,
+                ancestors: [],
+            },
             unblockedTasks: [],
             selectedTask: null as any,
-            drawerOpen: false,
-            detailsDrawerOpen: false,
             syncRoadmap: jest.fn(),
             setSelectedTask: jest.fn(),
             addTask: jest.fn(),
@@ -80,8 +89,6 @@ describe("App", () => {
             updateTaskDetails: jest.fn(),
             handlePaste: jest.fn(),
             handleUndo: jest.fn(),
-            toggleNextTasksDrawer: jest.fn().mockReturnValue(jest.fn()),
-            toggleDetailsDrawer: jest.fn().mockReturnValue(jest.fn()),
         };
     }
 
@@ -95,6 +102,19 @@ describe("App", () => {
             commitIdea: jest.fn(),
             addTaskToContextAndRemove: jest.fn(),
             addAllIdeasToPlan: jest.fn(),
+        };
+    }
+
+    function createMockPanel() {
+        return {
+            activePanel: "inbox" as string | null,
+            inboxDismissed: false,
+            showNextTasks: jest.fn(),
+            showDetails: jest.fn(),
+            toggleNextTasks: jest.fn(),
+            showInbox: jest.fn(),
+            toggleInbox: jest.fn(),
+            closeActivePanel: jest.fn(),
         };
     }
 
@@ -119,11 +139,13 @@ describe("App", () => {
         mockRoadmap = createMockRoadmap();
         mockInbox = createMockInbox();
         mockProject = createMockProject();
+        mockPanel = createMockPanel();
 
         (useServerSyncModule.useServerSync as jest.Mock).mockReturnValue(mockSync);
         (useRoadmapModule.useRoadmap as jest.Mock).mockReturnValue(mockRoadmap);
         (useInboxModule.useInbox as jest.Mock).mockReturnValue(mockInbox);
         (useProjectManagementModule.useProjectManagement as jest.Mock).mockReturnValue(mockProject);
+        (useSidePanelModule.useSidePanel as jest.Mock).mockReturnValue(mockPanel);
     });
 
     const renderApp = () => render(<App apiClient={mockedAPIClient} planManager={mockedPlanManager} />);
@@ -137,17 +159,23 @@ describe("App", () => {
             expect(screen.getByTestId("inbox-panel")).toBeInTheDocument();
         });
 
-        it("passes roadmap drawer state to NextTasksDrawer", () => {
-            mockRoadmap.drawerOpen = true;
-            (useRoadmapModule.useRoadmap as jest.Mock).mockReturnValue(mockRoadmap);
+        it("gives the panel slot to the next task list when it is active", () => {
+            (useSidePanelModule.useSidePanel as jest.Mock).mockReturnValue({
+                ...mockPanel,
+                activePanel: "nextTasks",
+            });
             renderApp();
 
             expect(screen.getByTestId("next-tasks-drawer").getAttribute("data-open")).toBe("true");
+            expect(screen.getByTestId("task-details-drawer").getAttribute("data-open")).toBe("false");
+            expect(screen.getByTestId("inbox-panel").getAttribute("data-open")).toBe("false");
         });
 
-        it("passes details drawer state to TaskDetailsDrawer", () => {
-            mockRoadmap.detailsDrawerOpen = true;
-            (useRoadmapModule.useRoadmap as jest.Mock).mockReturnValue(mockRoadmap);
+        it("gives the panel slot to task details when it is active", () => {
+            (useSidePanelModule.useSidePanel as jest.Mock).mockReturnValue({
+                ...mockPanel,
+                activePanel: "details",
+            });
             renderApp();
 
             expect(screen.getByTestId("task-details-drawer").getAttribute("data-open")).toBe("true");
@@ -188,6 +216,9 @@ describe("App", () => {
                 apiClient: mockedAPIClient,
                 applyState: mockSync.applyState,
                 setSelectedTask: mockRoadmap.setSelectedTask,
+                promptForText: expect.any(Function),
+                markSaved: mockSync.markSaved,
+                markNeverSaved: mockSync.markNeverSaved,
             });
         });
 
@@ -211,6 +242,7 @@ describe("App", () => {
         it("passes existingProjects to Header", () => {
             mockProject.existingProjects = ["Project A", "Project B"];
             (useProjectManagementModule.useProjectManagement as jest.Mock).mockReturnValue(mockProject);
+            (useSidePanelModule.useSidePanel as jest.Mock).mockReturnValue(mockPanel);
             renderApp();
 
             expect(screen.getByTestId("existing-projects")).toHaveTextContent('["Project A","Project B"]');
@@ -219,6 +251,7 @@ describe("App", () => {
         it("passes selectedProject to Header", () => {
             mockProject.selectedProject = "My Project";
             (useProjectManagementModule.useProjectManagement as jest.Mock).mockReturnValue(mockProject);
+            (useSidePanelModule.useSidePanel as jest.Mock).mockReturnValue(mockPanel);
             renderApp();
 
             expect(screen.getByTestId("selected-project")).toHaveTextContent("My Project");

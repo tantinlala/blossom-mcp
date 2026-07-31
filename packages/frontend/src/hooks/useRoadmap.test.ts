@@ -49,6 +49,7 @@ describe("useRoadmap", () => {
             tasksList: [],
             dependenciesList: [],
             isSubplan: false,
+            ancestors: [],
         });
         expect(result.current.unblockedTasks).toEqual([]);
         expect(result.current.selectedTask).toBeNull();
@@ -73,6 +74,25 @@ describe("useRoadmap", () => {
 
         expect(result.current.presentlyShownRoadmap).toEqual(mockRoadmap);
         expect(result.current.presentlyShownRoadmap).not.toBe(mockRoadmap);
+    });
+
+    it("syncRoadmap refreshes the unblocked task list alongside the graph", () => {
+        // Every applied server state runs syncRoadmap, so the "next task" list
+        // cannot go stale while its panel is open.
+        const unblockedTasks = [{ id: "t1", name: "Task 1", completionState: false, plan: null }];
+        Object.defineProperty(mockedPlanManager, "allUnblockedTasks", {
+            get: jest.fn().mockReturnValue(unblockedTasks),
+            configurable: true,
+        });
+
+        const { result } = render();
+        expect(result.current.unblockedTasks).toEqual([]);
+
+        act(() => {
+            result.current.syncRoadmap();
+        });
+
+        expect(result.current.unblockedTasks).toEqual(unblockedTasks);
     });
 
     it("setGoal calls the API and applies the returned state", async () => {
@@ -245,12 +265,6 @@ describe("useRoadmap", () => {
         mockedPlanManager.findTask.mockReturnValue(task);
         mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(2));
 
-        const unblockedTasks = [{ id: "t2", name: "Task 2", completionState: false, plan: null }];
-        Object.defineProperty(mockedPlanManager, "allUnblockedTasks", {
-            get: jest.fn().mockReturnValue(unblockedTasks),
-            configurable: true,
-        });
-
         const { result } = render();
 
         await act(async () => {
@@ -259,7 +273,6 @@ describe("useRoadmap", () => {
 
         expect(mockedPlanManager.findTask).toHaveBeenCalledWith("t1");
         expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith("t1", true);
-        expect(result.current.unblockedTasks).toEqual(unblockedTasks);
     });
 
     it("toggleComplete sends false for a completed task", async () => {
@@ -485,36 +498,5 @@ describe("useRoadmap", () => {
         });
 
         expect(mockedPlanManager.changeContextToParent).toHaveBeenCalledWith("t1");
-    });
-
-    it("toggleNextTasksDrawer opens drawer and loads unblocked tasks", () => {
-        const unblockedTasks = [{ id: "t1", name: "Task 1", completionState: false, plan: null }];
-        Object.defineProperty(mockedPlanManager, "allUnblockedTasks", {
-            get: jest.fn().mockReturnValue(unblockedTasks),
-            configurable: true,
-        });
-
-        const { result } = render();
-
-        act(() => {
-            result.current.toggleNextTasksDrawer(true)();
-        });
-
-        expect(result.current.drawerOpen).toBe(true);
-        expect(result.current.unblockedTasks).toEqual(unblockedTasks);
-    });
-
-    it("toggleDetailsDrawer opens and closes", () => {
-        const { result } = render();
-
-        act(() => {
-            result.current.toggleDetailsDrawer(true)();
-        });
-        expect(result.current.detailsDrawerOpen).toBe(true);
-
-        act(() => {
-            result.current.toggleDetailsDrawer(false)();
-        });
-        expect(result.current.detailsDrawerOpen).toBe(false);
     });
 });

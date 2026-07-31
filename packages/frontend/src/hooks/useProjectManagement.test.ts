@@ -16,12 +16,18 @@ describe("useProjectManagement", () => {
     let mockedAPIClient: jest.Mocked<APIClient>;
     let mockApplyState: jest.Mock;
     let mockSetSelectedTask: jest.Mock;
+    let mockPromptForText: jest.Mock;
+    let mockMarkSaved: jest.Mock;
+    let mockMarkNeverSaved: jest.Mock;
 
     beforeEach(() => {
         jest.clearAllMocks();
         mockedAPIClient = new APIClient() as jest.Mocked<APIClient>;
         mockApplyState = jest.fn();
         mockSetSelectedTask = jest.fn();
+        mockPromptForText = jest.fn();
+        mockMarkSaved = jest.fn();
+        mockMarkNeverSaved = jest.fn();
         window.alert = jest.fn();
     });
 
@@ -31,6 +37,9 @@ describe("useProjectManagement", () => {
                 apiClient: mockedAPIClient,
                 applyState: mockApplyState,
                 setSelectedTask: mockSetSelectedTask,
+                promptForText: mockPromptForText,
+                markSaved: mockMarkSaved,
+                markNeverSaved: mockMarkNeverSaved,
             }),
         );
 
@@ -135,8 +144,8 @@ describe("useProjectManagement", () => {
 
         const { result } = render();
 
-        act(() => {
-            result.current.handleProjectChange({ target: { value: "My Project" } } as any);
+        await act(async () => {
+            await result.current.handleProjectChange("My Project");
         });
 
         await act(async () => {
@@ -153,9 +162,12 @@ describe("useProjectManagement", () => {
 
         const { result } = render();
 
-        act(() => {
-            result.current.handleProjectChange({ target: { value: "My Project" } } as any);
+        await act(async () => {
+            await result.current.handleProjectChange("My Project");
         });
+
+        jest.clearAllMocks();
+        window.alert = jest.fn();
 
         await act(async () => {
             await result.current.onRestore();
@@ -166,7 +178,7 @@ describe("useProjectManagement", () => {
     });
 
     it("onSave prompts for a filename, saves, and stores the returned project list", async () => {
-        window.prompt = jest.fn().mockReturnValue("my-project");
+        mockPromptForText.mockResolvedValue("my-project");
         mockedAPIClient.saveProject.mockResolvedValue(["my-project"]);
 
         const { result } = render();
@@ -175,31 +187,32 @@ describe("useProjectManagement", () => {
             await result.current.onSave();
         });
 
-        expect(window.prompt).toHaveBeenCalledWith("Enter a filename:", "");
+        expect(mockPromptForText).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: "" }));
         expect(mockedAPIClient.saveProject).toHaveBeenCalledWith("my-project");
         expect(result.current.existingProjects).toEqual(["my-project"]);
         expect(result.current.selectedProject).toBe("my-project");
     });
 
     it("onSave uses the selected project as the default filename", async () => {
-        window.prompt = jest.fn().mockReturnValue("updated-name");
+        mockPromptForText.mockResolvedValue("updated-name");
         mockedAPIClient.saveProject.mockResolvedValue(["updated-name"]);
+        mockedAPIClient.restoreProject.mockResolvedValue(makeState("existing-project"));
 
         const { result } = render();
 
-        act(() => {
-            result.current.handleProjectChange({ target: { value: "existing-project" } } as any);
+        await act(async () => {
+            await result.current.handleProjectChange("existing-project");
         });
 
         await act(async () => {
             await result.current.onSave();
         });
 
-        expect(window.prompt).toHaveBeenCalledWith("Enter a filename:", "existing-project");
+        expect(mockPromptForText).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: "existing-project" }));
     });
 
     it("onSave does nothing when the prompt is cancelled", async () => {
-        window.prompt = jest.fn().mockReturnValue(null);
+        mockPromptForText.mockResolvedValue(null);
 
         const { result } = render();
 
@@ -211,7 +224,7 @@ describe("useProjectManagement", () => {
     });
 
     it("onSave alerts for a whitespace-only filename", async () => {
-        window.prompt = jest.fn().mockReturnValue("   ");
+        mockPromptForText.mockResolvedValue("   ");
 
         const { result } = render();
 
@@ -224,7 +237,7 @@ describe("useProjectManagement", () => {
     });
 
     it("onSave alerts when saving fails and keeps the existing project list", async () => {
-        window.prompt = jest.fn().mockReturnValue("my-project");
+        mockPromptForText.mockResolvedValue("my-project");
         mockedAPIClient.saveProject.mockResolvedValue(undefined);
 
         const { result } = render();
@@ -237,13 +250,53 @@ describe("useProjectManagement", () => {
         expect(result.current.existingProjects).toEqual([]);
     });
 
-    it("handleProjectChange updates selectedProject", () => {
+    it("handleProjectChange selects and immediately loads the project", async () => {
+        const state = makeState("New Project", 2);
+        mockedAPIClient.restoreProject.mockResolvedValue(state);
+
         const { result } = render();
 
-        act(() => {
-            result.current.handleProjectChange({ target: { value: "New Project" } } as any);
+        await act(async () => {
+            await result.current.handleProjectChange("New Project");
         });
 
         expect(result.current.selectedProject).toBe("New Project");
+        expect(mockedAPIClient.restoreProject).toHaveBeenCalledWith("New Project");
+        expect(mockApplyState).toHaveBeenCalledWith(state);
+    });
+
+    it("handleProjectChange starts a new project when the empty option is picked", async () => {
+        const restored = makeState("Existing", 2);
+        const fresh = makeState(null, 3);
+        mockedAPIClient.restoreProject.mockResolvedValue(restored);
+        mockedAPIClient.newProject.mockResolvedValue(fresh);
+
+        const { result } = render();
+
+        await act(async () => {
+            await result.current.handleProjectChange("Existing");
+        });
+        await act(async () => {
+            await result.current.handleProjectChange("");
+        });
+
+        expect(mockedAPIClient.newProject).toHaveBeenCalled();
+        expect(result.current.selectedProject).toBe("");
+    });
+
+    it("handleProjectChange does not reload the project that is already open", async () => {
+        const state = makeState("Same Project", 2);
+        mockedAPIClient.restoreProject.mockResolvedValue(state);
+
+        const { result } = render();
+
+        await act(async () => {
+            await result.current.handleProjectChange("Same Project");
+        });
+        await act(async () => {
+            await result.current.handleProjectChange("Same Project");
+        });
+
+        expect(mockedAPIClient.restoreProject).toHaveBeenCalledTimes(1);
     });
 });

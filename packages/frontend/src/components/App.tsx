@@ -11,6 +11,9 @@ import { useRoadmap } from "../hooks/useRoadmap";
 import { useInbox } from "../hooks/useInbox";
 import { useServerSync } from "../hooks/useServerSync";
 import { useProjectManagement } from "../hooks/useProjectManagement";
+import { useSidePanel } from "../hooks/useSidePanel";
+import { useTextPrompt } from "../hooks/useTextPrompt";
+import TextPromptDialog from "./TextPromptDialog";
 
 const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: PlanManager }) => {
     const sync = useServerSync({ apiClient, planManager });
@@ -21,10 +24,15 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
         applyState: sync.applyState,
         setEditingPaused: sync.setEditingPaused,
     });
+    const panel = useSidePanel();
+    const { promptForText, dialogProps } = useTextPrompt();
     const project = useProjectManagement({
         apiClient,
         applyState: sync.applyState,
         setSelectedTask: roadmap.setSelectedTask,
+        promptForText,
+        markSaved: sync.markSaved,
+        markNeverSaved: sync.markNeverSaved,
     });
 
     // useServerSync is created before the hooks that own React state, so the
@@ -43,31 +51,18 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
 
     return (
         <div style={{ height: "100vh", width: "100vw", display: "flex", flexDirection: "column" }}>
-            <NextTasksDrawer
-                open={roadmap.drawerOpen}
-                onClose={roadmap.toggleNextTasksDrawer(false)}
-                shownTasks={roadmap.unblockedTasks}
-                toggleCompletion={roadmap.toggleComplete}
-                changeContext={roadmap.changeContextToParent}
-            />
-
-            <TaskDetailsDrawer
-                open={roadmap.detailsDrawerOpen}
-                onClose={roadmap.toggleDetailsDrawer(false)}
-                selectedTask={roadmap.selectedTask}
-                updateTaskDetails={roadmap.updateTaskDetails}
-            />
-
             <Header
                 existingProjects={project.existingProjects}
                 selectedProject={project.selectedProject}
                 handleProjectChange={project.handleProjectChange}
                 onSave={project.onSave}
                 onRestore={project.onRestore}
+                saveState={sync.saveState}
             />
 
             <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden" }}>
-                <div data-testid="roadmapGraph" style={{ flex: 3, height: "100%", overflow: "auto" }}>
+                {/* minWidth 0 lets the canvas give up width to the docked panels */}
+                <div data-testid="roadmapGraph" style={{ flex: 3, minWidth: 0, height: "100%", overflow: "auto" }}>
                     <ReactFlowProvider>
                         <RoadmapGraph
                             presentlyShownRoadmap={roadmap.presentlyShownRoadmap}
@@ -81,26 +76,46 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
                             handleChangeRoadmapContext={roadmap.changeContextToWithinTask}
                             handleCreatePlanForTask={roadmap.createPlanForTask}
                             handleSelectTask={roadmap.selectTask}
-                            showTaskDetails={roadmap.toggleDetailsDrawer(true)}
-                            showNextTasks={roadmap.toggleNextTasksDrawer(true)}
+                            showTaskDetails={panel.showDetails}
+                            showNextTasks={panel.toggleNextTasks}
+                            toggleInbox={panel.toggleInbox}
                             handlePaste={roadmap.handlePaste}
                             handleUndo={roadmap.handleUndo}
+                            promptForText={promptForText}
                         />
                     </ReactFlowProvider>
                 </div>
 
-                <div style={{ flex: 1, maxWidth: "400px", height: "100%", overflow: "hidden" }}>
-                    <InboxPanel
-                        ideaList={inbox.ideaList}
-                        addIdea={inbox.addIdea}
-                        addAllIdeasToPlan={inbox.addAllIdeasToPlan}
-                        changeIdea={inbox.changeIdea}
-                        commitIdea={inbox.commitIdea}
-                        deleteIdea={inbox.deleteIdea}
-                        addTaskToContextAndRemove={inbox.addTaskToContextAndRemove}
-                    />
-                </div>
+                {/* One slot, one panel: these are alternatives, never shown together */}
+                <NextTasksDrawer
+                    open={panel.activePanel === "nextTasks"}
+                    onClose={panel.closeActivePanel}
+                    shownTasks={roadmap.unblockedTasks}
+                    toggleCompletion={roadmap.toggleComplete}
+                    changeContext={roadmap.changeContextToParent}
+                />
+
+                <TaskDetailsDrawer
+                    open={panel.activePanel === "details"}
+                    onClose={panel.closeActivePanel}
+                    selectedTask={roadmap.selectedTask}
+                    updateTaskDetails={roadmap.updateTaskDetails}
+                />
+
+                <InboxPanel
+                    open={panel.activePanel === "inbox"}
+                    onClose={panel.closeActivePanel}
+                    ideaList={inbox.ideaList}
+                    addIdea={inbox.addIdea}
+                    addAllIdeasToPlan={inbox.addAllIdeasToPlan}
+                    changeIdea={inbox.changeIdea}
+                    commitIdea={inbox.commitIdea}
+                    deleteIdea={inbox.deleteIdea}
+                    addTaskToContextAndRemove={inbox.addTaskToContextAndRemove}
+                />
             </div>
+
+            <TextPromptDialog {...dialogProps} />
         </div>
     );
 };
