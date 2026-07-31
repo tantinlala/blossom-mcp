@@ -14,6 +14,7 @@ graph TD
     subgraph Hooks
         App -->|Uses| useServerSync
         App -->|Uses| useRoadmap
+        RoadmapGraph -->|Uses| useGraphHighlight
         App -->|Uses| useInbox
         App -->|Uses| useProjectManagement
     end
@@ -40,6 +41,7 @@ The frontend has no chat window: conversations with an LLM happen in an external
 
 - **useServerSync**: The sync heart. Exposes `applyState(state)` which replaces the local model with a server `ProjectState`; every REST mutation response flows through it. It also polls `GET /api/state/version` every 3 seconds and refetches the full state when the version moved — this is how edits made through MCP (e.g. by Claude Desktop) appear in the UI without a reload. Polling is paused while the user is mid-edit in the inbox.
 - **useRoadmap**: Roadmap view state and mutations. Each mutation is an async REST call whose response is applied via `applyState`. Drill-down context stays client-side.
+- **useGraphHighlight**: Given the edge list and a focused node, walks outwards in both directions to return the dependency chain that node belongs to — everything it depends on plus everything depending on it. `RoadmapGraph` uses it to highlight that chain and fade the rest, which is what makes a densely connected plan readable one chain at a time. Upstream and downstream are walked separately on purpose: following edges in either direction from every visited node would drag in unrelated siblings that merely share a blocker. The dimming is applied to copies of the nodes and edges rather than to state, and `withoutDimming` strips it from anything ReactFlow's store hands back, so a focused chain can never be persisted into the real graph.
 - **useInbox**: Inbox state; keystroke edits stay local (with polling paused) and commit on blur/Enter.
 - **useProjectManagement**: Listing, saving, and restoring projects.
 

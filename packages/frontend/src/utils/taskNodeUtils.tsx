@@ -9,7 +9,10 @@ import {
     EDGE_ANIMATION,
     EDGE_UPDATABLE_HANDLE,
     EDGE_MARKER_TYPE,
+    EDGE_MARKER_SIZE,
+    EDGE_WIDTH,
 } from "../components/TaskNode";
+import { palette } from "../theme/tokens";
 
 const createTaskNode = (
     task: TaskAndState,
@@ -60,8 +63,13 @@ const createEdge = (source: string, target: string) => {
         type: EDGE_TYPE,
         animated: EDGE_ANIMATION,
         updatable: EDGE_UPDATABLE_HANDLE,
+        // A light stroke keeps the arrow mass receding so node labels dominate
+        style: { stroke: palette.edge.default, strokeWidth: EDGE_WIDTH },
         markerEnd: {
             type: EDGE_MARKER_TYPE,
+            width: EDGE_MARKER_SIZE,
+            height: EDGE_MARKER_SIZE,
+            color: palette.edge.marker,
         },
     } as Edge;
 };

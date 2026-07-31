@@ -37,6 +37,7 @@ export interface Palette {
     edge: {
         default: string;
         marker: string;
+        highlighted: string;
     };
 }
 
@@ -66,6 +67,7 @@ const light: Palette = {
     edge: {
         default: "#B4BAC4",
         marker: "#9AA1AC",
+        highlighted: "#1D4E89",
     },
 };
 

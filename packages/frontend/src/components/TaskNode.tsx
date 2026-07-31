@@ -22,11 +22,18 @@ export const NODE_TYPE = "customTaskNode";
 export const SOURCE_HANDLE_POSITION = Position.Right;
 export const TARGET_HANDLE_POSITION = Position.Left;
 
-// Edge styling constants
+// Edge styling constants.
+// Smoothstep over bezier: in a left-to-right DAG, crossing bezier curves are the
+// main source of visual noise, while orthogonal routes read as distinct channels.
 export const EDGE_ANIMATION = false;
-export const EDGE_TYPE = ConnectionLineType.Bezier;
+export const EDGE_TYPE = ConnectionLineType.SmoothStep;
 export const EDGE_UPDATABLE_HANDLE = "target" as HandleType;
 export const EDGE_MARKER_TYPE = MarkerType.ArrowClosed;
+export const EDGE_WIDTH = 1.5;
+export const EDGE_WIDTH_HIGHLIGHTED = 2;
+export const EDGE_MARKER_SIZE = 14;
+/** How far out-of-focus nodes and edges fade when a chain is being traced. */
+export const DIMMED_OPACITY = 0.15;
 
 // Re-export Position for convenience
 export { Position };

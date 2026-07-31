@@ -3,6 +3,7 @@ import {
     ReactFlow,
     Background,
     Controls,
+    MiniMap,
     useNodesState,
     useEdgesState,
     Panel,
@@ -22,10 +23,12 @@ import ContextMenu from "./ContextMenu";
 import { getLayoutedElements } from "../utils/layouter";
 import { createTaskNode, createTaskNodeFromExisting, createEdge } from "../utils/taskNodeUtils";
 import { GOAL_ID, createGoalNode } from "../utils/goalNodeUtils";
-import { TaskAndState } from "../types/extendedTasks";
+import { TaskAndState, TaskState } from "../types/extendedTasks";
 import { Dependency, Task } from "@blossom/common";
 import { Roadmap } from "../types/roadmap";
-import TaskNode, { NODE_HALF_WIDTH, EDGE_TYPE, Position } from "./TaskNode";
+import TaskNode, { NODE_HALF_WIDTH, EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, DIMMED_OPACITY, Position } from "./TaskNode";
+import { useGraphHighlight } from "../hooks/useGraphHighlight";
+import { palette } from "../theme/tokens";
 
 // Menu position constants
 const MENU_OFFSET_THRESHOLD = 200;
@@ -58,6 +61,33 @@ const NEW_GOAL_DEFAULT = "New Goal";
 
 const NODE_TYPE_MAPPING = {
     customTaskNode: TaskNode,
+};
+
+/** Mirrors the node fills so the minimap reads as a shrunken copy of the graph. */
+const miniMapNodeColor = (node: Node): string => {
+    if (node.id === GOAL_ID) {
+        return palette.goal.fill;
+    }
+    if (node.data?.taskState === TaskState.COMPLETED) {
+        return palette.task.completed;
+    }
+    if (node.data?.taskState === TaskState.UNBLOCKED) {
+        return palette.task.unblocked;
+    }
+    return palette.task.blocked;
+};
+
+/**
+ * ReactFlow's store holds whatever is on screen, dimming included. That is
+ * presentation only, so it has to be stripped before anything is written back
+ * as real state or the graph stays faded once the chain loses focus.
+ */
+const withoutDimming = (node: Node): Node => {
+    if (!node.style || !("opacity" in node.style)) {
+        return node;
+    }
+    const { opacity, ...style } = node.style;
+    return { ...node, style };
 };
 
 interface RoadmapGraphProps {
@@ -98,6 +128,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [selectedNodes, setSelectedNodes] = useState([]);
+    const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [menu, setMenu] = useState(null as any);
     const ref = useRef(null);
     const pendingFitRef = useRef(false);
@@ -259,13 +290,13 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         const currentNodes = getNodes();
         const currentEdges = getEdges();
 
-        // Get the layouted elements
-        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(currentNodes, currentEdges);
+        // Get the layouted elements. Only positions change, so the edges the
+        // layouter hands back are left alone.
+        const { nodes: layoutedNodes } = getLayoutedElements(currentNodes, currentEdges);
 
-        // Force a re-render by setting completely new nodes and edges arrays
-        setNodes([...layoutedNodes]);
-        setEdges([...layoutedEdges]);
-    }, [getNodes, getEdges, setNodes, setEdges]);
+        // Force a re-render by setting a completely new nodes array
+        setNodes(layoutedNodes.map(withoutDimming));
+    }, [getNodes, getEdges, setNodes]);
 
     useEffect(() => {
         // Only run this effect when nodes are initialized
@@ -537,11 +568,55 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     let goalNodeExists = useMemo(() => nodes.find((node) => node.id === GOAL_ID), [nodes]);
 
+    const onNodeMouseEnter = useCallback((event, node: Node) => setHoveredNodeId(node.id), []);
+    const onNodeMouseLeave = useCallback(() => setHoveredNodeId(null), []);
+
+    // Hovering is the quick, throwaway way to trace a chain; selecting keeps it
+    // traced while you work. Selecting several nodes traces nothing.
+    const focusedNodeId = useMemo(() => {
+        if (hoveredNodeId) {
+            return hoveredNodeId;
+        }
+        return selectedNodes.length === 1 ? selectedNodes[0] : null;
+    }, [hoveredNodeId, selectedNodes]);
+
+    const highlight = useGraphHighlight(edges, focusedNodeId);
+
+    // Dimming is applied to copies so it never becomes part of the real state
+    const displayNodes = useMemo(() => {
+        if (!focusedNodeId) {
+            return nodes;
+        }
+        return nodes.map((node) =>
+            highlight.nodeIds.has(node.id) ? node : { ...node, style: { ...node.style, opacity: DIMMED_OPACITY } },
+        );
+    }, [nodes, highlight, focusedNodeId]);
+
+    const displayEdges = useMemo(() => {
+        if (!focusedNodeId) {
+            return edges;
+        }
+        return edges.map((edge) =>
+            highlight.edgeIds.has(edge.id)
+                ? {
+                      ...edge,
+                      style: {
+                          ...edge.style,
+                          stroke: palette.edge.highlighted,
+                          strokeWidth: EDGE_WIDTH_HIGHLIGHTED,
+                      },
+                      markerEnd: { ...(edge.markerEnd as object), color: palette.edge.highlighted },
+                      zIndex: 1,
+                  }
+                : { ...edge, style: { ...edge.style, opacity: DIMMED_OPACITY } },
+        );
+    }, [edges, highlight, focusedNodeId]);
+
     return (
         <ReactFlow
             ref={ref}
-            nodes={nodes}
-            edges={edges}
+            nodes={displayNodes}
+            edges={displayEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onReconnect={onReconnect}
@@ -551,6 +626,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             onNodeContextMenu={onNodeContextMenu}
             onNodeClick={onNodeClick}
             onNodeDoubleClick={onNodeDoubleClick}
+            onNodeMouseEnter={onNodeMouseEnter}
+            onNodeMouseLeave={onNodeMouseLeave}
             deleteKeyCode={null}
             // Double-click is the drill-into-subplan gesture, so the default
             // double-click-to-zoom would fire at the same time and fight it
@@ -564,6 +641,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         >
             <Background />
             <Controls />
+            <MiniMap pannable zoomable nodeColor={miniMapNodeColor} nodeStrokeWidth={0} />
             <Panel position="top-left">
                 {/* Fixed height, always rendered: letting the row appear and disappear
                     with the nesting level would shift the toolbar under it. */}

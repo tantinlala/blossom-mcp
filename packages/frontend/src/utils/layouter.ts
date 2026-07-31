@@ -2,10 +2,21 @@ import dagre from "dagre";
 import { Node, Edge } from "@xyflow/react";
 import { SOURCE_HANDLE_POSITION, TARGET_HANDLE_POSITION } from "../components/TaskNode";
 
+// Dagre's defaults pack ranks tightly enough that orthogonal edges have nowhere
+// to route and end up overlapping each other.
+const RANK_SEPARATION = 120;
+const NODE_SEPARATION = 40;
+const EDGE_SEPARATION = 20;
+
 const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
     const dagreGraph = new dagre.graphlib.Graph();
     dagreGraph.setDefaultEdgeLabel(() => ({}));
-    dagreGraph.setGraph({ rankdir: "LR" });
+    dagreGraph.setGraph({
+        rankdir: "LR",
+        ranksep: RANK_SEPARATION,
+        nodesep: NODE_SEPARATION,
+        edgesep: EDGE_SEPARATION,
+    });
 
     // Create a copy of nodes and edges to avoid mutating the input
     const nodesCopy = nodes.map((node) => ({ ...node }));
