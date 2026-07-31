@@ -597,18 +597,22 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     const highlight = useGraphHighlight(edges, focusedNodeId);
 
+    // An unconnected task has no chain to pick out, so dimming would just blank
+    // the graph and tell the user nothing.
+    const isTracingChain = focusedNodeId !== null && highlight.edgeIds.size > 0;
+
     // Dimming is applied to copies so it never becomes part of the real state
     const displayNodes = useMemo(() => {
-        if (!focusedNodeId) {
+        if (!isTracingChain) {
             return nodes;
         }
         return nodes.map((node) =>
             highlight.nodeIds.has(node.id) ? node : { ...node, style: { ...node.style, opacity: DIMMED_OPACITY } },
         );
-    }, [nodes, highlight, focusedNodeId]);
+    }, [nodes, highlight, isTracingChain]);
 
     const displayEdges = useMemo(() => {
-        if (!focusedNodeId) {
+        if (!isTracingChain) {
             return edges;
         }
         return edges.map((edge) =>
@@ -625,7 +629,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                   }
                 : { ...edge, style: { ...edge.style, opacity: DIMMED_OPACITY } },
         );
-    }, [edges, highlight, focusedNodeId]);
+    }, [edges, highlight, isTracingChain]);
 
     return (
         <ReactFlow

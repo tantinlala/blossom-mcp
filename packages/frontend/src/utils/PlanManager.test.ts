@@ -286,6 +286,30 @@ describe("PlanManager", () => {
             expect(t2?.state).toBe(TaskState.UNBLOCKED);
         });
 
+        it("treats a task with no dependencies at all as ready, not blocked", () => {
+            // A task nobody has wired up yet has no path back from the goal, so
+            // walking backwards from the goal never reaches it.
+            const goal = makeGoal();
+            goal.plan.tasksList.push(leaf("orphan"));
+            planManager.applyServerState(goal);
+
+            const roadmap = planManager.presentContextRoadmap;
+
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "orphan")?.state).toBe(TaskState.UNBLOCKED);
+        });
+
+        it("respects the blockers of a task that does not lead to the goal", () => {
+            const goal = makeGoal();
+            goal.plan.tasksList.push(leaf("side1"), leaf("side2"));
+            goal.plan.dependenciesList.push({ source: "side1", target: "side2" });
+            planManager.applyServerState(goal);
+
+            const roadmap = planManager.presentContextRoadmap;
+
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "side1")?.state).toBe(TaskState.UNBLOCKED);
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "side2")?.state).toBe(TaskState.BLOCKED);
+        });
+
         it("includes a goal pseudo-task named after the context", () => {
             planManager.applyServerState(makeGoal());
             planManager.changeContextToWithinTask("t2");
@@ -417,6 +441,14 @@ describe("PlanManager", () => {
             const unblocked = planManager.allUnblockedTasks;
 
             expect(unblocked.map((task) => task.id)).toEqual(["t1"]);
+        });
+
+        it("includes a task that is not wired up to anything", () => {
+            const goal = makeGoal();
+            goal.plan.tasksList.push(leaf("orphan"));
+            planManager.applyServerState(goal);
+
+            expect(planManager.allUnblockedTasks.map((task) => task.id)).toContain("orphan");
         });
 
         it("recurses into the subplans of unblocked tasks", () => {

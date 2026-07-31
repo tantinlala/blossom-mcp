@@ -123,6 +123,18 @@ describe("RoadmapGraph", () => {
             expect(opacityOf("Task B")).toBe("");
         });
 
+        test("does not dim anything when the focused task has no chain to trace", async () => {
+            // An unconnected task picks out nothing, so fading the rest of the
+            // graph would blank it for no benefit.
+            renderRoadmapGraph([task("a", "Task A"), task("lonely", "Lonely Task")], []);
+
+            await waitFor(() => expect(screen.getByText("Lonely Task")).toBeInTheDocument());
+            fireEvent.mouseEnter(screen.getByText("Lonely Task").closest(".react-flow__node") as HTMLElement);
+
+            expect(opacityOf("Task A")).toBe("");
+            expect(opacityOf("Lonely Task")).toBe("");
+        });
+
         test("does not dim the graph when a focused task is not in the current plan", async () => {
             // Drilling into a subplan leaves the selection pointing at a task from
             // the plan above, which matches nothing here.

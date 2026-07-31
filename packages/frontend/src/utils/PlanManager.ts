@@ -78,6 +78,18 @@ class PlanManager {
 
         if (!hasCircularDependencies(dependencies)) {
             updateTaskStates(GOAL_ID, extendedTasks);
+
+            // updateTaskStates walks backwards from the goal over blockerIDs, so a
+            // task with no path to the goal is never visited and would keep its
+            // initial UNDETERMINED state - rendering as blocked and never showing
+            // up as a next task, despite nothing actually blocking it. Resolve
+            // those from their own blockers instead. Safe from recursing forever
+            // because the graph is known to be acyclic here.
+            extendedTasks.forEach((extendedTask) => {
+                if (extendedTask.state === TaskState.UNDETERMINED) {
+                    updateTaskStates(extendedTask.task.id, extendedTasks);
+                }
+            });
         }
 
         return extendedTasks;
