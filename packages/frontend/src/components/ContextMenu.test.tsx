@@ -18,6 +18,7 @@ describe("ContextMenu Component", () => {
         render(
             <ContextMenu
                 createPlanForTaskCallback={mockCreatePlanForTaskCallback}
+                openSubplanCallback={null}
                 showDetailsCallback={mockShowDetailsCallback}
                 deleteCallback={mockDeleteCallback}
                 name={mockTaskName}
@@ -35,10 +36,34 @@ describe("ContextMenu Component", () => {
         expect(screen.getByText("Delete")).toBeInTheDocument();
     });
 
+    it("offers to open the subplan instead of adding one when the task has one", () => {
+        const openSubplan = jest.fn();
+        render(
+            <ContextMenu
+                createPlanForTaskCallback={null}
+                openSubplanCallback={openSubplan}
+                showDetailsCallback={mockShowDetailsCallback}
+                deleteCallback={mockDeleteCallback}
+                name={mockTaskName}
+                id={mockTaskId}
+                top={100}
+                left={100}
+                right={100}
+                bottom={100}
+            />,
+        );
+
+        expect(screen.queryByText("Add Subplan")).not.toBeInTheDocument();
+        fireEvent.click(screen.getByText("Open Subplan"));
+
+        expect(openSubplan).toHaveBeenCalledWith(mockTaskId);
+    });
+
     it("omits Add Subplan and Delete when their callbacks are absent", () => {
         render(
             <ContextMenu
                 createPlanForTaskCallback={null}
+                openSubplanCallback={null}
                 showDetailsCallback={mockShowDetailsCallback}
                 deleteCallback={null}
                 name={mockTaskName}
@@ -59,6 +84,7 @@ describe("ContextMenu Component", () => {
         render(
             <ContextMenu
                 createPlanForTaskCallback={mockCreatePlanForTaskCallback}
+                openSubplanCallback={null}
                 showDetailsCallback={mockShowDetailsCallback}
                 deleteCallback={mockDeleteCallback}
                 name={mockTaskName}
@@ -80,6 +106,7 @@ describe("ContextMenu Component", () => {
         render(
             <ContextMenu
                 createPlanForTaskCallback={mockCreatePlanForTaskCallback}
+                openSubplanCallback={null}
                 showDetailsCallback={mockShowDetailsCallback}
                 deleteCallback={mockDeleteCallback}
                 name={mockTaskName}
@@ -102,6 +129,7 @@ describe("ContextMenu Component", () => {
         render(
             <ContextMenu
                 createPlanForTaskCallback={mockCreatePlanForTaskCallback}
+                openSubplanCallback={null}
                 showDetailsCallback={mockShowDetailsCallback}
                 deleteCallback={mockDeleteCallback}
                 name={mockTaskName}

@@ -3,6 +3,7 @@ import React from "react";
 function ContextMenu({
     name,
     createPlanForTaskCallback,
+    openSubplanCallback,
     showDetailsCallback,
     deleteCallback,
     id,
@@ -14,6 +15,10 @@ function ContextMenu({
 }) {
     const onCreatePlanForTask = () => {
         createPlanForTaskCallback(id);
+    };
+
+    const onOpenSubplan = () => {
+        openSubplanCallback(id);
     };
 
     const onShowDetails = () => {
@@ -30,7 +35,9 @@ function ContextMenu({
                 {name}
             </p>
             <button onClick={onShowDetails}>Details</button>
+            {/* A task holds at most one subplan, so these two are alternatives */}
             {createPlanForTaskCallback && <button onClick={onCreatePlanForTask}>Add Subplan</button>}
+            {openSubplanCallback && <button onClick={onOpenSubplan}>Open Subplan</button>}
             {deleteCallback && (
                 <button onClick={onDelete} className="context-menu-destructive">
                     Delete

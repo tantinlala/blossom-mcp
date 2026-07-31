@@ -141,6 +141,20 @@ describe("RoadmapGraph", () => {
             expect(opacityOf("Lonely Task")).toBe("");
         });
 
+        test("drops a stale hover when the layout moves nodes out from under the cursor", async () => {
+            // Autoformat only exists once there is a goal to lay the plan out around
+            renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B"), task(GOAL_ID, "My goal")],
+                [{ source: "a", target: "b" }],
+            );
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            fireEvent.mouseEnter(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            fireEvent.click(screen.getByText("Autoformat"));
+
+            await waitFor(() => expect(opacityOf("Task B")).toBe(""));
+        });
+
         test("does not dim the graph when a focused task is not in the current plan", async () => {
             // Drilling into a subplan leaves the selection pointing at a task from
             // the plan above, which matches nothing here.

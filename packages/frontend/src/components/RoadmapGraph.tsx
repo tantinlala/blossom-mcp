@@ -237,20 +237,39 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [handleSelectTask, toggleTaskDetails],
     );
 
+    // Hover and selection refer to the plan being left behind, and the ids in
+    // them do not exist in the plan being entered.
+    const changeContext = useCallback(
+        (taskId: string) => {
+            setHoveredNodeId(null);
+            setSelectedNodes([]);
+            handleChangeRoadmapContext(taskId);
+        },
+        [handleChangeRoadmapContext],
+    );
+
     const onNodeContextMenu = useCallback(
         (event, node: Node) => {
             // Prevent native context menu from showing
             event.preventDefault();
 
+            const taskEntry = presentlyShownRoadmap.tasksList.find((entry) => entry.task.id === node.id);
+
             // The goal node is the plan itself - it can neither be nested nor removed
             let createPlanForTaskCallback = null;
+            let openSubplanCallback = null;
             let deleteCallback = null;
             if (node.id !== GOAL_ID) {
-                createPlanForTaskCallback = handleCreatePlanForTask;
                 deleteCallback = handleRemoveTask;
+                // A task holds at most one subplan, so offering to add a second
+                // would be an action the backend quietly ignores. Offer the way
+                // into the existing one instead.
+                if (taskEntry?.task.plan) {
+                    openSubplanCallback = changeContext;
+                } else {
+                    createPlanForTaskCallback = handleCreatePlanForTask;
+                }
             }
-
-            const taskEntry = presentlyShownRoadmap.tasksList.find((entry) => entry.task.id === node.id);
 
             let currentRef: any = ref.current;
             const pane = currentRef.getBoundingClientRect();
@@ -261,6 +280,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
             setMenu({
                 createPlanForTaskCallback,
+                openSubplanCallback,
                 deleteCallback,
                 showDetailsCallback: showDetails,
                 name: taskEntry?.task.name ?? UNNAMED_GOAL_LABEL,
@@ -271,7 +291,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 bottom: y >= pane.height - MENU_OFFSET_THRESHOLD ? pane.height - y : undefined,
             });
         },
-        [handleCreatePlanForTask, handleRemoveTask, presentlyShownRoadmap, showDetails],
+        [handleCreatePlanForTask, handleRemoveTask, presentlyShownRoadmap, showDetails, changeContext],
     );
 
     // Close the context menu if it's open whenever the window is clicked.
@@ -302,6 +322,11 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
         // Force a re-render by setting a completely new nodes array
         setNodes(layoutedNodes.map(withoutDimming));
+
+        // Laying out moves nodes out from under a stationary cursor without ever
+        // firing mouse-leave, which would strand the highlight and leave the
+        // graph dimmed until the user happened to move the mouse.
+        setHoveredNodeId(null);
     }, [getNodes, getEdges, setNodes]);
 
     useEffect(() => {
@@ -332,17 +357,6 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             }
         },
         [handleSelectTask],
-    );
-
-    // Hover and selection refer to the plan being left behind, and the ids in
-    // them do not exist in the plan being entered.
-    const changeContext = useCallback(
-        (taskId: string) => {
-            setHoveredNodeId(null);
-            setSelectedNodes([]);
-            handleChangeRoadmapContext(taskId);
-        },
-        [handleChangeRoadmapContext],
     );
 
     const onNodeDoubleClick = useCallback(
