@@ -136,7 +136,7 @@ describe("useProjectManagement", () => {
         const { result } = render();
 
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "My Project" } } as any);
+            await result.current.handleProjectChange("My Project");
         });
 
         await act(async () => {
@@ -154,7 +154,7 @@ describe("useProjectManagement", () => {
         const { result } = render();
 
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "My Project" } } as any);
+            await result.current.handleProjectChange("My Project");
         });
 
         jest.clearAllMocks();
@@ -192,7 +192,7 @@ describe("useProjectManagement", () => {
         const { result } = render();
 
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "existing-project" } } as any);
+            await result.current.handleProjectChange("existing-project");
         });
 
         await act(async () => {
@@ -248,7 +248,7 @@ describe("useProjectManagement", () => {
         const { result } = render();
 
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "New Project" } } as any);
+            await result.current.handleProjectChange("New Project");
         });
 
         expect(result.current.selectedProject).toBe("New Project");
@@ -265,10 +265,10 @@ describe("useProjectManagement", () => {
         const { result } = render();
 
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "Existing" } } as any);
+            await result.current.handleProjectChange("Existing");
         });
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "" } } as any);
+            await result.current.handleProjectChange("");
         });
 
         expect(mockedAPIClient.newProject).toHaveBeenCalled();
@@ -282,10 +282,10 @@ describe("useProjectManagement", () => {
         const { result } = render();
 
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "Same Project" } } as any);
+            await result.current.handleProjectChange("Same Project");
         });
         await act(async () => {
-            await result.current.handleProjectChange({ target: { value: "Same Project" } } as any);
+            await result.current.handleProjectChange("Same Project");
         });
 
         expect(mockedAPIClient.restoreProject).toHaveBeenCalledTimes(1);

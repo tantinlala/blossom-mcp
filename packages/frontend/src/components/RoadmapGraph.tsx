@@ -13,7 +13,10 @@ import {
     useNodesInitialized,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Breadcrumbs, Link, Typography } from "@material-ui/core";
+import { Box, Breadcrumbs, Button, Link, Paper, Typography } from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import AutoAwesomeMosaicIcon from "@mui/icons-material/AutoAwesomeMosaic";
+import ChecklistIcon from "@mui/icons-material/Checklist";
 
 import ContextMenu from "./ContextMenu";
 import { getLayoutedElements } from "../utils/layouter";
@@ -34,6 +37,19 @@ const UNNAMED_GOAL_LABEL = "Goal";
 
 // Reserved even when there is no breadcrumb, so the toolbar below never moves
 const BREADCRUMB_ROW_HEIGHT = 20;
+
+// Toolbars float over the canvas, so they need their own surface to stay legible
+const CANVAS_TOOLBAR_SX = {
+    display: "flex",
+    alignItems: "center",
+    gap: 0.5,
+    p: 0.5,
+    border: 1,
+    borderColor: "divider",
+    borderRadius: 2,
+    bgcolor: "background.paper",
+    boxShadow: "0 1px 2px rgba(16, 24, 40, 0.06)",
+} as const;
 
 // Prompt strings
 const TASK_NAME_PROMPT = "Task Name";
@@ -552,30 +568,35 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             <Panel position="top-left">
                 {/* Fixed height, always rendered: letting the row appear and disappear
                     with the nesting level would shift the toolbar under it. */}
-                <div
-                    style={{
+                <Box
+                    sx={{
                         height: BREADCRUMB_ROW_HEIGHT,
                         display: "flex",
                         alignItems: "center",
-                        marginBottom: 4,
+                        mb: 0.5,
                     }}
                 >
                     {presentlyShownRoadmap.ancestors.length > 0 && (
-                        <Breadcrumbs aria-label="plan location" data-testid="plan-breadcrumbs" style={{ fontSize: 13 }}>
+                        <Breadcrumbs
+                            aria-label="plan location"
+                            data-testid="plan-breadcrumbs"
+                            sx={{ fontSize: 13, color: "text.secondary" }}
+                        >
                             {presentlyShownRoadmap.ancestors.map((crumb, index) => {
                                 const label = crumb.name || UNNAMED_GOAL_LABEL;
                                 const isCurrent = index === presentlyShownRoadmap.ancestors.length - 1;
                                 return isCurrent ? (
-                                    <Typography key={crumb.id} color="textPrimary" style={{ fontSize: "inherit" }}>
+                                    <Typography key={crumb.id} color="text.primary" sx={{ fontSize: "inherit" }}>
                                         {label}
                                     </Typography>
                                 ) : (
                                     <Link
                                         key={crumb.id}
                                         component="button"
+                                        underline="hover"
                                         color="inherit"
                                         onClick={onCrumbClick(crumb.id)}
-                                        style={{ fontSize: "inherit" }}
+                                        sx={{ fontSize: "inherit", fontFamily: "inherit" }}
                                     >
                                         {label}
                                     </Link>
@@ -583,18 +604,30 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                             })}
                         </Breadcrumbs>
                     )}
-                </div>
-                <div>
+                </Box>
+                <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
                     {goalNodeExists ? (
-                        <button onClick={onCreateTask}>Add Task</button>
+                        <Button size="small" startIcon={<AddIcon />} onClick={onCreateTask}>
+                            Add Task
+                        </Button>
                     ) : (
-                        <button onClick={onCreateGoal}>Add Goal</button>
+                        <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={onCreateGoal}>
+                            Add Goal
+                        </Button>
                     )}
-                    {goalNodeExists && <button onClick={() => onLayout()}>Autoformat</button>}
-                </div>
+                    {goalNodeExists && (
+                        <Button size="small" startIcon={<AutoAwesomeMosaicIcon />} onClick={() => onLayout()}>
+                            Autoformat
+                        </Button>
+                    )}
+                </Paper>
             </Panel>
             <Panel position="top-right">
-                <button onClick={onToggleNextTasks}>Next Tasks List</button>
+                <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
+                    <Button size="small" startIcon={<ChecklistIcon />} onClick={onToggleNextTasks}>
+                        Next Tasks List
+                    </Button>
+                </Paper>
             </Panel>
             {menu && <ContextMenu onClick={onPaneClick} {...menu} />}
         </ReactFlow>

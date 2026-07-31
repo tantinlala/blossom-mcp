@@ -1,7 +1,7 @@
 import React from "react";
-import { List, ListItem, ListItemText, Typography, Checkbox, IconButton } from "@material-ui/core";
+import { List, ListItem, ListItemText, Typography, Checkbox, IconButton } from "@mui/material";
 import { Task } from "@blossom/common";
-import ArrowForwardIcon from "@material-ui/icons/ArrowForward";
+import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import SidePanel from "./SidePanel";
 
 interface NextTaskDrawerProps {

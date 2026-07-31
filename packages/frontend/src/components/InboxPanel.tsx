@@ -1,5 +1,7 @@
 import React from "react";
-import { Box, Button } from "@material-ui/core";
+import { Box, Button, Tooltip, Typography } from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import PlaylistAddCheckIcon from "@mui/icons-material/PlaylistAddCheck";
 import Inbox from "./Inbox";
 
 interface InboxPanelProps {
@@ -21,51 +23,56 @@ const InboxPanel: React.FC<InboxPanelProps> = ({
     deleteIdea,
     addTaskToContextAndRemove,
 }) => {
+    const isEmpty = ideaList.length === 0;
+
     return (
-        <div
+        <Box
             data-testid="inbox-panel"
-            style={{
+            sx={{
                 flex: 1,
-                borderLeft: "1px solid #e0e0e0",
                 display: "flex",
                 flexDirection: "column",
                 height: "100%",
                 overflow: "hidden",
+                borderLeft: 1,
+                borderColor: "divider",
+                bgcolor: "background.paper",
             }}
         >
-            <Box display="flex" alignItems="center" padding={1} bgcolor="#f5f5f5" flexDirection="column">
-                <Box flex={1} width="100%" marginBottom={1}>
-                    <h3 style={{ margin: 0, textAlign: "center" }}>Inbox</h3>
-                </Box>
-                <Box display="flex" flexDirection="row" width="100%" justifyContent="space-between" marginBottom={1}>
+            <Box sx={{ p: 1.5, borderBottom: 1, borderColor: "divider", bgcolor: "background.default" }}>
+                <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                    Inbox
+                </Typography>
+                <Box sx={{ display: "flex", gap: 1 }}>
                     <Button
                         variant="contained"
-                        color="primary"
-                        onClick={addIdea}
                         size="small"
-                        style={{
-                            width: "48%",
-                        }}
+                        startIcon={<AddIcon />}
+                        onClick={addIdea}
+                        sx={{ flex: 1 }}
                         data-testid="add-idea-button"
                     >
                         Add
                     </Button>
-                    <Button
-                        variant="contained"
-                        color="primary"
-                        onClick={addAllIdeasToPlan}
-                        disabled={ideaList.length === 0}
-                        size="small"
-                        style={{
-                            width: "48%",
-                        }}
-                        data-testid="move-all-button"
-                    >
-                        Move
-                    </Button>
+                    <Tooltip title={isEmpty ? "Nothing in the inbox to move" : "Move every idea into the plan"}>
+                        {/* A disabled button emits no events, so the tooltip needs a live wrapper */}
+                        <Box sx={{ flex: 1, display: "flex" }}>
+                            <Button
+                                variant="outlined"
+                                size="small"
+                                startIcon={<PlaylistAddCheckIcon />}
+                                onClick={addAllIdeasToPlan}
+                                disabled={isEmpty}
+                                sx={{ flex: 1 }}
+                                data-testid="move-all-button"
+                            >
+                                Move
+                            </Button>
+                        </Box>
+                    </Tooltip>
                 </Box>
             </Box>
-            <div style={{ flex: 1, overflow: "hidden" }}>
+            <Box sx={{ flex: 1, overflow: "hidden" }}>
                 <Inbox
                     ideaList={ideaList}
                     changeIdea={changeIdea}
@@ -73,8 +80,8 @@ const InboxPanel: React.FC<InboxPanelProps> = ({
                     deleteIdea={deleteIdea}
                     addTaskToContextAndRemove={addTaskToContextAndRemove}
                 />
-            </div>
-        </div>
+            </Box>
+        </Box>
     );
 };
 

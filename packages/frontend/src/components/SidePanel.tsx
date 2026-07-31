@@ -1,6 +1,6 @@
 import React from "react";
-import { IconButton, Typography } from "@material-ui/core";
-import CloseIcon from "@material-ui/icons/Close";
+import { Box, IconButton, Typography } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 
 export const SIDE_PANEL_WIDTH = 340;
 
@@ -24,28 +24,31 @@ const SidePanel: React.FC<SidePanelProps> = ({ open, title, onClose, children, t
     }
 
     return (
-        <aside
+        <Box
+            component="aside"
             data-testid={testId}
-            style={{
+            sx={{
                 width: SIDE_PANEL_WIDTH,
                 flexShrink: 0,
                 height: "100%",
                 display: "flex",
                 flexDirection: "column",
                 overflow: "hidden",
-                borderLeft: "1px solid #e0e0e0",
-                background: "white",
+                borderLeft: 1,
+                borderColor: "divider",
+                bgcolor: "background.paper",
             }}
         >
-            {/* Plain flexbox rather than MUI's Box: this project is on Material-UI
-                v4, whose Box system props emit classes that resolve to nothing. */}
-            <div
-                style={{
+            <Box
+                sx={{
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
-                    padding: "8px 8px 8px 16px",
-                    borderBottom: "1px solid #e0e0e0",
+                    pl: 2,
+                    pr: 1,
+                    py: 1,
+                    borderBottom: 1,
+                    borderColor: "divider",
                     flexShrink: 0,
                 }}
             >
@@ -53,9 +56,9 @@ const SidePanel: React.FC<SidePanelProps> = ({ open, title, onClose, children, t
                 <IconButton size="small" onClick={onClose} aria-label={`Close ${title}`}>
                     <CloseIcon fontSize="small" />
                 </IconButton>
-            </div>
-            <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
-        </aside>
+            </Box>
+            <Box sx={{ flex: 1, overflowY: "auto" }}>{children}</Box>
+        </Box>
     );
 };
 

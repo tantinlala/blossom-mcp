@@ -1,6 +1,6 @@
 import React from "react";
-import { Typography, Box, TextField, Checkbox, FormControlLabel, Button } from "@material-ui/core";
-import SaveIcon from "@material-ui/icons/Save";
+import { Typography, Box, TextField, Checkbox, FormControlLabel, Button } from "@mui/material";
+import SaveIcon from "@mui/icons-material/Save";
 
 interface TaskDetailsFormProps {
     name: string;
@@ -26,32 +26,30 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
     onSave,
 }) => {
     return (
-        <Box p={2} display="flex" flexDirection="column" height="100%">
-            <Box mt={2} mb={3}>
-                <Typography variant="subtitle2" color="textSecondary">
+        <Box sx={{ p: 2, display: "flex", flexDirection: "column", height: "100%" }}>
+            <Box sx={{ mb: 3 }}>
+                <Typography variant="subtitle2" color="text.secondary">
                     Name
                 </Typography>
                 <TextField
                     fullWidth
                     value={name}
                     onChange={onNameChange}
-                    variant="outlined"
                     margin="dense"
                     data-testid="task-name-input"
                 />
             </Box>
 
-            <Box mb={3}>
-                <Typography variant="subtitle2" color="textSecondary">
+            <Box sx={{ mb: 3 }}>
+                <Typography variant="subtitle2" color="text.secondary">
                     Description
                 </Typography>
                 <TextField
                     fullWidth
                     multiline
-                    rows={4}
+                    rows={6}
                     value={description}
                     onChange={onDescriptionChange}
-                    variant="outlined"
                     margin="dense"
                     placeholder="Add a description for this task..."
                     data-testid="task-description-input"
@@ -60,7 +58,7 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
 
             {/* Only show completion checkbox for tasks without a subplan */}
             {!hasSubplan && (
-                <Box mb={3}>
+                <Box sx={{ mb: 3 }}>
                     <FormControlLabel
                         control={
                             <Checkbox
@@ -75,10 +73,9 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
                 </Box>
             )}
 
-            <Box mt="auto" display="flex" justifyContent="center">
+            <Box sx={{ mt: "auto", display: "flex", justifyContent: "flex-end" }}>
                 <Button
                     variant="contained"
-                    color="primary"
                     startIcon={<SaveIcon />}
                     onClick={onSave}
                     disabled={!modified}
