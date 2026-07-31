@@ -8,6 +8,8 @@ interface UseProjectManagementDeps {
     applyState: (state: ProjectState) => void;
     setSelectedTask: React.Dispatch<React.SetStateAction<Task | null>>;
     promptForText: PromptForText;
+    markSaved: () => void;
+    markNeverSaved: () => void;
 }
 
 export function useProjectManagement({
@@ -15,6 +17,8 @@ export function useProjectManagement({
     applyState,
     setSelectedTask,
     promptForText,
+    markSaved,
+    markNeverSaved,
 }: UseProjectManagementDeps) {
     const [existingProjects, setExistingProjects] = useState<string[]>([]);
     const [selectedProject, setSelectedProject] = useState("");
@@ -28,7 +32,9 @@ export function useProjectManagement({
         }
         applyState(state);
         setSelectedTask({ ...state.goal });
-    }, [apiClient, applyState, setSelectedTask]);
+        // A brand new project has no file behind it yet
+        markNeverSaved();
+    }, [apiClient, applyState, setSelectedTask, markNeverSaved]);
 
     const restoreProject = useCallback(
         async (filename: string): Promise<boolean> => {
@@ -40,9 +46,11 @@ export function useProjectManagement({
 
             applyState(state);
             setSelectedTask({ ...state.goal });
+            // Just read from disk, so the two match by definition
+            markSaved();
             return true;
         },
-        [apiClient, applyState, setSelectedTask],
+        [apiClient, applyState, setSelectedTask, markSaved],
     );
 
     const initializeApp = useCallback(async () => {
@@ -62,7 +70,13 @@ export function useProjectManagement({
         applyState(state);
         setSelectedProject(state.activeProject ?? "");
         setSelectedTask({ ...state.goal });
-    }, [apiClient, applyState, setSelectedTask]);
+        // Only a project with a file behind it can be assumed to match disk
+        if (state.activeProject) {
+            markSaved();
+        } else {
+            markNeverSaved();
+        }
+    }, [apiClient, applyState, setSelectedTask, markSaved, markNeverSaved]);
 
     const saveProject = useCallback(
         async (filename: string): Promise<void> => {
@@ -72,8 +86,9 @@ export function useProjectManagement({
                 return;
             }
             setExistingProjects(projects);
+            markSaved();
         },
-        [apiClient],
+        [apiClient, markSaved],
     );
 
     const onSave = useCallback(async () => {

@@ -46,6 +46,57 @@ describe("useServerSync", () => {
         });
     };
 
+    describe("save state", () => {
+        it("reports a project with no file behind it as never saved", () => {
+            const { result } = render();
+
+            expect(result.current.saveState).toBe("neverSaved");
+        });
+
+        it("reports saved once the current version has been written to disk", () => {
+            const { result } = render();
+
+            act(() => result.current.applyState(makeState(5)));
+            act(() => result.current.markSaved());
+
+            expect(result.current.saveState).toBe("saved");
+        });
+
+        it("reports unsaved as soon as the version moves past the saved one", () => {
+            const { result } = render();
+
+            act(() => result.current.applyState(makeState(5)));
+            act(() => result.current.markSaved());
+            act(() => result.current.applyState(makeState(6)));
+
+            expect(result.current.saveState).toBe("unsaved");
+        });
+
+        it("notices a change that arrived over polling, not just local edits", async () => {
+            mockedAPIClient.getStateVersion.mockResolvedValue(9);
+            mockedAPIClient.getState.mockResolvedValue(makeState(9));
+
+            const { result } = render();
+            act(() => result.current.applyState(makeState(5)));
+            act(() => result.current.markSaved());
+            expect(result.current.saveState).toBe("saved");
+
+            await advanceOnePoll();
+
+            expect(result.current.saveState).toBe("unsaved");
+        });
+
+        it("goes back to never saved when a new project is started", () => {
+            const { result } = render();
+
+            act(() => result.current.applyState(makeState(5)));
+            act(() => result.current.markSaved());
+            act(() => result.current.markNeverSaved());
+
+            expect(result.current.saveState).toBe("neverSaved");
+        });
+    });
+
     it("applyState updates the plan manager and the registered targets", () => {
         const state = makeState(5, ["idea 1", "idea 2"]);
         const { result } = render();

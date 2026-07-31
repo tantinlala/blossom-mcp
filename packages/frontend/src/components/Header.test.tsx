@@ -1,5 +1,6 @@
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
+import "@testing-library/jest-dom";
 import Header from "./Header";
 
 describe("Header component", () => {
@@ -9,6 +10,7 @@ describe("Header component", () => {
         handleProjectChange: jest.fn(),
         onSave: jest.fn(),
         onRestore: jest.fn(),
+        saveState: "saved" as const,
     };
 
     it("renders correctly", () => {
@@ -40,6 +42,17 @@ describe("Header component", () => {
     it("enables Reload button when no project is selected", () => {
         render(<Header {...mockProps} selectedProject="" />);
         expect(screen.getByRole("button", { name: /reload/i })).toBeEnabled();
+    });
+
+    it("reports whether there is anything unsaved", () => {
+        const { rerender } = render(<Header {...mockProps} saveState="saved" />);
+        expect(screen.getByTestId("save-state")).toHaveTextContent("Saved");
+
+        rerender(<Header {...mockProps} saveState="unsaved" />);
+        expect(screen.getByTestId("save-state")).toHaveTextContent("Unsaved changes");
+
+        rerender(<Header {...mockProps} saveState="neverSaved" />);
+        expect(screen.getByTestId("save-state")).toHaveTextContent("Not saved yet");
     });
 
     it("passes the chosen project name up when the dropdown changes", () => {

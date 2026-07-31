@@ -31,6 +31,8 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
         applyState: sync.applyState,
         setSelectedTask: roadmap.setSelectedTask,
         promptForText,
+        markSaved: sync.markSaved,
+        markNeverSaved: sync.markNeverSaved,
     });
 
     // useServerSync is created before the hooks that own React state, so the
@@ -55,6 +57,7 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
                 handleProjectChange={project.handleProjectChange}
                 onSave={project.onSave}
                 onRestore={project.onRestore}
+                saveState={sync.saveState}
             />
 
             <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden" }}>

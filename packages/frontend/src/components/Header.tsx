@@ -3,6 +3,13 @@ import { Paper, Button, Box, Select, MenuItem, FormControl, Typography, Tooltip 
 import { SelectChangeEvent } from "@mui/material/Select";
 import SaveIcon from "@mui/icons-material/Save";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import { SaveState } from "../hooks/useServerSync";
+
+const SAVE_STATE_LABEL: Record<SaveState, string> = {
+    neverSaved: "Not saved yet",
+    saved: "Saved",
+    unsaved: "Unsaved changes",
+};
 
 interface HeaderProps {
     existingProjects: string[];
@@ -10,6 +17,7 @@ interface HeaderProps {
     handleProjectChange: (filename: string) => void;
     onSave: () => void;
     onRestore: () => void;
+    saveState: SaveState;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -18,6 +26,7 @@ const Header: React.FC<HeaderProps> = ({
     handleProjectChange,
     onSave,
     onRestore,
+    saveState,
 }) => {
     return (
         <Paper
@@ -63,6 +72,9 @@ const Header: React.FC<HeaderProps> = ({
             </Box>
 
             <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1, flex: 1 }}>
+                <Typography variant="caption" color="text.secondary" data-testid="save-state">
+                    {SAVE_STATE_LABEL[saveState]}
+                </Typography>
                 <Button variant="contained" startIcon={<SaveIcon />} onClick={onSave}>
                     Save
                 </Button>

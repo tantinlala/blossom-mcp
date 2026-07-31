@@ -1,6 +1,6 @@
 import React from "react";
 import { Typography, Box, TextField, Checkbox, FormControlLabel, Button } from "@mui/material";
-import SaveIcon from "@mui/icons-material/Save";
+import CheckIcon from "@mui/icons-material/Check";
 
 interface TaskDetailsFormProps {
     name: string;
@@ -74,14 +74,16 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
             )}
 
             <Box sx={{ mt: "auto", display: "flex", justifyContent: "flex-end" }}>
+                {/* Deliberately not "Save": this applies the edit to the task, while
+                    Save in the header writes the whole project to disk. */}
                 <Button
                     variant="contained"
-                    startIcon={<SaveIcon />}
+                    startIcon={<CheckIcon />}
                     onClick={onSave}
                     disabled={!modified}
-                    data-testid="save-task-button"
+                    data-testid="update-task-button"
                 >
-                    Save Changes
+                    Update task
                 </Button>
             </Box>
         </Box>

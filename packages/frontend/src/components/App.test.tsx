@@ -58,6 +58,9 @@ describe("App", () => {
             applyState: jest.fn(),
             registerTargets: jest.fn(),
             setEditingPaused: jest.fn(),
+            saveState: "saved" as const,
+            markSaved: jest.fn(),
+            markNeverSaved: jest.fn(),
         };
     }
 
@@ -86,8 +89,6 @@ describe("App", () => {
             updateTaskDetails: jest.fn(),
             handlePaste: jest.fn(),
             handleUndo: jest.fn(),
-            toggleNextTasksDrawer: jest.fn().mockReturnValue(jest.fn()),
-            toggleDetailsDrawer: jest.fn().mockReturnValue(jest.fn()),
         };
     }
 
@@ -216,6 +217,8 @@ describe("App", () => {
                 applyState: mockSync.applyState,
                 setSelectedTask: mockRoadmap.setSelectedTask,
                 promptForText: expect.any(Function),
+                markSaved: mockSync.markSaved,
+                markNeverSaved: mockSync.markNeverSaved,
             });
         });
 

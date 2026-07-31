@@ -17,6 +17,8 @@ describe("useProjectManagement", () => {
     let mockApplyState: jest.Mock;
     let mockSetSelectedTask: jest.Mock;
     let mockPromptForText: jest.Mock;
+    let mockMarkSaved: jest.Mock;
+    let mockMarkNeverSaved: jest.Mock;
 
     beforeEach(() => {
         jest.clearAllMocks();
@@ -24,6 +26,8 @@ describe("useProjectManagement", () => {
         mockApplyState = jest.fn();
         mockSetSelectedTask = jest.fn();
         mockPromptForText = jest.fn();
+        mockMarkSaved = jest.fn();
+        mockMarkNeverSaved = jest.fn();
         window.alert = jest.fn();
     });
 
@@ -34,6 +38,8 @@ describe("useProjectManagement", () => {
                 applyState: mockApplyState,
                 setSelectedTask: mockSetSelectedTask,
                 promptForText: mockPromptForText,
+                markSaved: mockMarkSaved,
+                markNeverSaved: mockMarkNeverSaved,
             }),
         );
 
