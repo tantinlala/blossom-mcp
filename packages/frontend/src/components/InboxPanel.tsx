@@ -1,10 +1,13 @@
 import React from "react";
-import { Box, Button, Tooltip, Typography } from "@mui/material";
+import { Box, Button, Tooltip } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import PlaylistAddCheckIcon from "@mui/icons-material/PlaylistAddCheck";
 import Inbox from "./Inbox";
+import SidePanel from "./SidePanel";
 
 interface InboxPanelProps {
+    open: boolean;
+    onClose: () => void;
     ideaList: string[];
     addIdea: () => void;
     addAllIdeasToPlan: () => void;
@@ -15,6 +18,8 @@ interface InboxPanelProps {
 }
 
 const InboxPanel: React.FC<InboxPanelProps> = ({
+    open,
+    onClose,
     ideaList,
     addIdea,
     addAllIdeasToPlan,
@@ -26,24 +31,9 @@ const InboxPanel: React.FC<InboxPanelProps> = ({
     const isEmpty = ideaList.length === 0;
 
     return (
-        <Box
-            data-testid="inbox-panel"
-            sx={{
-                flex: 1,
-                display: "flex",
-                flexDirection: "column",
-                height: "100%",
-                overflow: "hidden",
-                borderLeft: 1,
-                borderColor: "divider",
-                bgcolor: "background.paper",
-            }}
-        >
-            <Box sx={{ p: 1.5, borderBottom: 1, borderColor: "divider", bgcolor: "background.default" }}>
-                <Typography variant="subtitle1" sx={{ mb: 1 }}>
-                    Inbox
-                </Typography>
-                <Box sx={{ display: "flex", gap: 1 }}>
+        <SidePanel open={open} onClose={onClose} title="Inbox" testId="inbox-panel">
+            <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
+                <Box sx={{ display: "flex", gap: 1, p: 1.5, borderBottom: 1, borderColor: "divider" }}>
                     <Button
                         variant="contained"
                         size="small"
@@ -71,17 +61,17 @@ const InboxPanel: React.FC<InboxPanelProps> = ({
                         </Box>
                     </Tooltip>
                 </Box>
+                <Box sx={{ flex: 1, overflow: "hidden" }}>
+                    <Inbox
+                        ideaList={ideaList}
+                        changeIdea={changeIdea}
+                        commitIdea={commitIdea}
+                        deleteIdea={deleteIdea}
+                        addTaskToContextAndRemove={addTaskToContextAndRemove}
+                    />
+                </Box>
             </Box>
-            <Box sx={{ flex: 1, overflow: "hidden" }}>
-                <Inbox
-                    ideaList={ideaList}
-                    changeIdea={changeIdea}
-                    commitIdea={commitIdea}
-                    deleteIdea={deleteIdea}
-                    addTaskToContextAndRemove={addTaskToContextAndRemove}
-                />
-            </Box>
-        </Box>
+        </SidePanel>
     );
 };
 

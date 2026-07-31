@@ -49,6 +49,9 @@ const handlePaste = (tasks: Task[], dependencies: Dependency[]) => {
 const handleUndo = () => {
     /* ... */
 };
+const toggleInbox = () => {
+    /* ... */
+};
 
 const renderRoadmapGraph = (
     tasksList: TaskAndState[],
@@ -80,6 +83,7 @@ const renderRoadmapGraph = (
                 showNextTasks={toggleNextTaskDrawer}
                 handlePaste={handlePaste}
                 handleUndo={handleUndo}
+                toggleInbox={toggleInbox}
                 {...propOverrides}
             />
         </ReactFlowProvider>,
@@ -167,6 +171,7 @@ describe("RoadmapGraph", () => {
                         showNextTasks={toggleNextTaskDrawer}
                         handlePaste={handlePaste}
                         handleUndo={handleUndo}
+                        toggleInbox={toggleInbox}
                     />
                 </ReactFlowProvider>,
             );
@@ -446,6 +451,7 @@ describe("RoadmapGraph", () => {
                     showNextTasks={toggleNextTaskDrawer}
                     handlePaste={handlePaste}
                     handleUndo={handleUndo}
+                    toggleInbox={toggleInbox}
                 />
             </ReactFlowProvider>,
         );
@@ -535,6 +541,7 @@ describe("RoadmapGraph", () => {
                     showNextTasks={toggleNextTaskDrawer}
                     handlePaste={handlePaste}
                     handleUndo={handleUndo}
+                    toggleInbox={toggleInbox}
                 />
             </ReactFlowProvider>,
         );

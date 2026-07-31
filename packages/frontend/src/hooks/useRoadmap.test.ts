@@ -499,32 +499,4 @@ describe("useRoadmap", () => {
 
         expect(mockedPlanManager.changeContextToParent).toHaveBeenCalledWith("t1");
     });
-
-    it("toggleNextTasksDrawer opens and closes the drawer", () => {
-        const { result } = render();
-
-        act(() => {
-            result.current.toggleNextTasksDrawer(true)();
-        });
-        expect(result.current.drawerOpen).toBe(true);
-
-        act(() => {
-            result.current.toggleNextTasksDrawer(false)();
-        });
-        expect(result.current.drawerOpen).toBe(false);
-    });
-
-    it("toggleDetailsDrawer opens and closes", () => {
-        const { result } = render();
-
-        act(() => {
-            result.current.toggleDetailsDrawer(true)();
-        });
-        expect(result.current.detailsDrawerOpen).toBe(true);
-
-        act(() => {
-            result.current.toggleDetailsDrawer(false)();
-        });
-        expect(result.current.detailsDrawerOpen).toBe(false);
-    });
 });

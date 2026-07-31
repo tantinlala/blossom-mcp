@@ -11,6 +11,7 @@ import { useRoadmap } from "../hooks/useRoadmap";
 import { useInbox } from "../hooks/useInbox";
 import { useServerSync } from "../hooks/useServerSync";
 import { useProjectManagement } from "../hooks/useProjectManagement";
+import { useSidePanel } from "../hooks/useSidePanel";
 
 const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: PlanManager }) => {
     const sync = useServerSync({ apiClient, planManager });
@@ -21,6 +22,7 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
         applyState: sync.applyState,
         setEditingPaused: sync.setEditingPaused,
     });
+    const panel = useSidePanel();
     const project = useProjectManagement({
         apiClient,
         applyState: sync.applyState,
@@ -67,41 +69,42 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
                             handleChangeRoadmapContext={roadmap.changeContextToWithinTask}
                             handleCreatePlanForTask={roadmap.createPlanForTask}
                             handleSelectTask={roadmap.selectTask}
-                            showTaskDetails={roadmap.toggleDetailsDrawer(true)}
-                            showNextTasks={roadmap.toggleNextTasksDrawer(true)}
+                            showTaskDetails={panel.showDetails}
+                            showNextTasks={panel.toggleNextTasks}
+                            toggleInbox={panel.toggleInbox}
                             handlePaste={roadmap.handlePaste}
                             handleUndo={roadmap.handleUndo}
                         />
                     </ReactFlowProvider>
                 </div>
 
-                {/* Docked beside the graph so it stays visible while these are open */}
+                {/* One slot, one panel: these are alternatives, never shown together */}
                 <NextTasksDrawer
-                    open={roadmap.drawerOpen}
-                    onClose={roadmap.toggleNextTasksDrawer(false)}
+                    open={panel.activePanel === "nextTasks"}
+                    onClose={panel.closeActivePanel}
                     shownTasks={roadmap.unblockedTasks}
                     toggleCompletion={roadmap.toggleComplete}
                     changeContext={roadmap.changeContextToParent}
                 />
 
                 <TaskDetailsDrawer
-                    open={roadmap.detailsDrawerOpen}
-                    onClose={roadmap.toggleDetailsDrawer(false)}
+                    open={panel.activePanel === "details"}
+                    onClose={panel.closeActivePanel}
                     selectedTask={roadmap.selectedTask}
                     updateTaskDetails={roadmap.updateTaskDetails}
                 />
 
-                <div style={{ flex: 1, maxWidth: "400px", height: "100%", overflow: "hidden" }}>
-                    <InboxPanel
-                        ideaList={inbox.ideaList}
-                        addIdea={inbox.addIdea}
-                        addAllIdeasToPlan={inbox.addAllIdeasToPlan}
-                        changeIdea={inbox.changeIdea}
-                        commitIdea={inbox.commitIdea}
-                        deleteIdea={inbox.deleteIdea}
-                        addTaskToContextAndRemove={inbox.addTaskToContextAndRemove}
-                    />
-                </div>
+                <InboxPanel
+                    open={panel.activePanel === "inbox"}
+                    onClose={panel.closeActivePanel}
+                    ideaList={inbox.ideaList}
+                    addIdea={inbox.addIdea}
+                    addAllIdeasToPlan={inbox.addAllIdeasToPlan}
+                    changeIdea={inbox.changeIdea}
+                    commitIdea={inbox.commitIdea}
+                    deleteIdea={inbox.deleteIdea}
+                    addTaskToContextAndRemove={inbox.addTaskToContextAndRemove}
+                />
             </div>
         </div>
     );

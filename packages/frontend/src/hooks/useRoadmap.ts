@@ -15,8 +15,6 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
     const [presentlyShownRoadmap, setPresentlyShownRoadmap] = useState<Roadmap>(EMPTY_ROADMAP);
     const [unblockedTasks, setUnblockedTasks] = useState<NextTask[]>([]);
     const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-    const [drawerOpen, setDrawerOpen] = useState(false);
-    const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
 
     // Runs on every applied server state, so both the graph and the "next task"
     // list stay in step with the plan. Snapshotting the list when its panel
@@ -183,26 +181,10 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
         });
     }, [planManager, apiClient, applyState]);
 
-    const toggleNextTasksDrawer = useCallback(
-        (open: boolean) => () => {
-            setDrawerOpen(open);
-        },
-        [],
-    );
-
-    const toggleDetailsDrawer = useCallback(
-        (open: boolean) => () => {
-            setDetailsDrawerOpen(open);
-        },
-        [],
-    );
-
     return {
         presentlyShownRoadmap,
         unblockedTasks,
         selectedTask,
-        drawerOpen,
-        detailsDrawerOpen,
         syncRoadmap,
         setSelectedTask,
         setGoal,
@@ -219,7 +201,5 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
         updateTaskDetails,
         handlePaste,
         handleUndo,
-        toggleNextTasksDrawer,
-        toggleDetailsDrawer,
     };
 }

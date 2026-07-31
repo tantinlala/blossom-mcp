@@ -18,6 +18,7 @@ import { Breadcrumbs, Button, Link, Paper, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import AutoAwesomeMosaicIcon from "@mui/icons-material/AutoAwesomeMosaic";
 import ChecklistIcon from "@mui/icons-material/Checklist";
+import InboxIcon from "@mui/icons-material/Inbox";
 
 import ContextMenu from "./ContextMenu";
 import StatusLegend from "./StatusLegend";
@@ -106,6 +107,7 @@ interface RoadmapGraphProps {
     handleSelectTask: (taskId: string) => void;
     showTaskDetails: () => void;
     showNextTasks: () => void;
+    toggleInbox: () => void;
     handlePaste: (tasks: Task[], dependencies: Dependency[]) => void;
     handleUndo: () => void;
 }
@@ -124,6 +126,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     handleSelectTask,
     showTaskDetails: toggleTaskDetails,
     showNextTasks: toggleNextTaskDrawer,
+    toggleInbox,
     handlePaste,
     handleUndo,
 }) => {
@@ -711,10 +714,14 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                     </Breadcrumbs>
                 )}
             </Panel>
+            {/* Both toggle the single panel slot beside the canvas */}
             <Panel position="top-right">
                 <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
                     <Button size="small" startIcon={<ChecklistIcon />} onClick={onToggleNextTasks}>
                         Next Tasks List
+                    </Button>
+                    <Button size="small" startIcon={<InboxIcon />} onClick={toggleInbox}>
+                        Inbox
                     </Button>
                 </Paper>
             </Panel>
