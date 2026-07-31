@@ -20,6 +20,7 @@ import AutoAwesomeMosaicIcon from "@mui/icons-material/AutoAwesomeMosaic";
 import ChecklistIcon from "@mui/icons-material/Checklist";
 
 import ContextMenu from "./ContextMenu";
+import StatusLegend from "./StatusLegend";
 import { getLayoutedElements } from "../utils/layouter";
 import { createTaskNode, createTaskNodeFromExisting, createEdge } from "../utils/taskNodeUtils";
 import { GOAL_ID, createGoalNode } from "../utils/goalNodeUtils";
@@ -712,6 +713,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                     </Button>
                 </Paper>
             </Panel>
+            {/* Bottom-centre keeps it clear of the zoom controls and the minimap */}
+            {goalNodeExists && (
+                <Panel position="bottom-center">
+                    <StatusLegend />
+                </Panel>
+            )}
             {menu && <ContextMenu onClick={onPaneClick} {...menu} />}
         </ReactFlow>
     );
