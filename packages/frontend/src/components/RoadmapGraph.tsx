@@ -328,13 +328,24 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [handleSelectTask],
     );
 
+    // Hover and selection refer to the plan being left behind, and the ids in
+    // them do not exist in the plan being entered.
+    const changeContext = useCallback(
+        (taskId: string) => {
+            setHoveredNodeId(null);
+            setSelectedNodes([]);
+            handleChangeRoadmapContext(taskId);
+        },
+        [handleChangeRoadmapContext],
+    );
+
     const onNodeDoubleClick = useCallback(
         (event, node: Node) => {
             if (node.id !== GOAL_ID) {
-                handleChangeRoadmapContext(node.id);
+                changeContext(node.id);
             }
         },
-        [handleChangeRoadmapContext],
+        [changeContext],
     );
 
     const onCreateTask = useCallback(async (): Promise<Task | null> => {
@@ -355,9 +366,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     const onCrumbClick = useCallback(
         (taskId: string) => () => {
-            handleChangeRoadmapContext(taskId);
+            changeContext(taskId);
         },
-        [handleChangeRoadmapContext],
+        [changeContext],
     );
 
     // Find connecting edge between two selected nodes
@@ -574,11 +585,14 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     // Hovering is the quick, throwaway way to trace a chain; selecting keeps it
     // traced while you work. Selecting several nodes traces nothing.
     const focusedNodeId = useMemo(() => {
-        if (hoveredNodeId) {
-            return hoveredNodeId;
+        const candidate = hoveredNodeId ?? (selectedNodes.length === 1 ? selectedNodes[0] : null);
+        if (!candidate) {
+            return null;
         }
-        return selectedNodes.length === 1 ? selectedNodes[0] : null;
-    }, [hoveredNodeId, selectedNodes]);
+        // A focus on a task that is no longer on screen - deleted, or left
+        // behind by a drill-down - would match nothing and dim the whole graph.
+        return nodes.some((node) => node.id === candidate) ? candidate : null;
+    }, [hoveredNodeId, selectedNodes, nodes]);
 
     const highlight = useGraphHighlight(edges, focusedNodeId);
 

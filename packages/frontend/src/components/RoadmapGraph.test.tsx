@@ -103,6 +103,69 @@ describe("RoadmapGraph", () => {
         renderRoadmapGraph(tasksList, dependenciesList);
     });
 
+    describe("chain highlighting", () => {
+        const task = (id: string, name: string): TaskAndState => ({
+            task: { name, id, completionState: false, plan: null },
+            state: TaskState.UNBLOCKED,
+        });
+
+        const opacityOf = (label: string) => {
+            const node = screen.getByText(label).closest(".react-flow__node") as HTMLElement;
+            return node.style.opacity;
+        };
+
+        test("renders nothing dimmed when no task is focused", async () => {
+            renderRoadmapGraph([task("a", "Task A"), task("b", "Task B")], [{ source: "a", target: "b" }]);
+
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            expect(opacityOf("Task A")).toBe("");
+            expect(opacityOf("Task B")).toBe("");
+        });
+
+        test("does not dim the graph when a focused task is not in the current plan", async () => {
+            // Drilling into a subplan leaves the selection pointing at a task from
+            // the plan above, which matches nothing here.
+            const { rerender } = renderRoadmapGraph([task("a", "Task A")], []);
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            rerender(
+                <ReactFlowProvider>
+                    <RoadmapGraph
+                        presentlyShownRoadmap={{
+                            tasksList: [task("sub1", "Subtask One"), task("sub2", "Subtask Two")],
+                            dependenciesList: [{ source: "sub1", target: "sub2" }],
+                            isSubplan: true,
+                            ancestors: [
+                                { id: GOAL_ID, name: "Goal" },
+                                { id: "a", name: "Task A" },
+                            ],
+                        }}
+                        handleSetGoal={setGoal}
+                        handleAddTask={addTask}
+                        handleRemoveTask={removeTask}
+                        handleConnect={connect}
+                        handleRemoveEdge={edgeRemove}
+                        handleUpdateEdge={edgeUpdate}
+                        handleToggleComplete={toggleComplete}
+                        handleChangeRoadmapContext={changeRoadmapContext}
+                        handleCreatePlanForTask={createPlanForTask}
+                        handleSelectTask={selectTask}
+                        showTaskDetails={toggleTaskDetails}
+                        showNextTasks={toggleNextTaskDrawer}
+                        handlePaste={handlePaste}
+                        handleUndo={handleUndo}
+                    />
+                </ReactFlowProvider>,
+            );
+
+            await waitFor(() => expect(screen.getByText("Subtask One")).toBeInTheDocument());
+
+            expect(opacityOf("Subtask One")).toBe("");
+            expect(opacityOf("Subtask Two")).toBe("");
+        });
+    });
+
     describe("subplan breadcrumb", () => {
         const ancestors = [
             { id: GOAL_ID, name: "Ship product" },
