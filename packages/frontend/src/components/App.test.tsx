@@ -215,6 +215,7 @@ describe("App", () => {
                 apiClient: mockedAPIClient,
                 applyState: mockSync.applyState,
                 setSelectedTask: mockRoadmap.setSelectedTask,
+                promptForText: expect.any(Function),
             });
         });
 

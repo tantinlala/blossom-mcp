@@ -1,14 +1,21 @@
 import { useCallback, useState } from "react";
 import { APIClient } from "../utils/APIClient";
 import { ProjectState, Task } from "@blossom/common";
+import { PromptForText } from "./useTextPrompt";
 
 interface UseProjectManagementDeps {
     apiClient: APIClient;
     applyState: (state: ProjectState) => void;
     setSelectedTask: React.Dispatch<React.SetStateAction<Task | null>>;
+    promptForText: PromptForText;
 }
 
-export function useProjectManagement({ apiClient, applyState, setSelectedTask }: UseProjectManagementDeps) {
+export function useProjectManagement({
+    apiClient,
+    applyState,
+    setSelectedTask,
+    promptForText,
+}: UseProjectManagementDeps) {
     const [existingProjects, setExistingProjects] = useState<string[]>([]);
     const [selectedProject, setSelectedProject] = useState("");
 
@@ -74,7 +81,12 @@ export function useProjectManagement({ apiClient, applyState, setSelectedTask }:
         if (selectedProject !== "") {
             defaultFilename = selectedProject;
         }
-        const filename = window.prompt("Enter a filename:", defaultFilename);
+        const filename = await promptForText({
+            title: "Save project",
+            label: "Filename",
+            defaultValue: defaultFilename,
+            confirmLabel: "Save",
+        });
         if (filename === null) {
             return;
         }
@@ -85,7 +97,7 @@ export function useProjectManagement({ apiClient, applyState, setSelectedTask }:
         } else {
             alert("Filename cannot be empty or whitespace only.");
         }
-    }, [selectedProject, saveProject]);
+    }, [selectedProject, saveProject, promptForText]);
 
     const onRestore = useCallback(async () => {
         if (selectedProject === "") {

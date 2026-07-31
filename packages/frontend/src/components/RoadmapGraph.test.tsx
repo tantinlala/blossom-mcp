@@ -52,6 +52,7 @@ const handleUndo = () => {
 const toggleInbox = () => {
     /* ... */
 };
+const promptForText = jest.fn(async () => "New Task" as string | null);
 
 const renderRoadmapGraph = (
     tasksList: TaskAndState[],
@@ -84,6 +85,7 @@ const renderRoadmapGraph = (
                 handlePaste={handlePaste}
                 handleUndo={handleUndo}
                 toggleInbox={toggleInbox}
+                promptForText={promptForText}
                 {...propOverrides}
             />
         </ReactFlowProvider>,
@@ -172,6 +174,7 @@ describe("RoadmapGraph", () => {
                         handlePaste={handlePaste}
                         handleUndo={handleUndo}
                         toggleInbox={toggleInbox}
+                        promptForText={promptForText}
                     />
                 </ReactFlowProvider>,
             );
@@ -338,21 +341,22 @@ describe("RoadmapGraph", () => {
             expect(screen.queryByText("Add Goal")).not.toBeInTheDocument();
         });
 
-        test("Add Goal prompts for a name and calls handleSetGoal", () => {
-            window.prompt = jest.fn().mockReturnValue("My new goal");
+        test("Add Goal asks for a name and calls handleSetGoal", async () => {
+            promptForText.mockResolvedValueOnce("My new goal");
 
             renderRoadmapGraph([], []);
             fireEvent.click(screen.getByText("Add Goal"));
 
-            expect(setGoal).toHaveBeenCalledWith("My new goal");
+            await waitFor(() => expect(setGoal).toHaveBeenCalledWith("My new goal"));
         });
 
-        test("Add Goal does nothing when the prompt is cancelled", () => {
-            window.prompt = jest.fn().mockReturnValue(null);
+        test("Add Goal does nothing when the prompt is cancelled", async () => {
+            promptForText.mockResolvedValueOnce(null);
 
             renderRoadmapGraph([], []);
             fireEvent.click(screen.getByText("Add Goal"));
 
+            await waitFor(() => expect(promptForText).toHaveBeenCalled());
             expect(setGoal).not.toHaveBeenCalled();
         });
     });
@@ -452,6 +456,7 @@ describe("RoadmapGraph", () => {
                     handlePaste={handlePaste}
                     handleUndo={handleUndo}
                     toggleInbox={toggleInbox}
+                    promptForText={promptForText}
                 />
             </ReactFlowProvider>,
         );
@@ -479,7 +484,7 @@ describe("RoadmapGraph", () => {
 
     test("positions node with handle at drop location when dropping an edge on pane", async () => {
         // Mock the screenToFlowPosition function that is called in onConnectEnd
-        global.window.prompt = jest.fn().mockReturnValue("New Task");
+        promptForText.mockResolvedValueOnce("New Task");
 
         // Set up a spy on the setNodes function
         const mockSetNodes = jest.fn();
@@ -542,6 +547,7 @@ describe("RoadmapGraph", () => {
                     handlePaste={handlePaste}
                     handleUndo={handleUndo}
                     toggleInbox={toggleInbox}
+                    promptForText={promptForText}
                 />
             </ReactFlowProvider>,
         );

@@ -31,6 +31,7 @@ import { Dependency, Task } from "@blossom/common";
 import { Roadmap } from "../types/roadmap";
 import TaskNode, { NODE_HALF_WIDTH, EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, DIMMED_OPACITY, Position } from "./TaskNode";
 import { useGraphHighlight } from "../hooks/useGraphHighlight";
+import { PromptForText } from "../hooks/useTextPrompt";
 import { palette } from "../theme/tokens";
 
 // Menu position constants
@@ -57,10 +58,8 @@ const CANVAS_TOOLBAR_SX = {
 } as const;
 
 // Prompt strings
-const TASK_NAME_PROMPT = "Task Name";
-const NEW_TASK_DEFAULT = "New Task";
-const GOAL_NAME_PROMPT = "Goal Name";
-const NEW_GOAL_DEFAULT = "New Goal";
+const TASK_PROMPT = { title: "Add a task", label: "Task name", defaultValue: "New Task", confirmLabel: "Add task" };
+const GOAL_PROMPT = { title: "Name your goal", label: "Goal", defaultValue: "New Goal", confirmLabel: "Create goal" };
 
 const NODE_TYPE_MAPPING = {
     customTaskNode: TaskNode,
@@ -110,6 +109,7 @@ interface RoadmapGraphProps {
     toggleInbox: () => void;
     handlePaste: (tasks: Task[], dependencies: Dependency[]) => void;
     handleUndo: () => void;
+    promptForText: PromptForText;
 }
 
 const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
@@ -129,6 +129,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     toggleInbox,
     handlePaste,
     handleUndo,
+    promptForText,
 }) => {
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -189,7 +190,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             }
 
             // Connection dropped on the pane
-            const taskLabel = window.prompt(TASK_NAME_PROMPT, NEW_TASK_DEFAULT);
+            const taskLabel = await promptForText(TASK_PROMPT);
             if (!taskLabel) {
                 return;
             }
@@ -225,7 +226,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 handleConnect(sourceId, targetId);
             }
         },
-        [screenToFlowPosition, handleAddTask, handleConnect],
+        [screenToFlowPosition, handleAddTask, handleConnect, promptForText],
     );
 
     const showDetails = useCallback(
@@ -354,20 +355,20 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     );
 
     const onCreateTask = useCallback(async (): Promise<Task | null> => {
-        const taskLabel = window.prompt(TASK_NAME_PROMPT, NEW_TASK_DEFAULT);
+        const taskLabel = await promptForText(TASK_PROMPT);
         if (!taskLabel) {
             return null;
         }
         return await handleAddTask(taskLabel);
-    }, [handleAddTask]);
+    }, [handleAddTask, promptForText]);
 
-    const onCreateGoal = useCallback(() => {
-        const goalLabel = window.prompt(GOAL_NAME_PROMPT, NEW_GOAL_DEFAULT);
+    const onCreateGoal = useCallback(async () => {
+        const goalLabel = await promptForText(GOAL_PROMPT);
         if (!goalLabel) {
             return;
         }
         handleSetGoal(goalLabel);
-    }, [handleSetGoal]);
+    }, [handleSetGoal, promptForText]);
 
     const onCrumbClick = useCallback(
         (taskId: string) => () => {

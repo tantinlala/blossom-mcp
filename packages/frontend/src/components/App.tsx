@@ -12,6 +12,8 @@ import { useInbox } from "../hooks/useInbox";
 import { useServerSync } from "../hooks/useServerSync";
 import { useProjectManagement } from "../hooks/useProjectManagement";
 import { useSidePanel } from "../hooks/useSidePanel";
+import { useTextPrompt } from "../hooks/useTextPrompt";
+import TextPromptDialog from "./TextPromptDialog";
 
 const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: PlanManager }) => {
     const sync = useServerSync({ apiClient, planManager });
@@ -23,10 +25,12 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
         setEditingPaused: sync.setEditingPaused,
     });
     const panel = useSidePanel();
+    const { promptForText, dialogProps } = useTextPrompt();
     const project = useProjectManagement({
         apiClient,
         applyState: sync.applyState,
         setSelectedTask: roadmap.setSelectedTask,
+        promptForText,
     });
 
     // useServerSync is created before the hooks that own React state, so the
@@ -74,6 +78,7 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
                             toggleInbox={panel.toggleInbox}
                             handlePaste={roadmap.handlePaste}
                             handleUndo={roadmap.handleUndo}
+                            promptForText={promptForText}
                         />
                     </ReactFlowProvider>
                 </div>
@@ -106,6 +111,8 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
                     addTaskToContextAndRemove={inbox.addTaskToContextAndRemove}
                 />
             </div>
+
+            <TextPromptDialog {...dialogProps} />
         </div>
     );
 };

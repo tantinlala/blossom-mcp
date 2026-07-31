@@ -16,12 +16,14 @@ describe("useProjectManagement", () => {
     let mockedAPIClient: jest.Mocked<APIClient>;
     let mockApplyState: jest.Mock;
     let mockSetSelectedTask: jest.Mock;
+    let mockPromptForText: jest.Mock;
 
     beforeEach(() => {
         jest.clearAllMocks();
         mockedAPIClient = new APIClient() as jest.Mocked<APIClient>;
         mockApplyState = jest.fn();
         mockSetSelectedTask = jest.fn();
+        mockPromptForText = jest.fn();
         window.alert = jest.fn();
     });
 
@@ -31,6 +33,7 @@ describe("useProjectManagement", () => {
                 apiClient: mockedAPIClient,
                 applyState: mockApplyState,
                 setSelectedTask: mockSetSelectedTask,
+                promptForText: mockPromptForText,
             }),
         );
 
@@ -169,7 +172,7 @@ describe("useProjectManagement", () => {
     });
 
     it("onSave prompts for a filename, saves, and stores the returned project list", async () => {
-        window.prompt = jest.fn().mockReturnValue("my-project");
+        mockPromptForText.mockResolvedValue("my-project");
         mockedAPIClient.saveProject.mockResolvedValue(["my-project"]);
 
         const { result } = render();
@@ -178,14 +181,14 @@ describe("useProjectManagement", () => {
             await result.current.onSave();
         });
 
-        expect(window.prompt).toHaveBeenCalledWith("Enter a filename:", "");
+        expect(mockPromptForText).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: "" }));
         expect(mockedAPIClient.saveProject).toHaveBeenCalledWith("my-project");
         expect(result.current.existingProjects).toEqual(["my-project"]);
         expect(result.current.selectedProject).toBe("my-project");
     });
 
     it("onSave uses the selected project as the default filename", async () => {
-        window.prompt = jest.fn().mockReturnValue("updated-name");
+        mockPromptForText.mockResolvedValue("updated-name");
         mockedAPIClient.saveProject.mockResolvedValue(["updated-name"]);
         mockedAPIClient.restoreProject.mockResolvedValue(makeState("existing-project"));
 
@@ -199,11 +202,11 @@ describe("useProjectManagement", () => {
             await result.current.onSave();
         });
 
-        expect(window.prompt).toHaveBeenCalledWith("Enter a filename:", "existing-project");
+        expect(mockPromptForText).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: "existing-project" }));
     });
 
     it("onSave does nothing when the prompt is cancelled", async () => {
-        window.prompt = jest.fn().mockReturnValue(null);
+        mockPromptForText.mockResolvedValue(null);
 
         const { result } = render();
 
@@ -215,7 +218,7 @@ describe("useProjectManagement", () => {
     });
 
     it("onSave alerts for a whitespace-only filename", async () => {
-        window.prompt = jest.fn().mockReturnValue("   ");
+        mockPromptForText.mockResolvedValue("   ");
 
         const { result } = render();
 
@@ -228,7 +231,7 @@ describe("useProjectManagement", () => {
     });
 
     it("onSave alerts when saving fails and keeps the existing project list", async () => {
-        window.prompt = jest.fn().mockReturnValue("my-project");
+        mockPromptForText.mockResolvedValue("my-project");
         mockedAPIClient.saveProject.mockResolvedValue(undefined);
 
         const { result } = render();
