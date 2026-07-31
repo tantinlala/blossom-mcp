@@ -2,39 +2,45 @@ import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import NextTasksDrawer from "./NextTasksDrawer";
-import { Task } from "@blossom/common";
+import { NextTask } from "../types/roadmap";
 
 describe("TaskDrawer Component", () => {
-    const mockTask1: Task = {
-        id: "task1",
-        name: "Task 1",
-        completionState: false,
-        plan: null,
+    const topLevelTask: NextTask = {
+        task: { id: "task1", name: "Task 1", completionState: false, plan: null },
+        path: [],
     };
 
-    const mockTask2: Task = {
-        id: "task2",
-        name: "Task 2",
-        completionState: true,
-        plan: null,
+    const nestedTask: NextTask = {
+        task: { id: "task2", name: "Task 2", completionState: true, plan: null },
+        path: [
+            { id: "p1", name: "Prepare for departure" },
+            { id: "p2", name: "Sort paperwork" },
+        ],
     };
 
-    const unblockedTasks: Task[] = [mockTask1, mockTask2];
+    const unblockedTasks: NextTask[] = [topLevelTask, nestedTask];
 
     const mockToggleComplete = jest.fn();
     const mockChangeContext = jest.fn();
     const mockOnClose = jest.fn();
 
-    it("renders properly when open", () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
+
+    const renderDrawer = (open = true, shownTasks = unblockedTasks) =>
         render(
             <NextTasksDrawer
-                open={true}
+                open={open}
                 onClose={mockOnClose}
-                shownTasks={unblockedTasks}
+                shownTasks={shownTasks}
                 toggleCompletion={mockToggleComplete}
                 changeContext={mockChangeContext}
             />,
         );
+
+    it("renders properly when open", () => {
+        renderDrawer();
 
         expect(screen.getByTestId("task-drawer")).toBeInTheDocument();
         expect(screen.getByText('"Next Task" List')).toBeInTheDocument();
@@ -43,107 +49,61 @@ describe("TaskDrawer Component", () => {
     });
 
     it("does not render when closed", () => {
-        render(
-            <NextTasksDrawer
-                open={false}
-                onClose={mockOnClose}
-                shownTasks={unblockedTasks}
-                toggleCompletion={mockToggleComplete}
-                changeContext={mockChangeContext}
-            />,
-        );
+        renderDrawer(false);
 
-        // Check that the drawer is not in the document when closed
         expect(screen.queryByText('"Next Task" List')).not.toBeInTheDocument();
     });
 
-    it("calls toggleCompleteByRef when checkbox is clicked", () => {
-        render(
-            <NextTasksDrawer
-                open={true}
-                onClose={mockOnClose}
-                shownTasks={unblockedTasks}
-                toggleCompletion={mockToggleComplete}
-                changeContext={mockChangeContext}
-            />,
-        );
+    it("shows the plan a nested task lives in", () => {
+        renderDrawer();
 
-        // Find the checkbox input inside the element with task-checkbox-task1 data-testid
-        const checkbox = screen.getByTestId("task-checkbox-task1").querySelector("input");
-
-        if (checkbox) {
-            fireEvent.click(checkbox);
-            expect(mockToggleComplete).toHaveBeenCalledWith(mockTask1.id);
-        }
+        expect(screen.getByText("Prepare for departure / Sort paperwork")).toBeInTheDocument();
     });
 
-    it("calls handleDoubleClick when task item is double-clicked", () => {
-        render(
-            <NextTasksDrawer
-                open={true}
-                onClose={mockOnClose}
-                shownTasks={unblockedTasks}
-                toggleCompletion={mockToggleComplete}
-                changeContext={mockChangeContext}
-            />,
-        );
+    it("shows no path for a task in the plan already on screen", () => {
+        renderDrawer(true, [topLevelTask]);
+
+        expect(screen.getByText("Task 1")).toBeInTheDocument();
+        expect(screen.queryByText("/")).not.toBeInTheDocument();
+    });
+
+    it("calls toggleCompletion when the checkbox is clicked", () => {
+        renderDrawer();
+
+        const checkbox = screen.getByTestId("task-checkbox-task1").querySelector("input");
+        fireEvent.click(checkbox as HTMLInputElement);
+
+        expect(mockToggleComplete).toHaveBeenCalledWith("task1");
+    });
+
+    it("navigates to the plan a task lives in", () => {
+        renderDrawer();
 
         fireEvent.click(screen.getByTestId("change-context-button-task1"));
-        expect(mockChangeContext).toHaveBeenCalledWith(mockTask1.id);
+
+        expect(mockChangeContext).toHaveBeenCalledWith("task1");
     });
 
     it("displays checkboxes with correct checked state", () => {
-        render(
-            <NextTasksDrawer
-                open={true}
-                onClose={mockOnClose}
-                shownTasks={unblockedTasks}
-                toggleCompletion={mockToggleComplete}
-                changeContext={mockChangeContext}
-            />,
-        );
+        renderDrawer();
 
-        // Find the actual checkbox input elements
-        const checkbox1 = screen.getByTestId("task-checkbox-task1").querySelector("input");
-        const checkbox2 = screen.getByTestId("task-checkbox-task2").querySelector("input");
+        const checkbox1 = screen.getByTestId("task-checkbox-task1").querySelector("input") as HTMLInputElement;
+        const checkbox2 = screen.getByTestId("task-checkbox-task2").querySelector("input") as HTMLInputElement;
 
-        if (checkbox1 && checkbox2) {
-            // @ts-ignore - We know these are checkbox inputs
-            expect(checkbox1.checked).toBe(false);
-            // @ts-ignore - We know these are checkbox inputs
-            expect(checkbox2.checked).toBe(true);
-        }
+        expect(checkbox1.checked).toBe(false);
+        expect(checkbox2.checked).toBe(true);
     });
 
-    it("calls onClose when drawer is closed", () => {
-        const { baseElement } = render(
-            <NextTasksDrawer
-                open={true}
-                onClose={mockOnClose}
-                shownTasks={unblockedTasks}
-                toggleCompletion={mockToggleComplete}
-                changeContext={mockChangeContext}
-            />,
-        );
+    it("calls onClose when the panel is dismissed", () => {
+        renderDrawer();
 
-        // Find backdrop and click it to close the drawer
-        const backdrop = baseElement.querySelector(".MuiBackdrop-root");
-        if (backdrop) {
-            fireEvent.click(backdrop);
-            expect(mockOnClose).toHaveBeenCalled();
-        }
+        fireEvent.click(screen.getByRole("button", { name: 'Close "Next Task" List' }));
+
+        expect(mockOnClose).toHaveBeenCalled();
     });
 
     it("renders empty list when no tasks are available", () => {
-        render(
-            <NextTasksDrawer
-                open={true}
-                onClose={mockOnClose}
-                shownTasks={[]}
-                toggleCompletion={mockToggleComplete}
-                changeContext={mockChangeContext}
-            />,
-        );
+        renderDrawer(true, []);
 
         expect(screen.getByText('"Next Task" List')).toBeInTheDocument();
         expect(screen.getByText("No tasks to show!")).toBeInTheDocument();

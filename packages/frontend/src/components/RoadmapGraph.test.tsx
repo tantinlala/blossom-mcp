@@ -294,6 +294,22 @@ describe("RoadmapGraph", () => {
     });
 
     describe("goal vs task creation button", () => {
+        test("explains what to do first when the canvas is empty", () => {
+            renderRoadmapGraph([], []);
+
+            expect(screen.getByTestId("canvas-empty-state")).toBeInTheDocument();
+        });
+
+        test("drops the empty state once a goal exists", async () => {
+            const goal: TaskAndState = {
+                task: { name: "My goal", id: GOAL_ID, completionState: false, plan: null },
+                state: TaskState.BLOCKED,
+            };
+            renderRoadmapGraph([goal], []);
+
+            await waitFor(() => expect(screen.queryByTestId("canvas-empty-state")).not.toBeInTheDocument());
+        });
+
         test("shows only Add Goal when no goal exists yet", () => {
             renderRoadmapGraph([], []);
 

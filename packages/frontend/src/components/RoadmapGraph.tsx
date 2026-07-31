@@ -21,6 +21,7 @@ import ChecklistIcon from "@mui/icons-material/Checklist";
 
 import ContextMenu from "./ContextMenu";
 import StatusLegend from "./StatusLegend";
+import CanvasEmptyState from "./CanvasEmptyState";
 import { getLayoutedElements } from "../utils/layouter";
 import { createTaskNode, createTaskNodeFromExisting, createEdge } from "../utils/taskNodeUtils";
 import { GOAL_ID, createGoalNode } from "../utils/goalNodeUtils";
@@ -670,7 +671,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                             Add Task
                         </Button>
                     ) : (
-                        <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={onCreateGoal}>
+                        <Button size="small" startIcon={<AddIcon />} onClick={onCreateGoal}>
                             Add Goal
                         </Button>
                     )}
@@ -721,6 +722,11 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             {goalNodeExists && (
                 <Panel position="bottom-center">
                     <StatusLegend />
+                </Panel>
+            )}
+            {!goalNodeExists && (
+                <Panel position="top-center" style={{ top: "35%" }}>
+                    <CanvasEmptyState onCreateGoal={onCreateGoal} />
                 </Panel>
             )}
             {menu && <ContextMenu onClick={onPaneClick} {...menu} />}

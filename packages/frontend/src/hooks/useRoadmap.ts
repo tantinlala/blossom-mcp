@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { PlanManager } from "../utils/PlanManager";
 import { APIClient } from "../utils/APIClient";
 import { Task, Dependency, ProjectState } from "@blossom/common";
-import { Roadmap } from "../types/roadmap";
+import { NextTask, Roadmap } from "../types/roadmap";
 
 const EMPTY_ROADMAP: Roadmap = {
     tasksList: [],
@@ -13,7 +13,7 @@ const EMPTY_ROADMAP: Roadmap = {
 
 export function useRoadmap(planManager: PlanManager, apiClient: APIClient, applyState: (state: ProjectState) => void) {
     const [presentlyShownRoadmap, setPresentlyShownRoadmap] = useState<Roadmap>(EMPTY_ROADMAP);
-    const [unblockedTasks, setUnblockedTasks] = useState<Task[]>([]);
+    const [unblockedTasks, setUnblockedTasks] = useState<NextTask[]>([]);
     const [selectedTask, setSelectedTask] = useState<Task | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);

@@ -9,7 +9,7 @@ import {
     hasCircularDependencies,
     updateTaskStates,
 } from "@blossom/common";
-import { Roadmap, RoadmapCrumb } from "../types/roadmap";
+import { NextTask, Roadmap, RoadmapCrumb } from "../types/roadmap";
 
 /**
  * Client-side view-model over the server-owned project state. The backend's
@@ -95,7 +95,12 @@ class PlanManager {
         return extendedTasks;
     };
 
-    private _findAllUnblockedTasksForSubplan(allUnblockedTasks: Task[], parent: Task) {
+    /**
+     * Collects the tasks that can be started now, descending into a task's
+     * subplan only when that task is itself unblocked. `path` accumulates the
+     * ancestors on the way down, so each result knows where it lives.
+     */
+    private _findAllUnblockedTasksForSubplan(results: NextTask[], parent: Task, path: RoadmapCrumb[]) {
         let extendedTasks = this.determineAllTaskStates("", parent.plan.tasksList, parent.plan.dependenciesList);
         let unblockedTasks = extendedTasks.filter((extendedTask) => extendedTask.state === TaskState.UNBLOCKED);
         unblockedTasks.forEach((unblockedTask) => {
@@ -104,11 +109,14 @@ class PlanManager {
             }
 
             if (unblockedTask.task.plan === null) {
-                allUnblockedTasks.push(unblockedTask.task);
+                results.push({ task: unblockedTask.task, path });
                 return;
             }
 
-            this._findAllUnblockedTasksForSubplan(allUnblockedTasks, unblockedTask.task);
+            this._findAllUnblockedTasksForSubplan(results, unblockedTask.task, [
+                ...path,
+                { id: unblockedTask.task.id, name: unblockedTask.task.name },
+            ]);
         });
     }
 
@@ -321,13 +329,13 @@ class PlanManager {
         ];
     }
 
-    get allUnblockedTasks(): Task[] {
-        let allUnblockedTasks: Task[] = [];
+    get allUnblockedTasks(): NextTask[] {
+        let allUnblockedTasks: NextTask[] = [];
         if (!this._fullProject.plan) {
             return allUnblockedTasks;
         }
         let dummyTask = { name: "", id: "Dummy", completionState: false, plan: this._fullProject.plan };
-        this._findAllUnblockedTasksForSubplan(allUnblockedTasks, dummyTask);
+        this._findAllUnblockedTasksForSubplan(allUnblockedTasks, dummyTask, []);
         return allUnblockedTasks;
     }
 }

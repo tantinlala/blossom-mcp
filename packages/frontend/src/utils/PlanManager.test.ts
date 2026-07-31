@@ -407,7 +407,7 @@ describe("PlanManager", () => {
                 .map((entry) => entry.task.id);
 
             expect(graphUnblocked).toEqual([]);
-            expect(planManager.allUnblockedTasks.map((task) => task.id)).toEqual(["t1"]);
+            expect(planManager.allUnblockedTasks.map((entry) => entry.task.id)).toEqual(["t1"]);
         });
 
         describe("ancestors", () => {
@@ -440,7 +440,7 @@ describe("PlanManager", () => {
 
             const unblocked = planManager.allUnblockedTasks;
 
-            expect(unblocked.map((task) => task.id)).toEqual(["t1"]);
+            expect(unblocked.map((entry) => entry.task.id)).toEqual(["t1"]);
         });
 
         it("includes a task that is not wired up to anything", () => {
@@ -448,7 +448,7 @@ describe("PlanManager", () => {
             goal.plan.tasksList.push(leaf("orphan"));
             planManager.applyServerState(goal);
 
-            expect(planManager.allUnblockedTasks.map((task) => task.id)).toContain("orphan");
+            expect(planManager.allUnblockedTasks.map((entry) => entry.task.id)).toContain("orphan");
         });
 
         it("recurses into the subplans of unblocked tasks", () => {
@@ -456,7 +456,34 @@ describe("PlanManager", () => {
 
             const unblocked = planManager.allUnblockedTasks;
 
-            expect(unblocked.map((task) => task.id)).toEqual(["s1"]);
+            expect(unblocked.map((entry) => entry.task.id)).toEqual(["s1"]);
+        });
+
+        it("leaves the path empty for a task in the top-level plan", () => {
+            planManager.applyServerState(makeGoal());
+
+            expect(planManager.allUnblockedTasks[0].path).toEqual([]);
+        });
+
+        it("reports the owning task for a nested one, so it can be found", () => {
+            planManager.applyServerState(makeGoal({ t1Completed: true }));
+
+            expect(planManager.allUnblockedTasks[0].path).toEqual([{ id: "t2", name: "Task t2" }]);
+        });
+
+        it("reports every level of the path for a deeply nested task", () => {
+            const goal = makeNestedGoal();
+            // Unblock the branch so the walk descends all the way to `deep`
+            goal.plan.tasksList.find((task) => task.id === "d1").completionState = true;
+            planManager.applyServerState(goal);
+
+            const unblocked = planManager.allUnblockedTasks;
+
+            expect(unblocked.map((entry) => entry.task.id)).toEqual(["deep"]);
+            expect(unblocked[0].path).toEqual([
+                { id: "mid", name: "Task mid" },
+                { id: "d2", name: "Task d2" },
+            ]);
         });
     });
 });
