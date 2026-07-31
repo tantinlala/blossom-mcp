@@ -95,9 +95,23 @@ export function useProjectManagement({ apiClient, applyState, setSelectedTask }:
         }
     }, [selectedProject, restoreProject, setupNewProject]);
 
-    const handleProjectChange = useCallback((event: React.ChangeEvent<{ value: unknown }>) => {
-        setSelectedProject(event.target.value as string);
-    }, []);
+    /** Picking a project loads it: the dropdown reads as a project switcher, so it behaves like one. */
+    const handleProjectChange = useCallback(
+        async (event: React.ChangeEvent<{ value: unknown }>) => {
+            const filename = event.target.value as string;
+            if (filename === selectedProject) {
+                return;
+            }
+
+            setSelectedProject(filename);
+            if (filename === "") {
+                await setupNewProject();
+                return;
+            }
+            await restoreProject(filename);
+        },
+        [selectedProject, restoreProject, setupNewProject],
+    );
 
     return {
         existingProjects,

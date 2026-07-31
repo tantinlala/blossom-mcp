@@ -2,6 +2,7 @@ import { useCallback, useRef, useState, useEffect, useMemo, KeyboardEvent } from
 import {
     ReactFlow,
     Background,
+    Controls,
     useNodesState,
     useEdgesState,
     Panel,
@@ -12,6 +13,7 @@ import {
     useNodesInitialized,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Breadcrumbs, Link, Typography } from "@material-ui/core";
 
 import ContextMenu from "./ContextMenu";
 import { getLayoutedElements } from "../utils/layouter";
@@ -24,6 +26,14 @@ import TaskNode, { NODE_HALF_WIDTH, EDGE_TYPE, Position } from "./TaskNode";
 
 // Menu position constants
 const MENU_OFFSET_THRESHOLD = 200;
+
+// Leaves a margin around the graph when fitting it into the viewport
+const FIT_VIEW_PADDING = 0.15;
+
+const UNNAMED_GOAL_LABEL = "Goal";
+
+// Reserved even when there is no breadcrumb, so the toolbar below never moves
+const BREADCRUMB_ROW_HEIGHT = 20;
 
 // Prompt strings
 const TASK_NAME_PROMPT = "Task Name";
@@ -75,7 +85,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     const [selectedNodes, setSelectedNodes] = useState([]);
     const [menu, setMenu] = useState(null as any);
     const ref = useRef(null);
-    const { getNodes, getEdges, screenToFlowPosition } = useReactFlow();
+    const pendingFitRef = useRef(false);
+    const { getNodes, getEdges, screenToFlowPosition, fitView } = useReactFlow();
     const nodesInitialized = useNodesInitialized();
 
     // Go through presently shown plan update the nodes and edges
@@ -179,10 +190,15 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             // Prevent native context menu from showing
             event.preventDefault();
 
+            // The goal node is the plan itself - it can neither be nested nor removed
             let createPlanForTaskCallback = null;
+            let deleteCallback = null;
             if (node.id !== GOAL_ID) {
                 createPlanForTaskCallback = handleCreatePlanForTask;
+                deleteCallback = handleRemoveTask;
             }
+
+            const taskEntry = presentlyShownRoadmap.tasksList.find((entry) => entry.task.id === node.id);
 
             let currentRef: any = ref.current;
             const pane = currentRef.getBoundingClientRect();
@@ -193,7 +209,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
             setMenu({
                 createPlanForTaskCallback,
+                deleteCallback,
                 showDetailsCallback: showDetails,
+                name: taskEntry?.task.name ?? UNNAMED_GOAL_LABEL,
                 id: node.id,
                 top: y < pane.height - MENU_OFFSET_THRESHOLD ? y : undefined,
                 left: x < pane.width - MENU_OFFSET_THRESHOLD ? x : undefined,
@@ -201,11 +219,18 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 bottom: y >= pane.height - MENU_OFFSET_THRESHOLD ? pane.height - y : undefined,
             });
         },
-        [handleCreatePlanForTask, showDetails],
+        [handleCreatePlanForTask, handleRemoveTask, presentlyShownRoadmap, showDetails],
     );
 
     // Close the context menu if it's open whenever the window is clicked.
     const onPaneClick = useCallback(() => setMenu(null), [setMenu]);
+
+    // The menu is anchored to a node, so leaving it up while a panel opens over
+    // the canvas strands it on screen.
+    const onToggleNextTasks = useCallback(() => {
+        setMenu(null);
+        toggleNextTaskDrawer();
+    }, [toggleNextTaskDrawer]);
 
     const onReconnect = useCallback(
         (oldConnection, newConnection) => {
@@ -229,10 +254,24 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     useEffect(() => {
         // Only run this effect when nodes are initialized
-        if (nodesInitialized) {
-            onLayout();
+        if (!nodesInitialized) {
+            return;
         }
+        onLayout();
+        pendingFitRef.current = true;
     }, [nodesInitialized, onLayout]);
+
+    // Laying out moves every node, so the viewport has to be refitted or the graph
+    // ends up parked off-screen. This has to wait for the laid-out positions to
+    // reach ReactFlow's store, which happens in its effects - and those run before
+    // ours, so reading `nodes` here means the store is already in sync.
+    useEffect(() => {
+        if (!pendingFitRef.current || nodes.length === 0) {
+            return;
+        }
+        pendingFitRef.current = false;
+        fitView({ padding: FIT_VIEW_PADDING });
+    }, [nodes, fitView]);
 
     const onNodeClick = useCallback(
         (event, node: Node) => {
@@ -268,9 +307,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         handleSetGoal(goalLabel);
     }, [handleSetGoal]);
 
-    const onBack = useCallback(() => {
-        handleChangeRoadmapContext(GOAL_ID);
-    }, [handleChangeRoadmapContext]);
+    const onCrumbClick = useCallback(
+        (taskId: string) => () => {
+            handleChangeRoadmapContext(taskId);
+        },
+        [handleChangeRoadmapContext],
+    );
 
     // Find connecting edge between two selected nodes
     const findConnectingEdge = useCallback(
@@ -495,6 +537,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             onNodeClick={onNodeClick}
             onNodeDoubleClick={onNodeDoubleClick}
             deleteKeyCode={null}
+            // Double-click is the drill-into-subplan gesture, so the default
+            // double-click-to-zoom would fire at the same time and fight it
+            zoomOnDoubleClick={false}
             connectionLineType={EDGE_TYPE}
             nodeTypes={NODE_TYPE_MAPPING}
             nodeOrigin={[0.5, 0.5]}
@@ -503,17 +548,53 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             fitView
         >
             <Background />
+            <Controls />
             <Panel position="top-left">
-                {goalNodeExists ? (
-                    <button onClick={onCreateTask}>Add Task</button>
-                ) : (
-                    <button onClick={onCreateGoal}>Add Goal</button>
-                )}
-                {goalNodeExists && <button onClick={() => onLayout()}>Autoformat</button>}
-                {presentlyShownRoadmap.isSubplan && <button onClick={onBack}>Back To Top Level</button>}
+                {/* Fixed height, always rendered: letting the row appear and disappear
+                    with the nesting level would shift the toolbar under it. */}
+                <div
+                    style={{
+                        height: BREADCRUMB_ROW_HEIGHT,
+                        display: "flex",
+                        alignItems: "center",
+                        marginBottom: 4,
+                    }}
+                >
+                    {presentlyShownRoadmap.ancestors.length > 0 && (
+                        <Breadcrumbs aria-label="plan location" data-testid="plan-breadcrumbs" style={{ fontSize: 13 }}>
+                            {presentlyShownRoadmap.ancestors.map((crumb, index) => {
+                                const label = crumb.name || UNNAMED_GOAL_LABEL;
+                                const isCurrent = index === presentlyShownRoadmap.ancestors.length - 1;
+                                return isCurrent ? (
+                                    <Typography key={crumb.id} color="textPrimary" style={{ fontSize: "inherit" }}>
+                                        {label}
+                                    </Typography>
+                                ) : (
+                                    <Link
+                                        key={crumb.id}
+                                        component="button"
+                                        color="inherit"
+                                        onClick={onCrumbClick(crumb.id)}
+                                        style={{ fontSize: "inherit" }}
+                                    >
+                                        {label}
+                                    </Link>
+                                );
+                            })}
+                        </Breadcrumbs>
+                    )}
+                </div>
+                <div>
+                    {goalNodeExists ? (
+                        <button onClick={onCreateTask}>Add Task</button>
+                    ) : (
+                        <button onClick={onCreateGoal}>Add Goal</button>
+                    )}
+                    {goalNodeExists && <button onClick={() => onLayout()}>Autoformat</button>}
+                </div>
             </Panel>
             <Panel position="top-right">
-                <button onClick={toggleNextTaskDrawer}>Next Tasks List</button>
+                <button onClick={onToggleNextTasks}>Next Tasks List</button>
             </Panel>
             {menu && <ContextMenu onClick={onPaneClick} {...menu} />}
         </ReactFlow>

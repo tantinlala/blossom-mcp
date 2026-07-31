@@ -6,6 +6,7 @@ import { GOAL_ID } from "../utils/goalNodeUtils";
 import { Dependency, Task } from "@blossom/common";
 import { TASK_COMPLETED_COLOR, TASK_BLOCKED_COLOR, TASK_UNBLOCKED_COLOR, GOAL_COLOR } from "../utils/colors";
 import { TaskAndState, TaskState } from "../types/extendedTasks";
+import { Roadmap } from "../types/roadmap";
 
 // Fake callbacks
 const setGoal = jest.fn();
@@ -49,11 +50,22 @@ const handleUndo = () => {
     /* ... */
 };
 
-const renderRoadmapGraph = (tasksList: TaskAndState[], dependenciesList: Dependency[]) => {
+const renderRoadmapGraph = (
+    tasksList: TaskAndState[],
+    dependenciesList: Dependency[],
+    roadmapOverrides: Partial<Roadmap> = {},
+    propOverrides: Record<string, any> = {},
+) => {
     return render(
         <ReactFlowProvider>
             <RoadmapGraph
-                presentlyShownRoadmap={{ tasksList, dependenciesList, isSubplan: false }}
+                presentlyShownRoadmap={{
+                    tasksList,
+                    dependenciesList,
+                    isSubplan: false,
+                    ancestors: [],
+                    ...roadmapOverrides,
+                }}
                 handleSetGoal={setGoal}
                 handleAddTask={addTask}
                 handleRemoveTask={removeTask}
@@ -68,6 +80,7 @@ const renderRoadmapGraph = (tasksList: TaskAndState[], dependenciesList: Depende
                 showNextTasks={toggleNextTaskDrawer}
                 handlePaste={handlePaste}
                 handleUndo={handleUndo}
+                {...propOverrides}
             />
         </ReactFlowProvider>,
     );
@@ -88,6 +101,63 @@ describe("RoadmapGraph", () => {
         const dependenciesList: Dependency[] = [];
 
         renderRoadmapGraph(tasksList, dependenciesList);
+    });
+
+    describe("subplan breadcrumb", () => {
+        const ancestors = [
+            { id: GOAL_ID, name: "Ship product" },
+            { id: "t2", name: "Prepare for departure" },
+        ];
+
+        test("is hidden before a goal exists", () => {
+            renderRoadmapGraph([], []);
+
+            expect(screen.queryByTestId("plan-breadcrumbs")).not.toBeInTheDocument();
+        });
+
+        test("shows the goal on its own at the top level", () => {
+            renderRoadmapGraph([], [], { isSubplan: false, ancestors: [ancestors[0]] });
+
+            expect(screen.getByTestId("plan-breadcrumbs")).toBeInTheDocument();
+            expect(screen.getByText("Ship product")).toBeInTheDocument();
+        });
+
+        test("keeps the toolbar in place whether or not a breadcrumb is shown", () => {
+            const { unmount } = renderRoadmapGraph([], [], { isSubplan: false, ancestors: [ancestors[0]] });
+            const atRoot = screen.getByText("Add Goal").getBoundingClientRect().top;
+            unmount();
+
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors });
+            const inSubplan = screen.getByText("Add Goal").getBoundingClientRect().top;
+
+            expect(inSubplan).toBe(atRoot);
+        });
+
+        test("shows every ancestor when viewing a subplan", () => {
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors });
+
+            expect(screen.getByTestId("plan-breadcrumbs")).toBeInTheDocument();
+            expect(screen.getByText("Ship product")).toBeInTheDocument();
+            expect(screen.getByText("Prepare for departure")).toBeInTheDocument();
+        });
+
+        test("navigates to an ancestor when its crumb is clicked", () => {
+            const changeContext = jest.fn();
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors }, { handleChangeRoadmapContext: changeContext });
+
+            fireEvent.click(screen.getByText("Ship product"));
+
+            expect(changeContext).toHaveBeenCalledWith(GOAL_ID);
+        });
+
+        test("renders the current plan as plain text rather than a link", () => {
+            const changeContext = jest.fn();
+            renderRoadmapGraph([], [], { isSubplan: true, ancestors }, { handleChangeRoadmapContext: changeContext });
+
+            fireEvent.click(screen.getByText("Prepare for departure"));
+
+            expect(changeContext).not.toHaveBeenCalled();
+        });
     });
 
     describe("node context menu positioning", () => {
@@ -269,6 +339,7 @@ describe("RoadmapGraph", () => {
                         tasksList: newTasksList,
                         dependenciesList: newDependenciesList,
                         isSubplan: false,
+                        ancestors: [],
                     }}
                     handleSetGoal={setGoal}
                     handleAddTask={addTask}
@@ -352,7 +423,12 @@ describe("RoadmapGraph", () => {
         render(
             <ReactFlowProvider>
                 <RoadmapGraph
-                    presentlyShownRoadmap={{ tasksList: testTasksList, dependenciesList: [], isSubplan: false }}
+                    presentlyShownRoadmap={{
+                        tasksList: testTasksList,
+                        dependenciesList: [],
+                        isSubplan: false,
+                        ancestors: [],
+                    }}
                     handleAddTask={mockAddTask}
                     handleConnect={mockHandleConnect}
                     // Include required props with mock functions

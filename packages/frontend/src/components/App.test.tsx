@@ -60,7 +60,12 @@ describe("App", () => {
 
     function createMockRoadmap() {
         return {
-            presentlyShownRoadmap: { tasksList: [], dependenciesList: [], isSubplan: false },
+            presentlyShownRoadmap: {
+                tasksList: [],
+                dependenciesList: [],
+                isSubplan: false,
+                ancestors: [],
+            },
             unblockedTasks: [],
             selectedTask: null as any,
             drawerOpen: false,

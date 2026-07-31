@@ -1,7 +1,8 @@
 import React from "react";
-import { Drawer, List, ListItem, ListItemText, Typography, Checkbox, IconButton } from "@material-ui/core";
+import { List, ListItem, ListItemText, Typography, Checkbox, IconButton } from "@material-ui/core";
 import { Task } from "@blossom/common";
 import ArrowForwardIcon from "@material-ui/icons/ArrowForward";
+import SidePanel from "./SidePanel";
 
 interface NextTaskDrawerProps {
     open: boolean;
@@ -19,16 +20,7 @@ const NextTasksDrawer: React.FC<NextTaskDrawerProps> = ({
     changeContext,
 }) => {
     return (
-        <Drawer
-            anchor="right"
-            open={open}
-            onClose={onClose}
-            PaperProps={{ style: { width: "30%" } }}
-            data-testid="task-drawer"
-        >
-            <div style={{ padding: "16px" }}>
-                <Typography variant="h6">"Next Task" List</Typography>
-            </div>
+        <SidePanel open={open} onClose={onClose} title={'"Next Task" List'} testId="task-drawer">
             <List>
                 {shownTasks.length === 0 && (
                     <Typography variant="body1" style={{ padding: "16px" }}>
@@ -52,7 +44,7 @@ const NextTasksDrawer: React.FC<NextTaskDrawerProps> = ({
                     </ListItem>
                 ))}
             </List>
-        </Drawer>
+        </SidePanel>
     );
 };
 

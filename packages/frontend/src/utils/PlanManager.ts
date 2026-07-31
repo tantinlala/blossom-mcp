@@ -9,7 +9,7 @@ import {
     hasCircularDependencies,
     updateTaskStates,
 } from "@blossom/common";
-import { Roadmap } from "../types/roadmap";
+import { Roadmap, RoadmapCrumb } from "../types/roadmap";
 
 /**
  * Client-side view-model over the server-owned project state. The backend's
@@ -115,6 +115,69 @@ class PlanManager {
         return null; // Task was not found in this branch
     }
 
+    /**
+     * Walks down from `plan` to `taskId`, collecting every task passed through
+     * (inclusive of the target). Returns null if the id is not in this branch.
+     */
+    private _findPathToTask(taskId: string, plan: Plan, pathSoFar: Task[]): Task[] | null {
+        for (let task of plan.tasksList) {
+            const path = [...pathSoFar, task];
+            if (task.id === taskId) {
+                return path;
+            }
+            if (task.plan) {
+                let foundPath = this._findPathToTask(taskId, task.plan, path);
+                if (foundPath) {
+                    return foundPath;
+                }
+            }
+        }
+        return null; // Task was not found in this branch
+    }
+
+    /**
+     * The chain of tasks owning the present context, outermost first. Empty at
+     * the root; the last entry is the present context itself.
+     */
+    private get _presentContextPath(): Task[] {
+        if (this._presentContext === this._fullProject || !this._fullProject.plan) {
+            return [];
+        }
+        return this._findPathToTask(this._presentContext.id, this._fullProject.plan, []) ?? [];
+    }
+
+    /**
+     * Nothing inside a plan can start before the task owning that plan does, but
+     * determineAllTaskStates only ever sees one plan at a time and so cannot know
+     * that. Walk the drill-down path looking for an ancestor that is blocked
+     * within its own parent's plan.
+     */
+    private _hasBlockedAncestor(path: Task[]): boolean {
+        let parentPlan: Plan = this._fullProject.plan;
+        let parentName: string = this._fullProject.name;
+
+        for (let task of path) {
+            const extendedTasks = this.determineAllTaskStates(
+                parentName,
+                parentPlan.tasksList,
+                parentPlan.dependenciesList,
+            );
+            const entry = extendedTasks.find((extendedTask) => extendedTask.task.id === task.id);
+
+            if (entry && entry.state === TaskState.BLOCKED) {
+                return true;
+            }
+
+            if (!task.plan) {
+                break;
+            }
+            parentPlan = task.plan;
+            parentName = task.name;
+        }
+
+        return false;
+    }
+
     private _findParentTaskOfId(taskId: string, plan: Plan): Task | null {
         for (let task of plan.tasksList) {
             if (task.plan) {
@@ -205,7 +268,7 @@ class PlanManager {
 
     get presentContextRoadmap(): Roadmap {
         if (!this._presentContext.plan) {
-            return { isSubplan: false, tasksList: [], dependenciesList: [] };
+            return { isSubplan: false, tasksList: [], dependenciesList: [], ancestors: [] };
         }
 
         let tasksList: Task[] = this._presentContext.plan.tasksList;
@@ -215,7 +278,35 @@ class PlanManager {
             tasksList,
             dependenciesList,
         );
-        return { isSubplan: this._presentContext !== this._fullProject, tasksList: extendedTasks, dependenciesList };
+
+        const path = this._presentContextPath;
+
+        // A blocked ancestor takes away exactly the tasks this plan would
+        // otherwise offer as next up. Anything already blocked by an in-plan
+        // dependency, already completed, or part of a dependency cycle is
+        // unaffected.
+        if (path.length > 0 && this._hasBlockedAncestor(path)) {
+            extendedTasks
+                .filter((extendedTask) => extendedTask.task.id !== GOAL_ID)
+                .filter((extendedTask) => extendedTask.state === TaskState.UNBLOCKED)
+                .forEach((extendedTask) => {
+                    extendedTask.state = TaskState.BLOCKED;
+                });
+        }
+
+        return {
+            isSubplan: this._presentContext !== this._fullProject,
+            tasksList: extendedTasks,
+            dependenciesList,
+            ancestors: this._buildCrumbs(path),
+        };
+    }
+
+    private _buildCrumbs(path: Task[]): RoadmapCrumb[] {
+        return [
+            { id: GOAL_ID, name: this._fullProject.name },
+            ...path.map((task) => ({ id: task.id, name: task.name })),
+        ];
     }
 
     get allUnblockedTasks(): Task[] {

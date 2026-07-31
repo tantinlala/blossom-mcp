@@ -49,6 +49,7 @@ describe("useRoadmap", () => {
             tasksList: [],
             dependenciesList: [],
             isSubplan: false,
+            ancestors: [],
         });
         expect(result.current.unblockedTasks).toEqual([]);
         expect(result.current.selectedTask).toBeNull();

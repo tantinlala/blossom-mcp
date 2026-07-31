@@ -43,21 +43,6 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
 
     return (
         <div style={{ height: "100vh", width: "100vw", display: "flex", flexDirection: "column" }}>
-            <NextTasksDrawer
-                open={roadmap.drawerOpen}
-                onClose={roadmap.toggleNextTasksDrawer(false)}
-                shownTasks={roadmap.unblockedTasks}
-                toggleCompletion={roadmap.toggleComplete}
-                changeContext={roadmap.changeContextToParent}
-            />
-
-            <TaskDetailsDrawer
-                open={roadmap.detailsDrawerOpen}
-                onClose={roadmap.toggleDetailsDrawer(false)}
-                selectedTask={roadmap.selectedTask}
-                updateTaskDetails={roadmap.updateTaskDetails}
-            />
-
             <Header
                 existingProjects={project.existingProjects}
                 selectedProject={project.selectedProject}
@@ -67,7 +52,8 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
             />
 
             <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden" }}>
-                <div data-testid="roadmapGraph" style={{ flex: 3, height: "100%", overflow: "auto" }}>
+                {/* minWidth 0 lets the canvas give up width to the docked panels */}
+                <div data-testid="roadmapGraph" style={{ flex: 3, minWidth: 0, height: "100%", overflow: "auto" }}>
                     <ReactFlowProvider>
                         <RoadmapGraph
                             presentlyShownRoadmap={roadmap.presentlyShownRoadmap}
@@ -88,6 +74,22 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
                         />
                     </ReactFlowProvider>
                 </div>
+
+                {/* Docked beside the graph so it stays visible while these are open */}
+                <NextTasksDrawer
+                    open={roadmap.drawerOpen}
+                    onClose={roadmap.toggleNextTasksDrawer(false)}
+                    shownTasks={roadmap.unblockedTasks}
+                    toggleCompletion={roadmap.toggleComplete}
+                    changeContext={roadmap.changeContextToParent}
+                />
+
+                <TaskDetailsDrawer
+                    open={roadmap.detailsDrawerOpen}
+                    onClose={roadmap.toggleDetailsDrawer(false)}
+                    selectedTask={roadmap.selectedTask}
+                    updateTaskDetails={roadmap.updateTaskDetails}
+                />
 
                 <div style={{ flex: 1, maxWidth: "400px", height: "100%", overflow: "hidden" }}>
                     <InboxPanel

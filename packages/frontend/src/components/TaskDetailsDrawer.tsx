@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Drawer } from "@material-ui/core";
 import { Task } from "@blossom/common";
 import TaskDetailsForm from "./TaskDetailsForm";
+import SidePanel from "./SidePanel";
 
 interface TaskDetailsDrawerProps {
     open: boolean;
@@ -55,12 +55,11 @@ const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({ open, onClose, se
     const hasSubplan = selectedTask.plan !== null;
 
     return (
-        <Drawer
-            anchor="right"
+        <SidePanel
             open={open && selectedTask !== null}
             onClose={onClose}
-            PaperProps={{ style: { width: "30%", padding: "16px" } }}
-            data-testid="task-details-drawer"
+            title="Task Details"
+            testId="task-details-drawer"
         >
             <TaskDetailsForm
                 name={name}
@@ -73,7 +72,7 @@ const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({ open, onClose, se
                 onCompletionStateChange={handleCompletionStateChange}
                 onSave={handleSave}
             />
-        </Drawer>
+        </SidePanel>
     );
 };
 

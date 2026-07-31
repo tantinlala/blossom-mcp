@@ -52,8 +52,9 @@ const Header: React.FC<HeaderProps> = ({
                 <Button variant="contained" onClick={onSave} style={{ marginRight: "8px" }}>
                     Save
                 </Button>
-                <Button variant="contained" onClick={onRestore}>
-                    Open
+                {/* Selecting a project loads it; this re-reads it from disk, discarding edits */}
+                <Button variant="contained" onClick={onRestore} title="Reload the saved copy, discarding changes">
+                    Reload
                 </Button>
             </Box>
         </Paper>

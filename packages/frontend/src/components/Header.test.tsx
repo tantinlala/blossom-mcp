@@ -22,7 +22,7 @@ describe("Header component", () => {
 
         // Check if buttons are rendered
         expect(screen.getByRole("button", { name: /save/i })).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: /open/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /reload/i })).toBeInTheDocument();
     });
 
     it("calls onSave when Save button is clicked", () => {
@@ -31,14 +31,14 @@ describe("Header component", () => {
         expect(mockProps.onSave).toHaveBeenCalled();
     });
 
-    it("calls onRestore when Open button is clicked", () => {
+    it("calls onRestore when Reload button is clicked", () => {
         render(<Header {...mockProps} />);
-        fireEvent.click(screen.getByRole("button", { name: /open/i }));
+        fireEvent.click(screen.getByRole("button", { name: /reload/i }));
         expect(mockProps.onRestore).toHaveBeenCalled();
     });
 
-    it("enables Open button when no project is selected", () => {
+    it("enables Reload button when no project is selected", () => {
         render(<Header {...mockProps} selectedProject="" />);
-        expect(screen.getByRole("button", { name: /open/i })).toBeEnabled();
+        expect(screen.getByRole("button", { name: /reload/i })).toBeEnabled();
     });
 });

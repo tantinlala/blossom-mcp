@@ -8,6 +8,7 @@ const EMPTY_ROADMAP: Roadmap = {
     tasksList: [],
     dependenciesList: [],
     isSubplan: false,
+    ancestors: [],
 };
 
 export function useRoadmap(planManager: PlanManager, apiClient: APIClient, applyState: (state: ProjectState) => void) {

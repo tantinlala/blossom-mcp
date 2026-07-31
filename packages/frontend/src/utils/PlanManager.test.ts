@@ -37,6 +37,42 @@ const makeGoal = (options: { t1Completed?: boolean; t2Name?: string } = {}): Tas
     },
 });
 
+// Goal tree nested two levels deep:
+//   d1 -> mid -> Goal, where mid contains d2, and d2 contains deep
+const makeNestedGoal = (): Task => ({
+    name: "Ship product",
+    id: GOAL_ID,
+    completionState: false,
+    plan: {
+        tasksList: [
+            leaf("d1"),
+            {
+                name: "Task mid",
+                id: "mid",
+                completionState: false,
+                plan: {
+                    tasksList: [
+                        {
+                            name: "Task d2",
+                            id: "d2",
+                            completionState: false,
+                            plan: {
+                                tasksList: [leaf("deep")],
+                                dependenciesList: [{ source: "deep", target: GOAL_ID }],
+                            },
+                        },
+                    ],
+                    dependenciesList: [{ source: "d2", target: GOAL_ID }],
+                },
+            },
+        ],
+        dependenciesList: [
+            { source: "d1", target: "mid" },
+            { source: "mid", target: GOAL_ID },
+        ],
+    },
+});
+
 describe("PlanManager", () => {
     let planManager: PlanManager;
 
@@ -223,6 +259,7 @@ describe("PlanManager", () => {
                 isSubplan: false,
                 tasksList: [],
                 dependenciesList: [],
+                ancestors: [],
             });
         });
 
@@ -263,13 +300,109 @@ describe("PlanManager", () => {
             planManager.applyServerState(makeGoal());
             planManager.changeContextToWithinTask("t2");
 
+            expect(planManager.presentContextRoadmap.isSubplan).toBe(true);
+        });
+
+        it("computes subplan task states normally when the owning task is unblocked", () => {
+            planManager.applyServerState(makeGoal({ t1Completed: true }));
+            planManager.changeContextToWithinTask("t2");
+
             const roadmap = planManager.presentContextRoadmap;
 
-            expect(roadmap.isSubplan).toBe(true);
             const s1 = roadmap.tasksList.find((entry) => entry.task.id === "s1");
             const s2 = roadmap.tasksList.find((entry) => entry.task.id === "s2");
             expect(s1?.state).toBe(TaskState.UNBLOCKED);
             expect(s2?.state).toBe(TaskState.BLOCKED);
+        });
+
+        it("blocks every task in a subplan whose owning task is blocked", () => {
+            // t2 is blocked by t1, so nothing inside t2's plan can be started yet
+            planManager.applyServerState(makeGoal());
+            planManager.changeContextToWithinTask("t2");
+
+            const roadmap = planManager.presentContextRoadmap;
+
+            const s1 = roadmap.tasksList.find((entry) => entry.task.id === "s1");
+            const s2 = roadmap.tasksList.find((entry) => entry.task.id === "s2");
+            expect(s1?.state).toBe(TaskState.BLOCKED);
+            expect(s2?.state).toBe(TaskState.BLOCKED);
+        });
+
+        it("keeps completed tasks completed inside a blocked subplan", () => {
+            const goal = makeGoal();
+            const t2 = goal.plan.tasksList.find((task) => task.id === "t2");
+            t2.plan.tasksList = [leaf("s1", true), leaf("s2")];
+            planManager.applyServerState(goal);
+            planManager.changeContextToWithinTask("t2");
+
+            const roadmap = planManager.presentContextRoadmap;
+
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "s1")?.state).toBe(TaskState.COMPLETED);
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "s2")?.state).toBe(TaskState.BLOCKED);
+        });
+
+        it("leaves an already-finished subplan alone when its owner is blocked", () => {
+            const goal = makeGoal();
+            const t2 = goal.plan.tasksList.find((task) => task.id === "t2");
+            t2.plan.tasksList = [leaf("s1", true), leaf("s2", true)];
+            planManager.applyServerState(goal);
+            planManager.changeContextToWithinTask("t2");
+
+            const roadmap = planManager.presentContextRoadmap;
+
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "s1")?.state).toBe(TaskState.COMPLETED);
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "s2")?.state).toBe(TaskState.COMPLETED);
+        });
+
+        it("handles an empty subplan whose owner is blocked", () => {
+            const goal = makeGoal();
+            const t2 = goal.plan.tasksList.find((task) => task.id === "t2");
+            t2.plan = { tasksList: [], dependenciesList: [] };
+            planManager.applyServerState(goal);
+            planManager.changeContextToWithinTask("t2");
+
+            expect(planManager.presentContextRoadmap.tasksList.map((entry) => entry.task.id)).toEqual([GOAL_ID]);
+        });
+
+        it("inherits blocking from an ancestor more than one level up", () => {
+            planManager.applyServerState(makeNestedGoal());
+            planManager.changeContextToWithinTask("d2");
+
+            const roadmap = planManager.presentContextRoadmap;
+
+            // d1 blocks mid, so mid's subplan and everything below it is blocked
+            expect(roadmap.tasksList.find((entry) => entry.task.id === "deep")?.state).toBe(TaskState.BLOCKED);
+        });
+
+        it("agrees with allUnblockedTasks about what can be started", () => {
+            planManager.applyServerState(makeGoal());
+            planManager.changeContextToWithinTask("t2");
+
+            const graphUnblocked = planManager.presentContextRoadmap.tasksList
+                .filter((entry) => entry.task.id !== GOAL_ID && entry.state === TaskState.UNBLOCKED)
+                .map((entry) => entry.task.id);
+
+            expect(graphUnblocked).toEqual([]);
+            expect(planManager.allUnblockedTasks.map((task) => task.id)).toEqual(["t1"]);
+        });
+
+        describe("ancestors", () => {
+            it("is just the root goal at the top level", () => {
+                planManager.applyServerState(makeGoal());
+
+                expect(planManager.presentContextRoadmap.ancestors).toEqual([{ id: GOAL_ID, name: "Ship product" }]);
+            });
+
+            it("lists the full drill-down path, root first", () => {
+                planManager.applyServerState(makeNestedGoal());
+                planManager.changeContextToWithinTask("d2");
+
+                expect(planManager.presentContextRoadmap.ancestors).toEqual([
+                    { id: GOAL_ID, name: "Ship product" },
+                    { id: "mid", name: "Task mid" },
+                    { id: "d2", name: "Task d2" },
+                ]);
+            });
         });
     });
 
