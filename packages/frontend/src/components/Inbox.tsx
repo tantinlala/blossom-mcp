@@ -85,7 +85,11 @@ const Inbox = (props: {
                             px: 1,
                             py: 0.5,
                             borderRadius: 1,
-                            "&.Mui-focused": { bgcolor: "background.paper", outline: 1, outlineColor: "primary.main" },
+                            "&.Mui-focused": {
+                                bgcolor: "background.paper",
+                                outline: "1px solid",
+                                outlineColor: "primary.main",
+                            },
                         }}
                     />
                     <Box className="inbox-row-actions" sx={{ display: "flex", flexShrink: 0 }}>
