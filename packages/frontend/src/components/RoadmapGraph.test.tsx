@@ -122,7 +122,7 @@ describe("RoadmapGraph", () => {
             expect(screen.getByText("Ship product")).toBeInTheDocument();
         });
 
-        test("keeps the toolbar in place whether or not a breadcrumb is shown", () => {
+        test("keeps the toolbar in place regardless of the nesting depth", () => {
             const { unmount } = renderRoadmapGraph([], [], { isSubplan: false, ancestors: [ancestors[0]] });
             const atRoot = screen.getByText("Add Goal").getBoundingClientRect().top;
             unmount();

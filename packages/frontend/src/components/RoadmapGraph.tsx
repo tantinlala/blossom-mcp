@@ -13,7 +13,7 @@ import {
     useNodesInitialized,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Box, Breadcrumbs, Button, Link, Paper, Typography } from "@mui/material";
+import { Breadcrumbs, Button, Link, Paper, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import AutoAwesomeMosaicIcon from "@mui/icons-material/AutoAwesomeMosaic";
 import ChecklistIcon from "@mui/icons-material/Checklist";
@@ -35,12 +35,11 @@ const FIT_VIEW_PADDING = 0.15;
 
 const UNNAMED_GOAL_LABEL = "Goal";
 
-// Reserved even when there is no breadcrumb, so the toolbar below never moves
-const BREADCRUMB_ROW_HEIGHT = 20;
-
-// Toolbars float over the canvas, so they need their own surface to stay legible
+// Toolbars float over the canvas, so they need their own surface to stay legible.
+// fit-content stops the bar stretching to the width of the breadcrumb above it.
 const CANVAS_TOOLBAR_SX = {
     display: "flex",
+    width: "fit-content",
     alignItems: "center",
     gap: 0.5,
     p: 0.5,
@@ -568,43 +567,6 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             <Panel position="top-left">
                 {/* Fixed height, always rendered: letting the row appear and disappear
                     with the nesting level would shift the toolbar under it. */}
-                <Box
-                    sx={{
-                        height: BREADCRUMB_ROW_HEIGHT,
-                        display: "flex",
-                        alignItems: "center",
-                        mb: 0.5,
-                    }}
-                >
-                    {presentlyShownRoadmap.ancestors.length > 0 && (
-                        <Breadcrumbs
-                            aria-label="plan location"
-                            data-testid="plan-breadcrumbs"
-                            sx={{ fontSize: 13, color: "text.secondary" }}
-                        >
-                            {presentlyShownRoadmap.ancestors.map((crumb, index) => {
-                                const label = crumb.name || UNNAMED_GOAL_LABEL;
-                                const isCurrent = index === presentlyShownRoadmap.ancestors.length - 1;
-                                return isCurrent ? (
-                                    <Typography key={crumb.id} color="text.primary" sx={{ fontSize: "inherit" }}>
-                                        {label}
-                                    </Typography>
-                                ) : (
-                                    <Link
-                                        key={crumb.id}
-                                        component="button"
-                                        underline="hover"
-                                        color="inherit"
-                                        onClick={onCrumbClick(crumb.id)}
-                                        sx={{ fontSize: "inherit", fontFamily: "inherit" }}
-                                    >
-                                        {label}
-                                    </Link>
-                                );
-                            })}
-                        </Breadcrumbs>
-                    )}
-                </Box>
                 <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
                     {goalNodeExists ? (
                         <Button size="small" startIcon={<AddIcon />} onClick={onCreateTask}>
@@ -621,6 +583,35 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                         </Button>
                     )}
                 </Paper>
+                {/* Below the toolbar, so growing or losing the path never shifts the buttons */}
+                {presentlyShownRoadmap.ancestors.length > 0 && (
+                    <Breadcrumbs
+                        aria-label="plan location"
+                        data-testid="plan-breadcrumbs"
+                        sx={{ mt: 0.75, ml: 0.5, fontSize: 13, color: "text.secondary" }}
+                    >
+                        {presentlyShownRoadmap.ancestors.map((crumb, index) => {
+                            const label = crumb.name || UNNAMED_GOAL_LABEL;
+                            const isCurrent = index === presentlyShownRoadmap.ancestors.length - 1;
+                            return isCurrent ? (
+                                <Typography key={crumb.id} color="text.primary" sx={{ fontSize: "inherit" }}>
+                                    {label}
+                                </Typography>
+                            ) : (
+                                <Link
+                                    key={crumb.id}
+                                    component="button"
+                                    underline="hover"
+                                    color="inherit"
+                                    onClick={onCrumbClick(crumb.id)}
+                                    sx={{ fontSize: "inherit", fontFamily: "inherit" }}
+                                >
+                                    {label}
+                                </Link>
+                            );
+                        })}
+                    </Breadcrumbs>
+                )}
             </Panel>
             <Panel position="top-right">
                 <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
