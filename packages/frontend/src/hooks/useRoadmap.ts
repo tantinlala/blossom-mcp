@@ -18,8 +18,13 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
 
+    // Runs on every applied server state, so both the graph and the "next task"
+    // list stay in step with the plan. Snapshotting the list when its panel
+    // opened instead left it stale as soon as anything changed underneath it,
+    // including edits arriving over MCP.
     const syncRoadmap = useCallback(() => {
         setPresentlyShownRoadmap({ ...planManager.presentContextRoadmap });
+        setUnblockedTasks(planManager.allUnblockedTasks);
     }, [planManager]);
 
     // Applies a mutation response; on failure (the APIClient swallows errors
@@ -96,7 +101,6 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
                 return;
             }
             await applyResult(await apiClient.setTaskCompletion(taskId, !task.completionState));
-            setUnblockedTasks(planManager.allUnblockedTasks);
         },
         [planManager, apiClient, applyResult],
     );
@@ -171,7 +175,6 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
             return;
         }
         applyState(state);
-        setUnblockedTasks(planManager.allUnblockedTasks);
 
         setSelectedTask((prev) => {
             if (!prev) return null;
@@ -183,11 +186,8 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
     const toggleNextTasksDrawer = useCallback(
         (open: boolean) => () => {
             setDrawerOpen(open);
-            if (open) {
-                setUnblockedTasks(planManager.allUnblockedTasks);
-            }
         },
-        [planManager],
+        [],
     );
 
     const toggleDetailsDrawer = useCallback(
