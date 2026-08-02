@@ -12,6 +12,8 @@ import {
     Node,
     useOnSelectionChange,
     useNodesInitialized,
+    useUpdateNodeInternals,
+    useStoreApi,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Breadcrumbs, Button, Link, Paper, Typography } from "@mui/material";
@@ -90,6 +92,24 @@ const miniMapNodeColor = (node: Node): string => {
     return palette.task.blocked;
 };
 
+/** Dimming lives on the node while a chain is traced, and belongs to no plan. */
+const isDimmed = (node: Node): boolean => !!node.style && "opacity" in node.style;
+
+/**
+ * Whether a node already shows this task as the plan now describes it. A node
+ * that does is handed back untouched, which is what lets ReactFlow go on using
+ * everything it has measured for it, handle positions included.
+ */
+const showsTask = (node: Node, task: TaskAndState): boolean =>
+    !isDimmed(node) &&
+    node.data.label === task.task.name &&
+    node.data.taskState === task.state &&
+    node.data.completionState === task.task.completionState &&
+    node.data.hasPlan === !!task.task.plan;
+
+/** The goal node carries the plan's name and nothing else that can change. */
+const showsGoal = (node: Node, goalName: string): boolean => !isDimmed(node) && node.data.label === goalName;
+
 /**
  * ReactFlow's store holds whatever is on screen, dimming included. That is
  * presentation only, so it has to be stripped before anything is written back
@@ -149,6 +169,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     // cannot read them. A later set of edges brings a later layout with it.
     const edgesRef = useRef<Edge[]>(edges);
     edgesRef.current = edges;
+    const nodesRef = useRef<Node[]>(nodes);
+    nodesRef.current = nodes;
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [menu, setMenu] = useState(null as any);
     const ref = useRef(null);
@@ -156,6 +178,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     // Set while a task is being added and wired up. See createTaskWithEdges.
     const layoutHeldRef = useRef(false);
     const { fitView } = useReactFlow();
+    const updateNodeInternals = useUpdateNodeInternals();
+    const storeApi = useStoreApi();
     const nodesInitialized = useNodesInitialized();
 
     /**
@@ -185,6 +209,10 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                     if (!task.task.name) {
                         return;
                     }
+                    if (existingNode && showsGoal(existingNode, task.task.name)) {
+                        newNodes.push(existingNode);
+                        return;
+                    }
                     newNodes.push(
                         existingNode
                             ? { ...withoutDimming(existingNode), data: { ...existingNode.data, label: task.task.name } }
@@ -193,6 +221,10 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                     return;
                 }
 
+                if (existingNode && showsTask(existingNode, task)) {
+                    newNodes.push(existingNode);
+                    return;
+                }
                 newNodes.push(
                     existingNode
                         ? createTaskNodeFromExisting(task, withoutDimming(existingNode))
@@ -204,6 +236,51 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         });
         setEdges(newEdges);
     }, [presentlyShownRoadmap, setNodes, setEdges, handleToggleComplete]);
+
+    /**
+     * Keeps every task on the canvas measured.
+     *
+     * An edge is drawn from the handle positions ReactFlow took when it measured
+     * the two tasks it runs between, so a task it has sized but never taken
+     * handles for leaves its dependencies undrawn - and the layouter, reading the
+     * same measurements, piles the graph into one corner. A task can land in that
+     * state whenever the node objects are replaced faster than ReactFlow measures
+     * them, which is what swapping plans does. Anything found without handle
+     * positions goes back up for measurement.
+     */
+    useEffect(() => {
+        const unmeasured: string[] = [];
+        storeApi.getState().nodeLookup.forEach((node, id) => {
+            if (!node.internals.handleBounds) {
+                unmeasured.push(id);
+            }
+        });
+
+        if (unmeasured.length > 0) {
+            updateNodeInternals(unmeasured);
+        }
+    }, [nodes, edges, storeApi, updateNodeInternals]);
+
+    /**
+     * A tab the browser is not drawing gets no measurements, so a plan that
+     * arrives while the tab is in the background leaves ReactFlow holding nodes
+     * whose size and handle positions it never took. Edges have nowhere to
+     * attach and the layouter has no boxes to place, which is what a graph piled
+     * up in one corner with nothing joining it means. Coming back to the tab
+     * puts every node up for measurement again, and the sizes that land bring a
+     * fresh layout with them.
+     */
+    useEffect(() => {
+        const remeasureWhenVisible = () => {
+            if (document.visibilityState !== "visible") {
+                return;
+            }
+            updateNodeInternals(nodesRef.current.map((node) => node.id));
+        };
+
+        document.addEventListener("visibilitychange", remeasureWhenVisible);
+        return () => document.removeEventListener("visibilitychange", remeasureWhenVisible);
+    }, [updateNodeInternals]);
 
     // When the user connects two nodes, call a callback to add the edge to the plan
     const onConnect = useCallback(
@@ -627,6 +704,23 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
                 if (!selectedNode) return;
 
+                // Enter: open the highlighted task's subplan, or tick it off when
+                // it holds no plan of its own. The goal is neither nested nor
+                // something to complete, so it takes no part in either.
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    const taskEntry = presentlyShownRoadmap.tasksList.find((entry) => entry.task.id === selectedNodeId);
+                    if (selectedNodeId === GOAL_ID || !taskEntry) {
+                        return;
+                    }
+                    if (taskEntry.task.plan) {
+                        changeContext(selectedNodeId);
+                    } else {
+                        handleToggleComplete(selectedNodeId);
+                    }
+                    return;
+                }
+
                 // Tab or Space key handling for creating a new task
                 if (event.key === "Tab" || event.key === " ") {
                     event.preventDefault();
@@ -666,9 +760,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             selectedNodes,
             nodes,
             edges,
+            presentlyShownRoadmap,
             createTaskWithEdges,
             selectNeighbour,
             clearHighlight,
+            changeContext,
+            handleToggleComplete,
             handleConnect,
             handleRemoveTask,
             handleRemoveEdge,

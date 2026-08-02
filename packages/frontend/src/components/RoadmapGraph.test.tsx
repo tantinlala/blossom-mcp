@@ -551,6 +551,51 @@ describe("RoadmapGraph", () => {
             await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
         });
 
+        test("Enter opens the highlighted task's subplan", async () => {
+            const changeContext = jest.fn();
+            const withSubplan: TaskAndState = {
+                task: {
+                    name: "Task A",
+                    id: "a",
+                    completionState: false,
+                    plan: { tasksList: [], dependenciesList: [] },
+                },
+                state: TaskState.UNBLOCKED,
+            };
+            const { container } = renderRoadmapGraph(
+                [withSubplan, task("b", "Task B")],
+                [],
+                {},
+                { handleChangeRoadmapContext: changeContext },
+            );
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
+
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter" });
+
+            expect(changeContext).toHaveBeenCalledWith("a");
+        });
+
+        test("Enter ticks off a highlighted task that holds no plan", async () => {
+            const toggleCompletion = jest.fn();
+            const { container } = renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B")],
+                [],
+                {},
+                { handleToggleComplete: toggleCompletion },
+            );
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
+
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter" });
+
+            expect(toggleCompletion).toHaveBeenCalledWith("a");
+        });
+
         test("Escape puts the highlight down", async () => {
             const { container } = renderRoadmapGraph(
                 [task("a", "Task A"), task("b", "Task B")],
