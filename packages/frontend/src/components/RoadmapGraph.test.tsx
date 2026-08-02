@@ -529,9 +529,14 @@ describe("RoadmapGraph", () => {
                 return task;
             };
 
+            // The dependency makes the new task wait on Task A, which the server
+            // reports back as a state on the task itself.
             const handleConnect = async (source: string, target: string) => {
                 await releaseConnect;
                 setDependenciesList((current) => [...current, { source, target }]);
+                setTasksList((current) =>
+                    current.map((entry) => (entry.task.id === target ? { ...entry, state: TaskState.BLOCKED } : entry)),
+                );
             };
 
             // The app hands the graph a roadmap that only changes when the plan
@@ -587,6 +592,30 @@ describe("RoadmapGraph", () => {
             // Where a task belongs follows from what it connects to, so the last
             // word on its position has to be a layout that has seen the edge.
             await waitFor(() => expect(mockLayoutEdgeCounts[mockLayoutEdgeCounts.length - 1]).toBe(1));
+        });
+
+        test("shows the new task as blocked once its edge has landed", async () => {
+            promptForText.mockResolvedValue("New Task");
+            let release: () => void = () => {};
+            const releaseConnect = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            const { container } = render(<ServerBackedGraph releaseConnect={releaseConnect} />);
+
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+            fireEvent.click(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: " " });
+
+            await waitFor(() => expect(screen.getByText("New Task")).toBeInTheDocument());
+            release();
+
+            // Laying the graph out over the top of the arriving plan would leave
+            // the task coloured as one that is ready to start.
+            await waitFor(() =>
+                expect(screen.getByText("New Task").closest('div[style*="background"]')).toHaveStyle(
+                    `background: ${TASK_BLOCKED_COLOR}`,
+                ),
+            );
         });
     });
 });

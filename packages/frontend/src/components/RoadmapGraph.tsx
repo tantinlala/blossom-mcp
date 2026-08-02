@@ -137,13 +137,17 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [selectedNodes, setSelectedNodes] = useState([]);
+    // The layouter needs the edges as they stand, from inside a node update that
+    // cannot read them. A later set of edges brings a later layout with it.
+    const edgesRef = useRef<Edge[]>(edges);
+    edgesRef.current = edges;
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [menu, setMenu] = useState(null as any);
     const ref = useRef(null);
     const pendingFitRef = useRef(false);
     // Set while a task is being added and wired up. See createTaskWithEdges.
     const layoutHeldRef = useRef(false);
-    const { getNodes, getEdges, fitView } = useReactFlow();
+    const { fitView } = useReactFlow();
     const nodesInitialized = useNodesInitialized();
 
     /**
@@ -283,23 +287,26 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [handleUpdateEdge],
     );
 
+    /**
+     * Moves every node to where the layouter puts it.
+     *
+     * Positions are all it changes. It works from the nodes it is handed rather
+     * than a copy taken earlier, so a plan arriving in the same pass - a task
+     * that has just become blocked, say - keeps the state it brought with it and
+     * only picks up new coordinates. Only the edges settle a task's place, so a
+     * later edge produces a later layout, which lands on top of this one.
+     */
     const onLayout = useCallback(() => {
-        // Make sure we're working with the latest nodes and edges
-        const currentNodes = getNodes();
-        const currentEdges = getEdges();
-
-        // Get the layouted elements. Only positions change, so the edges the
-        // layouter hands back are left alone.
-        const { nodes: layoutedNodes } = getLayoutedElements(currentNodes, currentEdges);
-
-        // Force a re-render by setting a completely new nodes array
-        setNodes(layoutedNodes.map(withoutDimming));
+        setNodes((currentNodes) => {
+            const { nodes: layoutedNodes } = getLayoutedElements(currentNodes, edgesRef.current);
+            return layoutedNodes.map(withoutDimming);
+        });
 
         // Laying out moves nodes out from under a stationary cursor without ever
         // firing mouse-leave, which would strand the highlight and leave the
         // graph dimmed until the user happened to move the mouse.
         setHoveredNodeId(null);
-    }, [getNodes, getEdges, setNodes]);
+    }, [setNodes]);
 
     // What the layouter actually reads: which tasks are on the canvas and what
     // joins them. Positions are left out, so a layout run - which only moves
