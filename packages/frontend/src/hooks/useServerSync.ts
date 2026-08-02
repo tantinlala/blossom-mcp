@@ -111,6 +111,9 @@ export function useServerSync({ apiClient, planManager, realtime, notify }: UseS
         const unsubscribes = [
             realtime.onState(({ state, isSnapshot, serverId }) => applyUpdate(state, isSnapshot, serverId)),
             realtime.onConnectionChange(setConnectionState),
+            realtime.onProtocolMismatch(() =>
+                notifyRef.current?.("This page is out of date and has stopped syncing. Reload to continue."),
+            ),
             realtime.onNotice((notice: Notice) => {
                 const target = notice.project ?? "a new project";
                 notifyRef.current?.(`Somebody switched everyone to ${target}`);

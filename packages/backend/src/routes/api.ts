@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { Author, COMMAND_NAMES } from "@blossom/common";
+import { Author, CommandErrorCode, COMMAND_NAMES } from "@blossom/common";
 import { Project } from "../models/project";
 import {
     ProjectStore,
@@ -23,6 +23,34 @@ const Status = {
     NOT_FOUND: 404,
     CONFLICT: 409,
     INTERNAL: 500,
+};
+
+// The socket reports a precise CommandErrorCode, so HTTP carries the same one
+// rather than making the client re-infer it from a status shared by several
+// distinct failures.
+const errorCode = (error: unknown): CommandErrorCode => {
+    if (error instanceof TaskNotFoundError) {
+        return "not-found";
+    }
+    if (error instanceof InvalidCommandError) {
+        return "invalid";
+    }
+    if (error instanceof UnknownCommandError) {
+        return "unknown-command";
+    }
+    if (error instanceof VersionConflictError) {
+        return "conflict";
+    }
+    if (error instanceof UndoBlockedError) {
+        return "undo-blocked";
+    }
+    if (error instanceof ConfirmRequiredError) {
+        return "confirm-required";
+    }
+    if (error instanceof InvalidDependencyError || error instanceof InvalidIndexError) {
+        return "invalid";
+    }
+    return "internal";
 };
 
 const errorStatus = (error: unknown): number => {
@@ -82,6 +110,7 @@ const createApiRouter = (store: ProjectStore, project: Project, deps: Partial<Co
                 const status = errorStatus(error);
                 const body: Record<string, unknown> = {
                     error: error instanceof Error ? error.message : String(error),
+                    code: errorCode(error),
                 };
                 // A rejected write leaves the client holding stale state, so
                 // hand back the authoritative copy for it to rebase onto.

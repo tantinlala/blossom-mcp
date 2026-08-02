@@ -25,6 +25,7 @@ const createMockRealtime = () => {
         state: [] as ((update: StateUpdate) => void)[],
         connection: [] as ((state: ConnectionState) => void)[],
         notice: [] as ((notice: Notice) => void)[],
+        protocolMismatch: [] as (() => void)[],
     };
     let connectionState: ConnectionState = "open";
 
@@ -45,6 +46,10 @@ const createMockRealtime = () => {
             },
             onNotice: (listener: (notice: Notice) => void) => {
                 listeners.notice.push(listener);
+                return () => {};
+            },
+            onProtocolMismatch: (listener: () => void) => {
+                listeners.protocolMismatch.push(listener);
                 return () => {};
             },
         } as unknown as RealtimeClient,
@@ -276,6 +281,18 @@ describe("useServerSync", () => {
             });
 
             expect(result.current.saveState).toBe("neverSaved");
+        });
+
+        it("asks the user to reload when the server speaks another protocol", () => {
+            render();
+
+            act(() => {
+                realtime.listeners.protocolMismatch.forEach((listener) => listener());
+            });
+
+            expect(mockNotify).toHaveBeenCalledWith(
+                "This page is out of date and has stopped syncing. Reload to continue.",
+            );
         });
 
         it("tracks connection state", () => {

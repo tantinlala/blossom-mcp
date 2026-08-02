@@ -208,6 +208,43 @@ describe("useInbox", () => {
         expect(mockNotify).toHaveBeenCalledWith("An idea you were editing was removed by someone else.");
     });
 
+    it("does not resurrect an edit cleared moments before a push arrives", async () => {
+        mockedAPIClient.updateIdea.mockResolvedValue(makeState(3, ["committed"]));
+
+        const { result } = render();
+        act(() => result.current.applyRemoteInbox(["mine"]));
+        act(() => result.current.changeIdea(0, "committed"));
+
+        // The commit finishes, clearing the edit, and the push lands before
+        // React has re-rendered - the window in which a ref synced only during
+        // rendering still reports the edit as pending.
+        await act(async () => {
+            await result.current.commitIdea(0);
+            result.current.applyRemoteInbox(["somebody else wrote this"]);
+        });
+
+        expect(result.current.ideaList).toEqual(["somebody else wrote this"]);
+        expect(mockNotify).not.toHaveBeenCalledWith(
+            "Someone else changed an idea you are editing. Your version will replace theirs.",
+        );
+    });
+
+    it("does not warn about edits that promoting the whole inbox just cleared", async () => {
+        mockedAPIClient.promoteAllIdeas.mockResolvedValue(makeState(4, []));
+
+        const { result } = render();
+        act(() => result.current.applyRemoteInbox(["mine"]));
+        act(() => result.current.changeIdea(0, "mine, half typed"));
+
+        await act(async () => {
+            const promoting = result.current.addAllIdeasToPlan();
+            result.current.applyRemoteInbox([]);
+            await promoting;
+        });
+
+        expect(mockNotify).not.toHaveBeenCalledWith("An idea you were editing was removed by someone else.");
+    });
+
     it("keeps the typed text after a rejected commit so it is not lost", async () => {
         mockedAPIClient.updateIdea.mockResolvedValue(undefined);
         mockedAPIClient.lastFailure.mockReturnValue({

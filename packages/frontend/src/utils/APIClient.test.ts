@@ -121,6 +121,36 @@ describe("APIClient", () => {
             });
         });
 
+        it("uses the code the server sent rather than guessing from the status", async () => {
+            mockedAxios.post.mockRejectedValue({
+                response: {
+                    status: 409,
+                    data: {
+                        error: "Someone else has changed the project since your last change",
+                        code: "undo-blocked",
+                    },
+                },
+            });
+            const client = new APIClient();
+
+            await client.undo();
+
+            // Several distinct failures share a 409, so the status alone would
+            // collapse this into a plain conflict.
+            expect(client.lastFailure()?.code).toBe("undo-blocked");
+        });
+
+        it("falls back to the status when an older server sends no code", async () => {
+            mockedAxios.post.mockRejectedValue({
+                response: { status: 404, data: { error: "Task not found: abc" } },
+            });
+            const client = new APIClient();
+
+            await client.removeTask("abc");
+
+            expect(client.lastFailure()?.code).toBe("not-found");
+        });
+
         it("clears the last failure once something succeeds", async () => {
             mockedAxios.post.mockRejectedValueOnce(new Error("Network Error"));
             mockedAxios.post.mockResolvedValueOnce({ data: { response: makeState(2) } });
@@ -154,6 +184,18 @@ describe("APIClient", () => {
                 confirmed: true,
             });
             expect(result).toEqual(makeState(4));
+        });
+
+        it("resends a command that carries no payload at all", async () => {
+            mockedAxios.post.mockRejectedValueOnce(refusal);
+            mockedAxios.post.mockResolvedValueOnce({ data: { response: makeState(5) } });
+            const client = new APIClient();
+            client.setConfirmHandler(jest.fn().mockResolvedValue(true));
+
+            const result = await client.newProject();
+
+            expect(mockedAxios.post).toHaveBeenLastCalledWith("/projects/new", { confirmed: true });
+            expect(result).toEqual(makeState(5));
         });
 
         it("does nothing when the person declines", async () => {

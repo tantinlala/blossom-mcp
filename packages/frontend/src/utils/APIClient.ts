@@ -35,13 +35,18 @@ const toFailure = (error: unknown): RequestFailure => {
     }
 
     const data = response.data ?? {};
-    let code: RequestFailure["code"] = "internal";
-    if (response.status === 404) {
-        code = "not-found";
-    } else if (response.status === 400) {
-        code = "invalid";
-    } else if (response.status === 409) {
-        code = typeof data.otherCount === "number" ? "confirm-required" : "conflict";
+    // The server sends the same code both transports use. Statuses are only a
+    // fallback, and a lossy one: several distinct failures share a 409.
+    let code: RequestFailure["code"] =
+        typeof data.code === "string" ? (data.code as RequestFailure["code"]) : "internal";
+    if (typeof data.code !== "string") {
+        if (response.status === 404) {
+            code = "not-found";
+        } else if (response.status === 400) {
+            code = "invalid";
+        } else if (response.status === 409) {
+            code = typeof data.otherCount === "number" ? "confirm-required" : "conflict";
+        }
     }
 
     return {
@@ -126,7 +131,9 @@ class APIClient {
             if (failure.code === "confirm-required" && this.confirmHandler) {
                 const confirmed = await this.confirmHandler(failure.otherCount ?? 1);
                 if (confirmed) {
-                    return await this.post(name, { ...(data as object), confirmed: true });
+                    // Commands with no payload spread to {}, which is what the
+                    // resend needs; there is nothing to preserve.
+                    return await this.post(name, { ...(data as object | undefined), confirmed: true });
                 }
                 this.reportFailure({ ...failure, code: "cancelled", message: "Cancelled" });
                 return undefined;

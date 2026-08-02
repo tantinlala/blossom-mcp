@@ -27,7 +27,26 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
     const [remoteIdeas, setRemoteIdeas] = useState<string[]>([]);
     const [pendingEdits, setPendingEdits] = useState<Map<number, PendingEdit>>(new Map());
     const pendingEditsRef = useRef(pendingEdits);
-    pendingEditsRef.current = pendingEdits;
+
+    /**
+     * Updates the pending edits, keeping the ref and the state in step.
+     *
+     * The ref is what callers outside rendering read, and a pushed update can
+     * land between a state update and the render that applies it. Syncing the
+     * ref only while rendering would leave that window reading edits that have
+     * already been cleared, so every write goes through here instead.
+     */
+    const updatePendingEdits = useCallback(
+        (update: (previous: Map<number, PendingEdit>) => Map<number, PendingEdit>) => {
+            const next = update(pendingEditsRef.current);
+            if (next === pendingEditsRef.current) {
+                return;
+            }
+            pendingEditsRef.current = next;
+            setPendingEdits(next);
+        },
+        [],
+    );
 
     // What the user sees: the server's list with any in-progress typing laid
     // over the top, so an incoming change to one row never disturbs another.
@@ -59,32 +78,28 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
         (ideas: string[]) => {
             setRemoteIdeas(ideas);
 
-            const pending = pendingEditsRef.current;
-            if (pending.size === 0) {
-                return;
-            }
-
-            const next = new Map(pending);
             let rebased = false;
             let removed = false;
-            pending.forEach((edit, index) => {
-                if (ideas[index] === edit.original) {
-                    return;
+            updatePendingEdits((pending) => {
+                if (pending.size === 0) {
+                    return pending;
                 }
-                if (index >= ideas.length) {
-                    next.delete(index);
-                    removed = true;
-                    return;
-                }
-                next.set(index, { ...edit, original: ideas[index] });
-                rebased = true;
+                const next = new Map(pending);
+                pending.forEach((edit, index) => {
+                    if (ideas[index] === edit.original) {
+                        return;
+                    }
+                    if (index >= ideas.length) {
+                        next.delete(index);
+                        removed = true;
+                        return;
+                    }
+                    next.set(index, { ...edit, original: ideas[index] });
+                    rebased = true;
+                });
+                return rebased || removed ? next : pending;
             });
 
-            if (!rebased && !removed) {
-                return;
-            }
-            pendingEditsRef.current = next;
-            setPendingEdits(next);
             if (rebased) {
                 notify?.("Someone else changed an idea you are editing. Your version will replace theirs.");
             }
@@ -92,19 +107,22 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
                 notify?.("An idea you were editing was removed by someone else.");
             }
         },
-        [notify],
+        [notify, updatePendingEdits],
     );
 
-    const clearPendingEdit = useCallback((index: number) => {
-        setPendingEdits((previous) => {
-            if (!previous.has(index)) {
-                return previous;
-            }
-            const next = new Map(previous);
-            next.delete(index);
-            return next;
-        });
-    }, []);
+    const clearPendingEdit = useCallback(
+        (index: number) => {
+            updatePendingEdits((previous) => {
+                if (!previous.has(index)) {
+                    return previous;
+                }
+                const next = new Map(previous);
+                next.delete(index);
+                return next;
+            });
+        },
+        [updatePendingEdits],
+    );
 
     const applyResult = useCallback(
         async (result: ProjectState | undefined) => {
@@ -148,14 +166,14 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
     // round trip; commitIdea persists them.
     const changeIdea = useCallback(
         (index: number, newIdea: string) => {
-            setPendingEdits((previous) => {
+            updatePendingEdits((previous) => {
                 const next = new Map(previous);
                 const existing = previous.get(index);
                 next.set(index, { text: newIdea, original: existing?.original ?? remoteIdeas[index] ?? "" });
                 return next;
             });
         },
-        [remoteIdeas],
+        [remoteIdeas, updatePendingEdits],
     );
 
     const commitIdea = useCallback(
@@ -192,9 +210,9 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
         if (ideaList.length === 0) {
             return;
         }
-        setPendingEdits(new Map());
+        updatePendingEdits((previous) => (previous.size === 0 ? previous : new Map()));
         await applyResult(await apiClient.promoteAllIdeas(planManager.presentContextGoal.id));
-    }, [apiClient, planManager, ideaList, applyResult]);
+    }, [apiClient, planManager, ideaList, applyResult, updatePendingEdits]);
 
     return {
         ideaList,

@@ -114,6 +114,30 @@ describe("RealtimeClient", () => {
         expect(updates[0].serverId).toBe("server-a");
     });
 
+    it("gives up and reports a mismatch when the server speaks another protocol", () => {
+        const socket = connect();
+        const updates: any[] = [];
+        let mismatches = 0;
+        client.onState((update) => updates.push(update));
+        client.onProtocolMismatch(() => mismatches++);
+        socket.simulateOpen();
+
+        socket.simulateMessage({
+            type: "snapshot",
+            protocolVersion: 999,
+            serverId: "server-a",
+            state: makeState(4),
+        });
+
+        expect(mismatches).toBe(1);
+        // Frames of an unknown protocol cannot be trusted to mean what they look like.
+        expect(updates).toHaveLength(0);
+
+        // Reconnecting cannot fix a version mismatch, so it does not try.
+        jest.advanceTimersByTime(60000);
+        expect(FakeSocket.instances).toHaveLength(1);
+    });
+
     it("passes on a pushed change with its author", () => {
         const socket = connect();
         const updates: any[] = [];

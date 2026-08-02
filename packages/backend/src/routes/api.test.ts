@@ -318,4 +318,46 @@ describe("api router", () => {
             expect(res.body.response).toEqual({ activeProject: "myProject" });
         });
     });
+
+    describe("error responses", () => {
+        it("should carry the same machine-readable code the socket would send", async () => {
+            store.setGoal("Ship it");
+            const stale = store.getVersion();
+            store.addIdea("meanwhile, somebody else changed something");
+
+            const res = await request(app).post("/api/goal").send({ name: "Ship something else", baseVersion: stale });
+
+            expect(res.status).toBe(409);
+            expect(res.body.code).toBe("conflict");
+            // The rejected caller is holding stale state, so it gets the real one.
+            expect(res.body.response.version).toBe(store.getVersion());
+        });
+
+        it("should distinguish a blocked undo from an ordinary conflict", async () => {
+            store.runAs({ id: "somebody-else", kind: "person" }, () => store.setGoal("Their goal"));
+
+            const res = await request(app)
+                .post("/api/undo")
+                .set("X-Blossom-Author", JSON.stringify({ id: "me", kind: "person" }))
+                .send({});
+
+            expect(res.status).toBe(409);
+            expect(res.body.code).toBe("undo-blocked");
+            expect(store.getState().goal.name).toBe("Their goal");
+        });
+
+        it("should code a missing task as not-found", async () => {
+            const res = await request(app).post("/api/tasks/remove").send({ taskId: "nope" });
+
+            expect(res.status).toBe(404);
+            expect(res.body.code).toBe("not-found");
+        });
+
+        it("should code a malformed payload as invalid", async () => {
+            const res = await request(app).post("/api/goal").send({});
+
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe("invalid");
+        });
+    });
 });

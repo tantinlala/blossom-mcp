@@ -1,4 +1,12 @@
-import { Author, ClientMessage, CommandError, CommandName, ProjectState, ServerMessage } from "@blossom/common";
+import {
+    Author,
+    ClientMessage,
+    CommandError,
+    CommandName,
+    ProjectState,
+    REALTIME_PROTOCOL_VERSION,
+    ServerMessage,
+} from "@blossom/common";
 import { resolveRealtimeUrl } from "./realtimeUrl";
 
 export type ConnectionState = "connecting" | "open" | "offline";
@@ -84,6 +92,7 @@ export class RealtimeClient {
     private readonly stateListeners = new Set<Listener<StateUpdate>>();
     private readonly connectionListeners = new Set<Listener<ConnectionState>>();
     private readonly noticeListeners = new Set<Listener<Notice>>();
+    private readonly protocolMismatchListeners = new Set<Listener<void>>();
 
     constructor(options: RealtimeClientOptions = {}) {
         this.url = options.url ?? resolveRealtimeUrl();
@@ -113,6 +122,7 @@ export class RealtimeClient {
         this.stateListeners.clear();
         this.connectionListeners.clear();
         this.noticeListeners.clear();
+        this.protocolMismatchListeners.clear();
     }
 
     /** Identifies this browser to the server so its changes can be told apart. */
@@ -136,6 +146,15 @@ export class RealtimeClient {
     public onNotice(listener: Listener<Notice>): () => void {
         this.noticeListeners.add(listener);
         return () => this.noticeListeners.delete(listener) as unknown as void;
+    }
+
+    /**
+     * Fired when the server speaks a protocol this build does not. Reconnecting
+     * cannot fix that, so the socket gives up and the app asks for a reload.
+     */
+    public onProtocolMismatch(listener: Listener<void>): () => void {
+        this.protocolMismatchListeners.add(listener);
+        return () => this.protocolMismatchListeners.delete(listener) as unknown as void;
     }
 
     public getConnectionState(): ConnectionState {
@@ -235,6 +254,13 @@ export class RealtimeClient {
     private handleMessage(message: ServerMessage) {
         switch (message.type) {
             case "snapshot":
+                // Frames from another protocol version cannot be trusted to
+                // mean what they appear to, so stop rather than guess.
+                if (message.protocolVersion !== REALTIME_PROTOCOL_VERSION) {
+                    this.halt();
+                    this.emit(this.protocolMismatchListeners, undefined);
+                    return;
+                }
                 this.serverId = message.serverId;
                 this.emit(this.stateListeners, {
                     state: message.state,
@@ -295,6 +321,23 @@ export class RealtimeClient {
             this.reconnectTimer = null;
             this.connect();
         }, delay);
+    }
+
+    /**
+     * Gives up for good without tearing down the listeners, so whatever made
+     * reconnection pointless can still be reported to the app.
+     */
+    private halt() {
+        this.stopped = true;
+        this.removeWindowListeners();
+        this.clearTimer("reconnectTimer");
+        this.clearTimer("stableTimer");
+        this.clearTimer("silenceTimer");
+        this.failAllPending({ code: "internal", message: "Realtime client stopped" });
+        const socket = this.socket;
+        this.socket = null;
+        socket?.close();
+        this.setConnectionState("offline");
     }
 
     /** Drops the current socket and reconnects immediately, ignoring the backoff. */

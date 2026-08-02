@@ -18,6 +18,8 @@ Used by the frontend as the **fallback transport**, while the realtime socket is
 
 Validation failures return 400, unknown task/project ids return 404, and a refused write returns **409** with `{ error, response }` — `response` being the server's authoritative state, so the client can rebase instead of guessing. A 409 may additionally carry `otherCount` (project switch).
 
+Every error body also carries a `code` drawn from the same `CommandErrorCode` union the socket uses, so a failure means the same thing on either transport. Statuses alone would not: `conflict`, `undo-blocked` and `confirm-required` all return 409.
+
 Mutations may send an `X-Blossom-Author` header (`{ id, kind }`) identifying the browser that made the change. There are no names and no authentication — it only lets undo tell one browser's work from another's.
 
 | Endpoint                  | Method | Input                                            | Description                                                            |
