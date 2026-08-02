@@ -139,7 +139,8 @@ export type ServerMessage =
     | { type: "snapshot"; protocolVersion: number; serverId: string; state: ProjectState }
     /** A change happened, from any writer: this client, another client, or MCP. */
     | { type: "state"; state: ProjectState; author?: Author }
-    | { type: "notice"; kind: "project-switched"; project: string | null }
+    /** `author` is whoever caused it, so a client can tell its own switch apart. */
+    | { type: "notice"; kind: "project-switched"; project: string | null; author?: Author }
     | { type: "result"; id: string; result: unknown }
     /** `state` is authoritative at the point of failure, so conflicts self-heal. */
     | { type: "error"; id: string; error: CommandError; state: ProjectState }

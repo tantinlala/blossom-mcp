@@ -148,11 +148,17 @@ const createRealtimeServer = (httpServer: HttpServer, deps: RealtimeServerDeps):
         const author = store.lastChangeAuthor;
         broadcast({ type: "state", state, author: author ?? undefined });
 
-        // Opening or creating a project replaces what everyone is looking at,
-        // so it gets called out rather than appearing as a silent redraw.
+        // Opening or creating a project replaces what everyone is looking at, so
+        // it gets called out. The author rides along so the browser that asked
+        // for the switch can recognise the notice as the result of its own click.
         if (state.activeProject !== lastBroadcastProject) {
             lastBroadcastProject = state.activeProject;
-            broadcast({ type: "notice", kind: "project-switched", project: state.activeProject });
+            broadcast({
+                type: "notice",
+                kind: "project-switched",
+                project: state.activeProject,
+                author: author ?? undefined,
+            });
         }
     };
 

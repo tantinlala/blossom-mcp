@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import TextPromptDialog from "./TextPromptDialog";
 
@@ -37,6 +37,24 @@ describe("TextPromptDialog", () => {
 
         expect(screen.getByText("Add a task")).toBeInTheDocument();
         expect(input().value).toBe("New Task");
+    });
+
+    it("holds focus in the field even when something takes it while the dialog opens", async () => {
+        // The canvas underneath moves focus around as it redraws, and it does so
+        // while the dialog is on its way in. The field claims focus once the
+        // dialog has finished opening, so a name can be typed straight away.
+        const rival = document.createElement("button");
+        document.body.appendChild(rival);
+
+        renderDialog();
+        // Focus lands back on the dialog itself, not the field, until the field
+        // claims it.
+        rival.focus();
+
+        await waitFor(() => expect(input()).toHaveFocus());
+        expect(input().selectionEnd! - input().selectionStart!).toBe("New Task".length);
+
+        rival.remove();
     });
 
     it("submits the typed value", () => {
