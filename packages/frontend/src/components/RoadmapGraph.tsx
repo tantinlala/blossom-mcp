@@ -43,7 +43,6 @@ const FIT_VIEW_PADDING = 0.15;
 const UNNAMED_GOAL_LABEL = "Goal";
 
 // Toolbars float over the canvas, so they need their own surface to stay legible.
-// fit-content stops the bar stretching to the width of the breadcrumb above it.
 const CANVAS_TOOLBAR_SX = {
     display: "flex",
     width: "fit-content",
@@ -56,6 +55,10 @@ const CANVAS_TOOLBAR_SX = {
     bgcolor: "background.paper",
     boxShadow: "0 1px 2px rgba(16, 24, 40, 0.06)",
 } as const;
+
+// A small button inside the toolbar's padding and border. The breadcrumb between
+// the two toolbars matches it, so all three sit on one line across the canvas.
+const CANVAS_TOOLBAR_HEIGHT = 41;
 
 // Prompt strings
 const TASK_PROMPT = { title: "Add a task", label: "Task name", defaultValue: "New Task", confirmLabel: "Add task" };
@@ -681,8 +684,6 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             <Controls />
             <MiniMap pannable zoomable nodeColor={miniMapNodeColor} nodeStrokeWidth={0} />
             <Panel position="top-left">
-                {/* Fixed height, always rendered: letting the row appear and disappear
-                    with the nesting level would shift the toolbar under it. */}
                 <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
                     {goalNodeExists ? (
                         <Button size="small" startIcon={<AddIcon />} onClick={onCreateTask}>
@@ -699,12 +700,21 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                         </Button>
                     )}
                 </Paper>
-                {/* Below the toolbar, so growing or losing the path never shifts the buttons */}
-                {presentlyShownRoadmap.ancestors.length > 0 && (
+            </Panel>
+            {/* The gap between the two toolbars, so the path is read as belonging to
+                the canvas as a whole and grows in both directions from the centre */}
+            {presentlyShownRoadmap.ancestors.length > 0 && (
+                <Panel position="top-center">
                     <Breadcrumbs
                         aria-label="plan location"
                         data-testid="plan-breadcrumbs"
-                        sx={{ mt: 0.75, ml: 0.5, fontSize: 13, color: "text.secondary" }}
+                        sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            minHeight: CANVAS_TOOLBAR_HEIGHT,
+                            fontSize: 13,
+                            color: "text.secondary",
+                        }}
                     >
                         {presentlyShownRoadmap.ancestors.map((crumb, index) => {
                             const label = crumb.name || UNNAMED_GOAL_LABEL;
@@ -727,8 +737,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                             );
                         })}
                     </Breadcrumbs>
-                )}
-            </Panel>
+                </Panel>
+            )}
             {/* Both toggle the single panel slot beside the canvas */}
             <Panel position="top-right">
                 <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
