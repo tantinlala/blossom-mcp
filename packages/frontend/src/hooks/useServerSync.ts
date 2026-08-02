@@ -128,7 +128,7 @@ export function useServerSync({ apiClient, planManager, realtime, notify }: UseS
             }),
         ];
         return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
-    }, [realtime, applyUpdate]);
+    }, [realtime, applyUpdate, markSaved, markNeverSaved]);
 
     // A rejected write leaves this client holding state the server disagrees
     // with, and the server hands back its own copy precisely so that can be
