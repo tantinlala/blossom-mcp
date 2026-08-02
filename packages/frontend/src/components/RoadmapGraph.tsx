@@ -31,6 +31,7 @@ import { Dependency, Task } from "@blossom/common";
 import { Roadmap } from "../types/roadmap";
 import TaskNode, { EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, DIMMED_OPACITY, Position } from "./TaskNode";
 import { useGraphHighlight } from "../hooks/useGraphHighlight";
+import { Direction, nextTaskInDirection } from "../utils/spatialNavigation";
 import { PromptForText } from "../hooks/useTextPrompt";
 import { palette } from "../theme/tokens";
 
@@ -59,6 +60,13 @@ const CANVAS_TOOLBAR_SX = {
 // A small button inside the toolbar's padding and border. The breadcrumb between
 // the two toolbars matches it, so all three sit on one line across the canvas.
 const CANVAS_TOOLBAR_HEIGHT = 41;
+
+const ARROW_DIRECTIONS: Record<string, Direction> = {
+    ArrowLeft: "left",
+    ArrowRight: "right",
+    ArrowUp: "up",
+    ArrowDown: "down",
+};
 
 // Prompt strings
 const TASK_PROMPT = { title: "Add a task", label: "Task name", defaultValue: "New Task", confirmLabel: "Add task" };
@@ -357,6 +365,29 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [handleSelectTask],
     );
 
+    /**
+     * Moves the highlight to the task lying that way across the canvas, leaving
+     * it where it is when there is nothing that way. Node positions are centres
+     * here, since the graph places nodes by their middle.
+     */
+    const selectNeighbour = useCallback(
+        (direction: Direction) => {
+            const points = nodes.map((node) => ({ id: node.id, x: node.position.x, y: node.position.y }));
+            const nextId = nextTaskInDirection(points, selectedNodes.length === 1 ? selectedNodes[0] : null, direction);
+            if (!nextId) {
+                return;
+            }
+
+            setNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: node.id === nextId })));
+            // Arriving by keyboard says as much about which task is being worked
+            // on as clicking it does, so the details panel follows either way.
+            if (nextId !== GOAL_ID) {
+                handleSelectTask(nextId);
+            }
+        },
+        [nodes, selectedNodes, setNodes, handleSelectTask],
+    );
+
     const onNodeDoubleClick = useCallback(
         (event, node: Node) => {
             if (node.id !== GOAL_ID) {
@@ -569,6 +600,14 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 return;
             }
 
+            // Arrow keys: move the highlight to the task that way across the canvas
+            const direction = ARROW_DIRECTIONS[event.key];
+            if (direction) {
+                event.preventDefault();
+                selectNeighbour(direction);
+                return;
+            }
+
             if (selectedNodes.length === 1) {
                 const selectedNodeId = selectedNodes[0];
                 const selectedNode = nodes.find((node) => node.id === selectedNodeId);
@@ -615,6 +654,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             nodes,
             edges,
             createTaskWithEdges,
+            selectNeighbour,
             handleConnect,
             handleRemoveTask,
             handleRemoveEdge,

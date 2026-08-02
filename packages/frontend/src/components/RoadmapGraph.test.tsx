@@ -510,6 +510,63 @@ describe("RoadmapGraph", () => {
         });
     });
 
+    describe("moving the highlight with the arrow keys", () => {
+        const task = (id: string, name: string): TaskAndState => ({
+            task: { name, id, completionState: false, plan: null },
+            state: TaskState.UNBLOCKED,
+        });
+
+        const isHighlighted = (label: string) =>
+            (screen.getByText(label).closest(".react-flow__node") as HTMLElement).classList.contains("selected");
+
+        const pressArrow = (container: HTMLElement, key: string) =>
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key });
+
+        test("moves to the task the arrow points at", async () => {
+            const { container } = renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B")],
+                [{ source: "a", target: "b" }],
+            );
+            await waitFor(() => expect(screen.getByText("Task B")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
+
+            // The layout runs left to right, so what Task A feeds sits to its right.
+            pressArrow(container, "ArrowRight");
+
+            await waitFor(() => expect(isHighlighted("Task B")).toBe(true));
+            expect(isHighlighted("Task A")).toBe(false);
+        });
+
+        test("takes the highlight into the graph when nothing is highlighted", async () => {
+            const { container } = renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B")],
+                [{ source: "a", target: "b" }],
+            );
+            await waitFor(() => expect(screen.getByText("Task B")).toBeInTheDocument());
+
+            pressArrow(container, "ArrowRight");
+
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
+        });
+
+        test("leaves the highlight where it is at the edge of the graph", async () => {
+            const { container } = renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B")],
+                [{ source: "a", target: "b" }],
+            );
+            await waitFor(() => expect(screen.getByText("Task B")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
+
+            pressArrow(container, "ArrowLeft");
+
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
+        });
+    });
+
     describe("creating a task from a selection", () => {
         /**
          * Stands in for the server: adding a task and adding a dependency are
