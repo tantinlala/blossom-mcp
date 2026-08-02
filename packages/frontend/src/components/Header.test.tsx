@@ -11,6 +11,7 @@ describe("Header component", () => {
         onSave: jest.fn(),
         onRestore: jest.fn(),
         saveState: "saved" as const,
+        connectionState: "open" as const,
     };
 
     it("renders correctly", () => {
@@ -53,6 +54,14 @@ describe("Header component", () => {
 
         rerender(<Header {...mockProps} saveState="neverSaved" />);
         expect(screen.getByTestId("save-state")).toHaveTextContent("Not saved yet");
+    });
+
+    it("reports whether changes from other people are getting through", () => {
+        const { rerender } = render(<Header {...mockProps} connectionState="open" />);
+        expect(screen.getByTestId("connection-state")).toHaveTextContent("Live");
+
+        rerender(<Header {...mockProps} connectionState="offline" />);
+        expect(screen.getByTestId("connection-state")).toHaveTextContent("Reconnecting");
     });
 
     it("passes the chosen project name up when the dropdown changes", () => {

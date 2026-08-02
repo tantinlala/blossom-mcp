@@ -48,7 +48,7 @@ describe("TextPromptDialog", () => {
         expect(onSubmit).toHaveBeenCalledWith("Book flights");
     });
 
-    it("submits on Enter, as the native prompt did", () => {
+    it("submits on Enter", () => {
         renderDialog();
 
         fireEvent.change(input(), { target: { value: "Book flights" } });

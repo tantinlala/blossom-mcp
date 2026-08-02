@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import App from "./App";
 import { APIClient } from "../utils/APIClient";
 import { PlanManager } from "../utils/PlanManager";
+import { RealtimeClient } from "../utils/RealtimeClient";
 import * as useRoadmapModule from "../hooks/useRoadmap";
 import * as useInboxModule from "../hooks/useInbox";
 import * as useServerSyncModule from "../hooks/useServerSync";
@@ -11,6 +12,7 @@ import * as useSidePanelModule from "../hooks/useSidePanel";
 
 jest.mock("../utils/APIClient");
 jest.mock("../utils/PlanManager");
+jest.mock("../utils/RealtimeClient");
 jest.mock("../hooks/useRoadmap");
 jest.mock("../hooks/useInbox");
 jest.mock("../hooks/useServerSync");
@@ -45,6 +47,7 @@ jest.mock("./InboxPanel", () => (props: any) => (
 describe("App", () => {
     let mockedAPIClient: jest.Mocked<APIClient>;
     let mockedPlanManager: jest.Mocked<PlanManager>;
+    let mockedRealtime: jest.Mocked<RealtimeClient>;
 
     // Hook return value mocks
     let mockSync: ReturnType<typeof createMockServerSync>;
@@ -57,10 +60,11 @@ describe("App", () => {
         return {
             applyState: jest.fn(),
             registerTargets: jest.fn(),
-            setEditingPaused: jest.fn(),
             saveState: "saved" as const,
             markSaved: jest.fn(),
             markNeverSaved: jest.fn(),
+            connectionState: "open" as const,
+            peers: [],
         };
     }
 
@@ -95,7 +99,7 @@ describe("App", () => {
     function createMockInbox() {
         return {
             ideaList: [] as string[],
-            setIdeaList: jest.fn(),
+            applyRemoteInbox: jest.fn(),
             addIdea: jest.fn(),
             deleteIdea: jest.fn(),
             changeIdea: jest.fn(),
@@ -122,6 +126,7 @@ describe("App", () => {
         return {
             existingProjects: [] as string[],
             selectedProject: "",
+            applyActiveProject: jest.fn(),
             initializeApp: jest.fn(),
             onSave: jest.fn(),
             onRestore: jest.fn(),
@@ -134,6 +139,7 @@ describe("App", () => {
 
         mockedAPIClient = new APIClient() as jest.Mocked<APIClient>;
         mockedPlanManager = new PlanManager() as jest.Mocked<PlanManager>;
+        mockedRealtime = new RealtimeClient() as jest.Mocked<RealtimeClient>;
 
         mockSync = createMockServerSync();
         mockRoadmap = createMockRoadmap();
@@ -148,7 +154,8 @@ describe("App", () => {
         (useSidePanelModule.useSidePanel as jest.Mock).mockReturnValue(mockPanel);
     });
 
-    const renderApp = () => render(<App apiClient={mockedAPIClient} planManager={mockedPlanManager} />);
+    const renderApp = () =>
+        render(<App apiClient={mockedAPIClient} planManager={mockedPlanManager} realtime={mockedRealtime} />);
 
     describe("rendering", () => {
         it("renders Header, RoadmapGraph and InboxPanel", () => {
@@ -183,11 +190,13 @@ describe("App", () => {
     });
 
     describe("hook wiring", () => {
-        it("passes apiClient and planManager to useServerSync", () => {
+        it("passes apiClient, planManager and the realtime client to useServerSync", () => {
             renderApp();
             expect(useServerSyncModule.useServerSync).toHaveBeenCalledWith({
                 apiClient: mockedAPIClient,
                 planManager: mockedPlanManager,
+                realtime: mockedRealtime,
+                notify: expect.any(Function),
             });
         });
 
@@ -197,6 +206,7 @@ describe("App", () => {
                 mockedPlanManager,
                 mockedAPIClient,
                 mockSync.applyState,
+                expect.any(Function),
             );
         });
 
@@ -206,7 +216,7 @@ describe("App", () => {
                 apiClient: mockedAPIClient,
                 planManager: mockedPlanManager,
                 applyState: mockSync.applyState,
-                setEditingPaused: mockSync.setEditingPaused,
+                notify: expect.any(Function),
             });
         });
 
@@ -219,15 +229,22 @@ describe("App", () => {
                 promptForText: expect.any(Function),
                 markSaved: mockSync.markSaved,
                 markNeverSaved: mockSync.markNeverSaved,
+                notify: expect.any(Function),
             });
         });
 
-        it("registers setIdeaList and syncRoadmap as sync targets on mount", () => {
+        it("registers the inbox, project selector and roadmap as sync targets on mount", () => {
             renderApp();
             expect(mockSync.registerTargets).toHaveBeenCalledWith({
-                setIdeaList: mockInbox.setIdeaList,
+                applyRemoteInbox: mockInbox.applyRemoteInbox,
+                applyActiveProject: mockProject.applyActiveProject,
                 syncRoadmap: mockRoadmap.syncRoadmap,
             });
+        });
+
+        it("teaches the APIClient how to ask before switching everyone's project", () => {
+            renderApp();
+            expect(mockedAPIClient.setConfirmHandler).toHaveBeenCalledWith(expect.any(Function));
         });
     });
 

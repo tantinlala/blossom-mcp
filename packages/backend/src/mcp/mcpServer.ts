@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { GOAL_ID, Task } from "@blossom/common";
-import { ProjectStore } from "../state/projectStore";
+import { GOAL_ID, MCP_AUTHOR, Task } from "@blossom/common";
+import { ProjectStore, UndoBlockedError } from "../state/projectStore";
 
 const TREE_EXPLANATION =
     `The project is a recursive tree: the root goal has a plan containing tasks, and any task may itself ` +
@@ -10,8 +10,7 @@ const TREE_EXPLANATION =
     `directly into that plan's goal. A dependency {source, target} means the source task must finish before ` +
     `the target can start.`;
 
-// How many top-level tasks a plan should hold before grouping into subgoals,
-// carried over from the original Planner.
+// How many top-level tasks a plan should hold before grouping into subgoals.
 const MAX_TOP_LEVEL_TASKS = 8;
 
 // Roughly what fits on one or two lines of a roadmap node before the box grows
@@ -34,12 +33,10 @@ const NAMING_GUIDANCE =
     `When you promote an inbox idea whose text reads as a full sentence or a bare noun, follow up with ` +
     `update_task to rewrite the name as a short imperative action and move the detail into the description.`;
 
-// Workflow guidance ported from the original Ideator/Planner system prompts.
 // Sent as server instructions on connect, so any MCP client steers the LLM
-// through the same goal-clarification -> ideation -> planning flow the old
-// built-in chat used. The user watches the roadmap and inbox update live in
-// the web UI, so changes should be made through tools as the conversation
-// progresses, not batched at the end.
+// through the same goal-clarification -> ideation -> planning flow. The user
+// watches the roadmap and inbox update live in the web UI, so changes should be
+// made through tools as the conversation progresses, not batched at the end.
 const SERVER_INSTRUCTIONS =
     `You are a project planning assistant helping the user define a goal and build a project roadmap. ` +
     `Assume the user may lack experience and needs suggestions and guidance. The user is watching the ` +
@@ -81,10 +78,15 @@ const errorResult = (error: unknown) => {
 /**
  * Builds the MCP server through which external chat applications (e.g. Claude
  * Desktop) collaborate on the project plan. All mutations go through the same
- * ProjectStore as the REST API, so the web UI picks them up via polling.
+ * ProjectStore as the REST API, so every connected web UI is pushed the change
+ * as it happens.
  */
 const createMcpServer = (store: ProjectStore): McpServer => {
     const server = new McpServer({ name: "blossom", version: "1.0.0" }, { instructions: SERVER_INSTRUCTIONS });
+
+    // Attributes every change made through MCP, so undo can tell the work done
+    // here apart from whatever people are doing in the web UI.
+    const asMcp = <T>(fn: () => T): T => store.runAs(MCP_AUTHOR, fn);
 
     // Invocable prompts for clients that surface them (e.g. Claude Desktop);
     // they restate the workflow for users whose client ignores instructions.
@@ -215,7 +217,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             },
         },
         async ({ name, description }) => {
-            store.setGoal(name, description);
+            asMcp(() => store.setGoal(name, description));
             return textResult({ version: store.getVersion() });
         },
     );
@@ -244,7 +246,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ name, description, parentId }) => {
             try {
-                const task = store.addTask(parentId ?? GOAL_ID, name, description);
+                const task = asMcp(() => store.addTask(parentId ?? GOAL_ID, name, description));
                 return textResult({ taskId: task.id, version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -276,7 +278,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId, name, description }) => {
             try {
-                store.updateTask(taskId, { name, description });
+                asMcp(() => store.updateTask(taskId, { name, description }));
                 return textResult({ version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -297,7 +299,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId, completed }) => {
             try {
-                store.setTaskCompletion(taskId, completed);
+                asMcp(() => store.setTaskCompletion(taskId, completed));
                 return textResult({ version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -313,7 +315,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId }) => {
             try {
-                store.removeTask(taskId);
+                asMcp(() => store.removeTask(taskId));
                 return textResult({ version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -329,7 +331,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId }) => {
             try {
-                store.createSubplan(taskId);
+                asMcp(() => store.createSubplan(taskId));
                 return textResult({ version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -351,7 +353,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ sourceId, targetId }) => {
             try {
-                store.addDependency(sourceId, targetId);
+                asMcp(() => store.addDependency(sourceId, targetId));
                 return textResult({ version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -370,7 +372,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ sourceId, targetId }) => {
             try {
-                store.removeDependency(sourceId, targetId);
+                asMcp(() => store.removeDependency(sourceId, targetId));
                 return textResult({ version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -387,7 +389,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             inputSchema: { text: z.string() },
         },
         async ({ text }) => {
-            store.addIdea(text);
+            asMcp(() => store.addIdea(text));
             return textResult({ version: store.getVersion() });
         },
     );
@@ -400,7 +402,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ index }) => {
             try {
-                store.removeIdea(index);
+                asMcp(() => store.removeIdea(index));
                 return textResult({ version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -423,7 +425,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ index, parentId }) => {
             try {
-                const task = store.promoteIdea(index, parentId);
+                const task = asMcp(() => store.promoteIdea(index, parentId));
                 return textResult({ taskId: task.id, version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
@@ -435,10 +437,20 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         "undo_last_change",
         {
             description:
-                "Undo the most recent change to the project, regardless of whether it was made through this " +
-                "MCP server or the web UI.",
+                "Undo the most recent change to the project, provided that change was made through this MCP " +
+                "server. If somebody working in the web UI has changed the project since, the undo is " +
+                "refused, so their work is never silently reverted.",
         },
-        async () => textResult({ undone: store.undo(), version: store.getVersion() }),
+        async () => {
+            try {
+                return textResult({ undone: asMcp(() => store.undo()), version: store.getVersion() });
+            } catch (error) {
+                if (error instanceof UndoBlockedError) {
+                    return textResult({ undone: false, reason: error.message, version: store.getVersion() });
+                }
+                return errorResult(error);
+            }
+        },
     );
 
     // Project management — listing, saving, opening, and creating projects — is

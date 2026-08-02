@@ -11,7 +11,12 @@ const EMPTY_ROADMAP: Roadmap = {
     ancestors: [],
 };
 
-export function useRoadmap(planManager: PlanManager, apiClient: APIClient, applyState: (state: ProjectState) => void) {
+export function useRoadmap(
+    planManager: PlanManager,
+    apiClient: APIClient,
+    applyState: (state: ProjectState) => void,
+    notify?: (message: string) => void,
+) {
     const [presentlyShownRoadmap, setPresentlyShownRoadmap] = useState<Roadmap>(EMPTY_ROADMAP);
     const [unblockedTasks, setUnblockedTasks] = useState<NextTask[]>([]);
     const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -25,23 +30,30 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
         setUnblockedTasks(planManager.allUnblockedTasks);
     }, [planManager]);
 
-    // Applies a mutation response; on failure (the APIClient swallows errors
-    // and returns undefined, e.g. the task was deleted via MCP) refetches the
-    // authoritative state so the UI cannot stay stale.
+    // Applies a mutation response. On failure the APIClient returns undefined
+    // (e.g. the task was deleted by somebody else first). A refusal comes back
+    // with the server's own state and an explanation, both already handled
+    // centrally; anything else is unexplained, so refetch to avoid staying stale.
     const applyResult = useCallback(
         async (result: ProjectState | undefined): Promise<boolean> => {
             if (result) {
                 applyState(result);
                 return true;
             }
-            alert("Error: The operation failed. Refreshing project state.");
+
+            const failure = apiClient.lastFailure();
+            if (failure?.state) {
+                return false;
+            }
+
+            notify?.("That did not work. Refreshing the project.");
             const state = await apiClient.getState();
             if (state) {
                 applyState(state);
             }
             return false;
         },
-        [apiClient, applyState],
+        [apiClient, applyState, notify],
     );
 
     const setGoal = useCallback(
@@ -55,13 +67,13 @@ export function useRoadmap(planManager: PlanManager, apiClient: APIClient, apply
         async (taskName: string): Promise<Task | null> => {
             const result = await apiClient.addTask(planManager.presentContextGoal.id, taskName);
             if (!result) {
-                alert("Error: Unable to add task.");
+                notify?.("Could not add that task.");
                 return null;
             }
             applyState(result.state);
             return result.task;
         },
-        [planManager, apiClient, applyState],
+        [planManager, apiClient, applyState, notify],
     );
 
     const removeTask = useCallback(

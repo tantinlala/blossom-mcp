@@ -41,7 +41,7 @@ const TextPromptDialog: React.FC<TextPromptDialogProps> = ({
 
     return (
         <Dialog open={open} onClose={onCancel} fullWidth maxWidth="xs" data-testid="text-prompt-dialog">
-            {/* A form so Enter submits, which is what the native prompt did */}
+            {/* A form, so Enter submits */}
             <form onSubmit={handleSubmit}>
                 <DialogTitle>{title}</DialogTitle>
                 <DialogContent>
@@ -52,8 +52,8 @@ const TextPromptDialog: React.FC<TextPromptDialogProps> = ({
                         label={label}
                         value={value}
                         onChange={(event) => setValue(event.target.value)}
-                        // The default is a placeholder like "New Task"; selecting it
-                        // means typing replaces it, as it did in the native prompt
+                        // The default is a placeholder like "New Task"; selecting
+                        // it means typing replaces it rather than appending
                         onFocus={(event) => event.target.select()}
                         slotProps={{ htmlInput: { "data-testid": "text-prompt-input" } }}
                     />

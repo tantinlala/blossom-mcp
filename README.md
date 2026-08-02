@@ -2,7 +2,7 @@
 
 This application allows you to use generative AI to create an easy to visualize project plan.
 
-There is no built-in chat window or LLM: the backend exposes an MCP (Model Context Protocol) server, and you collaborate on the plan through an external chat application (e.g. Claude Desktop) connected to it. The web UI visualizes the roadmap live and picks up the LLM's edits automatically.
+The backend exposes an MCP (Model Context Protocol) server, and you collaborate on the plan through an external chat application (e.g. Claude Desktop) connected to it. The web UI visualizes the roadmap live and picks up the LLM's edits as they happen.
 
 ## Setup Environment
 

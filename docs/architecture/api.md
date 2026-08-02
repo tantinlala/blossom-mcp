@@ -1,16 +1,34 @@
 # API Endpoints
 
+## Preconditions
+
+Writes that overwrite text carry a precondition, so one person cannot silently clobber another's edit:
+
+| Command                                         | Precondition   | Why                                                                               |
+| ----------------------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `goal`, `tasks/update`                          | `baseVersion`  | Text overwrite against a stable, id-addressed target.                             |
+| `inbox/update`, `inbox/remove`, `inbox/promote` | `expectedText` | Inbox rows are index-addressed and adding an idea unshifts, renumbering them all. |
+| everything else                                 | none           | Additive or commutative.                                                          |
+
+`baseVersion` is captured when the local edit **begins**, not when it is sent — at send time it is always current and would catch nothing. Both are optional; omitting them leaves the write unguarded, so the last one wins.
+
 ## REST API (`/api`)
 
-Used by the frontend. Unless noted otherwise, every mutation returns `{ response: ProjectState }` where `ProjectState = { version, activeProject, goal, inbox }`. Validation failures return 400, unknown task/project ids return 404.
+Used by the frontend as the **fallback transport**, while the realtime socket is not open; the socket carries the same commands under the same names (see below). Unless noted otherwise, every mutation returns `{ response: ProjectState }` where `ProjectState = { version, activeProject, goal, inbox }`.
+
+Validation failures return 400, unknown task/project ids return 404, and a refused write returns **409** with `{ error, response }` — `response` being the server's authoritative state, so the client can rebase instead of guessing. A 409 may additionally carry `otherCount` (project switch).
+
+Every error body also carries a `code` drawn from the same `CommandErrorCode` union the socket uses, so a failure means the same thing on either transport. Statuses alone would not: `conflict`, `undo-blocked` and `confirm-required` all return 409.
+
+Mutations may send an `X-Blossom-Author` header (`{ id, kind }`) identifying the browser that made the change. There are no names and no authentication — it only lets undo tell one browser's work from another's.
 
 | Endpoint                  | Method | Input                                            | Description                                                            |
 | ------------------------- | ------ | ------------------------------------------------ | ---------------------------------------------------------------------- |
 | **/state**                | GET    | None                                             | Returns the full current project state.                                |
-| **/state/version**        | GET    | None                                             | Returns `{ version }` — cheap change detection for polling.            |
-| **/goal**                 | POST   | `{ name, description? }`                         | Sets the goal name/description (creates an empty plan if none exists). |
+| **/state/version**        | GET    | None                                             | Returns `{ version }` — used by the degraded poll while offline.       |
+| **/goal**                 | POST   | `{ name, description?, baseVersion? }`           | Sets the goal name/description (creates an empty plan if none exists). |
 | **/tasks/add**            | POST   | `{ parentId, name, description? }`               | Adds a task; returns `{ task, state }`.                                |
-| **/tasks/update**         | POST   | `{ taskId, name?, description? }`                | Updates a task's name/description.                                     |
+| **/tasks/update**         | POST   | `{ taskId, name?, description?, baseVersion? }`  | Updates a task's name/description.                                     |
 | **/tasks/set-completion** | POST   | `{ taskId, completed }`                          | Sets completion; parent completion propagates automatically.           |
 | **/tasks/remove**         | POST   | `{ taskId }`                                     | Deletes a task and any dependencies referencing it.                    |
 | **/tasks/create-subplan** | POST   | `{ taskId }`                                     | Gives a task an empty subplan.                                         |
@@ -19,10 +37,11 @@ Used by the frontend. Unless noted otherwise, every mutation returns `{ response
 | **/dependencies/remove**  | POST   | `{ sourceId, targetId }`                         | Removes a dependency.                                                  |
 | **/dependencies/update**  | POST   | `{ oldSource, oldTarget, newSource, newTarget }` | Rewires a dependency.                                                  |
 | **/inbox/add**            | POST   | `{ text }`                                       | Prepends an idea to the inbox.                                         |
-| **/inbox/update**         | POST   | `{ index, text }`                                | Edits an idea.                                                         |
-| **/inbox/remove**         | POST   | `{ index }`                                      | Removes an idea.                                                       |
-| **/inbox/promote**        | POST   | `{ index, parentId? }`                           | Converts an idea into a task.                                          |
-| **/undo**                 | POST   | None                                             | Undoes the most recent mutation (global — regardless of author).       |
+| **/inbox/update**         | POST   | `{ index, text, expectedText? }`                 | Edits an idea.                                                         |
+| **/inbox/remove**         | POST   | `{ index, expectedText? }`                       | Removes an idea.                                                       |
+| **/inbox/promote**        | POST   | `{ index, parentId?, expectedText? }`            | Converts an idea into a task.                                          |
+| **/inbox/promote-all**    | POST   | `{ parentId? }`                                  | Converts every idea into a task in one mutation.                       |
+| **/undo**                 | POST   | None                                             | Undoes your most recent change; 409 if somebody else changed it since. |
 | **/projects**             | GET    | None                                             | Returns `{ projects: string[] }`.                                      |
 | **/projects/new**         | POST   | None                                             | Resets to a fresh empty project.                                       |
 | **/projects/save**        | POST   | `{ filename }`                                   | Saves current state to disk; returns `{ projects }`.                   |
@@ -55,7 +74,7 @@ Project management — listing, saving, opening, and creating projects — is de
 
 ### Workflow steering
 
-The server sends **instructions** in the MCP initialize response (clients like Claude Desktop inject them into the model's context on connect). They port the original Ideator/Planner system prompts to the tool-based workflow: Phase 1 goal clarification (one question at a time, WHAT/WHY not HOW), Phase 2 comprehensive task ideation into the inbox, Phase 3 structuring — promote ideas to tasks, group into subgoals past ~8 tasks per level, and wire dependencies into a DAG.
+The server sends **instructions** in the MCP initialize response (clients like Claude Desktop inject them into the model's context on connect). They lay out the workflow: Phase 1 goal clarification (one question at a time, WHAT/WHY not HOW), Phase 2 comprehensive task ideation into the inbox, Phase 3 structuring — promote ideas to tasks, group into subgoals past ~8 tasks per level, and wire dependencies into a DAG.
 
 The instructions also carry a **naming** rule: every goal and task name must start with an imperative verb and read as one actionable item ("Sign software engineering offer", not "Resume" or a full sentence), and it is a label on a graph node, so it stays under ~40 characters. All specifics, measures, deadlines and rationale go in the `description` field the UI shows in the details drawer. The same guidance is repeated in the `generate-plan` prompt and in the `set_goal`/`add_task`/`update_task` parameter descriptions, and inbox ideas are phrased as imperative actions too, since a promoted idea takes its full text as the task name and otherwise needs rewriting afterwards.
 
@@ -92,3 +111,31 @@ claude mcp add --scope user --transport http blossom http://localhost:3030/mcp
 ```
 
 Verify with `claude mcp list`, or the `/mcp` command inside a session.
+
+## Realtime WebSocket (`/ws`)
+
+The primary transport. Message types are defined in `@blossom/common/realtime.ts` and shared by both ends.
+
+**Client → server**
+
+| Frame     | Payload                 | Description                                                  |
+| --------- | ----------------------- | ------------------------------------------------------------ |
+| `hello`   | `{ author }`            | Identifies the browser on this socket.                       |
+| `command` | `{ id, name, payload }` | Runs a mutation. `name` is the same name as the REST path.   |
+| `resync`  | None                    | Asks for a fresh snapshot (tab refocused, network returned). |
+| `pong`    | None                    | Answers the server's ping.                                   |
+
+**Server → client**
+
+| Frame      | Payload                                | Description                                                                            |
+| ---------- | -------------------------------------- | -------------------------------------------------------------------------------------- |
+| `snapshot` | `{ protocolVersion, serverId, state }` | Sent on connect and on `resync`. Applied unconditionally, bypassing the version guard. |
+| `state`    | `{ state, author? }`                   | A change happened, from any writer.                                                    |
+| `notice`   | `{ kind, project }`                    | Somebody switched everyone's project.                                                  |
+| `result`   | `{ id, result }`                       | A command succeeded. `result` is byte-identical to REST's `response`.                  |
+| `error`    | `{ id, error, state }`                 | A command failed; `state` is authoritative so conflicts self-heal.                     |
+| `ping`     | None                                   | Heartbeat, every 25s. A socket silent for 60s is terminated.                           |
+
+`serverId` identifies the process. The version counter restarts with it, so a client seeing a new `serverId` trusts the snapshot rather than comparing versions.
+
+WebSocket upgrades bypass CORS, and the server accepts any origin — a deliberate choice for a tool that runs on a trusted local network.

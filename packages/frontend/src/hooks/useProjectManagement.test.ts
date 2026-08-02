@@ -19,6 +19,7 @@ describe("useProjectManagement", () => {
     let mockPromptForText: jest.Mock;
     let mockMarkSaved: jest.Mock;
     let mockMarkNeverSaved: jest.Mock;
+    let mockNotify: jest.Mock;
 
     beforeEach(() => {
         jest.clearAllMocks();
@@ -28,7 +29,8 @@ describe("useProjectManagement", () => {
         mockPromptForText = jest.fn();
         mockMarkSaved = jest.fn();
         mockMarkNeverSaved = jest.fn();
-        window.alert = jest.fn();
+        mockNotify = jest.fn();
+        mockedAPIClient.lastFailure.mockReturnValue(null);
     });
 
     const render = () =>
@@ -40,6 +42,7 @@ describe("useProjectManagement", () => {
                 promptForText: mockPromptForText,
                 markSaved: mockMarkSaved,
                 markNeverSaved: mockMarkNeverSaved,
+                notify: mockNotify,
             }),
         );
 
@@ -82,7 +85,7 @@ describe("useProjectManagement", () => {
         expect(result.current.selectedProject).toBe("");
     });
 
-    it("initializeApp alerts on project list failure", async () => {
+    it("initializeApp reports a project list failure", async () => {
         mockedAPIClient.listExistingProjects.mockResolvedValue(undefined);
 
         const { result } = render();
@@ -91,12 +94,12 @@ describe("useProjectManagement", () => {
             await result.current.initializeApp();
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Error: Unable to list existing projects.");
+        expect(mockNotify).toHaveBeenCalledWith("Could not list the saved projects.");
         expect(mockedAPIClient.getState).not.toHaveBeenCalled();
         expect(mockApplyState).not.toHaveBeenCalled();
     });
 
-    it("initializeApp alerts on state fetch failure", async () => {
+    it("initializeApp reports a state fetch failure", async () => {
         mockedAPIClient.listExistingProjects.mockResolvedValue(["Project 1"]);
         mockedAPIClient.getState.mockResolvedValue(undefined);
 
@@ -106,7 +109,7 @@ describe("useProjectManagement", () => {
             await result.current.initializeApp();
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Error: Unable to fetch project state.");
+        expect(mockNotify).toHaveBeenCalledWith("Could not load the project.");
         expect(mockApplyState).not.toHaveBeenCalled();
     });
 
@@ -125,7 +128,7 @@ describe("useProjectManagement", () => {
         expect(mockSetSelectedTask).toHaveBeenCalledWith({ ...state.goal });
     });
 
-    it("onRestore alerts when starting a new project fails", async () => {
+    it("onRestore reports a failure to start a new project", async () => {
         mockedAPIClient.newProject.mockResolvedValue(undefined);
 
         const { result } = render();
@@ -134,7 +137,7 @@ describe("useProjectManagement", () => {
             await result.current.onRestore();
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Error: Unable to start a new project.");
+        expect(mockNotify).toHaveBeenCalledWith("Could not start a new project.");
         expect(mockApplyState).not.toHaveBeenCalled();
     });
 
@@ -157,7 +160,7 @@ describe("useProjectManagement", () => {
         expect(mockSetSelectedTask).toHaveBeenCalledWith({ ...state.goal });
     });
 
-    it("onRestore alerts when restoring fails", async () => {
+    it("onRestore reports a failure to restore", async () => {
         mockedAPIClient.restoreProject.mockResolvedValue(undefined);
 
         const { result } = render();
@@ -167,13 +170,13 @@ describe("useProjectManagement", () => {
         });
 
         jest.clearAllMocks();
-        window.alert = jest.fn();
+        mockedAPIClient.lastFailure.mockReturnValue(null);
 
         await act(async () => {
             await result.current.onRestore();
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Error: Unable to restore project.");
+        expect(mockNotify).toHaveBeenCalledWith("Could not open that project.");
         expect(mockApplyState).not.toHaveBeenCalled();
     });
 
@@ -223,7 +226,7 @@ describe("useProjectManagement", () => {
         expect(mockedAPIClient.saveProject).not.toHaveBeenCalled();
     });
 
-    it("onSave alerts for a whitespace-only filename", async () => {
+    it("onSave reports a whitespace-only filename without saving", async () => {
         mockPromptForText.mockResolvedValue("   ");
 
         const { result } = render();
@@ -232,11 +235,11 @@ describe("useProjectManagement", () => {
             await result.current.onSave();
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Filename cannot be empty or whitespace only.");
+        expect(mockNotify).toHaveBeenCalledWith("A filename cannot be blank.");
         expect(mockedAPIClient.saveProject).not.toHaveBeenCalled();
     });
 
-    it("onSave alerts when saving fails and keeps the existing project list", async () => {
+    it("onSave reports a failure to save and keeps the existing project list", async () => {
         mockPromptForText.mockResolvedValue("my-project");
         mockedAPIClient.saveProject.mockResolvedValue(undefined);
 
@@ -246,7 +249,7 @@ describe("useProjectManagement", () => {
             await result.current.onSave();
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Error: Unable to save project.");
+        expect(mockNotify).toHaveBeenCalledWith("Could not save the project.");
         expect(result.current.existingProjects).toEqual([]);
     });
 
@@ -298,5 +301,84 @@ describe("useProjectManagement", () => {
         });
 
         expect(mockedAPIClient.restoreProject).toHaveBeenCalledTimes(1);
+    });
+
+    describe("following a project switch made by somebody else", () => {
+        beforeEach(() => {
+            mockedAPIClient.listExistingProjects.mockResolvedValue([]);
+        });
+
+        it("selects the project the server reports as active", () => {
+            const { result } = render();
+
+            act(() => result.current.applyActiveProject("q3-roadmap"));
+
+            expect(result.current.selectedProject).toBe("q3-roadmap");
+        });
+
+        it("clears the selection when everyone is moved to a new project", () => {
+            const { result } = render();
+            act(() => result.current.applyActiveProject("q3-roadmap"));
+
+            act(() => result.current.applyActiveProject(null));
+
+            expect(result.current.selectedProject).toBe("");
+        });
+
+        it("refetches the list when the active project is one it has not heard of", async () => {
+            mockedAPIClient.listExistingProjects.mockResolvedValue(["q3-roadmap"]);
+            const { result } = render();
+
+            await act(async () => {
+                result.current.applyActiveProject("q3-roadmap");
+            });
+
+            // A selector whose value has no matching option renders blank, so
+            // the newly saved project has to make it into the list.
+            expect(mockedAPIClient.listExistingProjects).toHaveBeenCalled();
+            expect(result.current.existingProjects).toEqual(["q3-roadmap"]);
+        });
+
+        it("does not refetch for a project it already knows about", async () => {
+            mockedAPIClient.listExistingProjects.mockResolvedValue(["known"]);
+            const { result } = render();
+            await act(async () => {
+                await result.current.initializeApp();
+            });
+            mockedAPIClient.listExistingProjects.mockClear();
+
+            await act(async () => {
+                result.current.applyActiveProject("known");
+            });
+
+            expect(mockedAPIClient.listExistingProjects).not.toHaveBeenCalled();
+        });
+    });
+
+    describe("declining to switch everyone's project", () => {
+        it("says nothing when the person cancelled the confirmation", async () => {
+            mockedAPIClient.restoreProject.mockResolvedValue(undefined);
+            mockedAPIClient.lastFailure.mockReturnValue({ code: "cancelled", message: "Cancelled" });
+            const { result } = render();
+
+            await act(async () => {
+                await result.current.handleProjectChange("q3-roadmap");
+            });
+
+            // Deciding not to switch is a decision, not a failure.
+            expect(mockNotify).not.toHaveBeenCalled();
+        });
+
+        it("reports a genuine failure to open a project", async () => {
+            mockedAPIClient.restoreProject.mockResolvedValue(undefined);
+            mockedAPIClient.lastFailure.mockReturnValue({ code: "network", message: "Network Error" });
+            const { result } = render();
+
+            await act(async () => {
+                await result.current.handleProjectChange("q3-roadmap");
+            });
+
+            expect(mockNotify).toHaveBeenCalledWith("Could not open that project.");
+        });
     });
 });
