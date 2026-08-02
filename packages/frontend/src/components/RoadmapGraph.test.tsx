@@ -1,4 +1,5 @@
-import { ReactFlowProvider, Position } from "@xyflow/react";
+import React from "react";
+import { ReactFlowProvider } from "@xyflow/react";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import RoadmapGraph from "./RoadmapGraph";
 import { mockReactFlow } from "../test/setup";
@@ -8,6 +9,19 @@ import { TASK_COMPLETED_COLOR, TASK_BLOCKED_COLOR, TASK_UNBLOCKED_COLOR, GOAL_CO
 import { TaskAndState, TaskState } from "../types/extendedTasks";
 import { Roadmap } from "../types/roadmap";
 
+// How many edges each layout run was given, in the order the runs happened.
+const mockLayoutEdgeCounts: number[] = [];
+jest.mock("../utils/layouter", () => {
+    const actual = jest.requireActual("../utils/layouter");
+    return {
+        ...actual,
+        getLayoutedElements: (nodes: any, edges: any) => {
+            mockLayoutEdgeCounts.push(edges.length);
+            return actual.getLayoutedElements(nodes, edges);
+        },
+    };
+});
+
 // Fake callbacks
 const setGoal = jest.fn();
 const addTask = jest.fn(async (taskName: string): Promise<Task | null> => {
@@ -16,10 +30,10 @@ const addTask = jest.fn(async (taskName: string): Promise<Task | null> => {
 const removeTask = (taskId: string) => {
     /* ... */
 };
-const connect = (source: string, target: string) => {
+const connect = async (source: string, target: string) => {
     /* ... */
 };
-const edgeRemove = (source: string, target: string) => {
+const edgeRemove = async (source: string, target: string) => {
     /* ... */
 };
 const edgeUpdate = (oldSource: string, oldTarget: string, newSource: string, newTarget: string) => {
@@ -496,81 +510,83 @@ describe("RoadmapGraph", () => {
         });
     });
 
-    test("positions node with handle at drop location when dropping an edge on pane", async () => {
-        // Mock the screenToFlowPosition function that is called in onConnectEnd
-        promptForText.mockResolvedValueOnce("New Task");
+    describe("creating a task from a selection", () => {
+        /**
+         * Stands in for the server: adding a task and adding a dependency are
+         * separate round trips, and each one comes back as a new roadmap. The
+         * dependency is held open until the test releases it, which is the window
+         * in which the new task is on the canvas with nothing attached to it.
+         */
+        const ServerBackedGraph: React.FC<{ releaseConnect: Promise<void> }> = ({ releaseConnect }) => {
+            const [tasksList, setTasksList] = React.useState<TaskAndState[]>([
+                { task: { name: "Task A", id: "a", completionState: false, plan: null }, state: TaskState.UNBLOCKED },
+            ]);
+            const [dependenciesList, setDependenciesList] = React.useState<Dependency[]>([]);
 
-        // Set up a spy on the setNodes function
-        const mockSetNodes = jest.fn();
-        jest.spyOn(global, "setTimeout");
+            const handleAddTask = async (name: string): Promise<Task> => {
+                const task: Task = { name, id: "new-task-id", completionState: false, plan: null };
+                setTasksList((current) => [...current, { task, state: TaskState.UNBLOCKED }]);
+                return task;
+            };
 
-        // Create a simplified version of connectionState for the right handle
-        const rightConnectionState = {
-            isValid: false,
-            fromNode: { id: "1" },
-            fromPosition: Position.Right,
+            const handleConnect = async (source: string, target: string) => {
+                await releaseConnect;
+                setDependenciesList((current) => [...current, { source, target }]);
+            };
+
+            // The app hands the graph a roadmap that only changes when the plan
+            // does, and the graph rebuilds its nodes from every one it is given.
+            const presentlyShownRoadmap = React.useMemo(
+                () => ({ tasksList, dependenciesList, isSubplan: false, ancestors: [] }),
+                [tasksList, dependenciesList],
+            );
+
+            return (
+                <ReactFlowProvider>
+                    <RoadmapGraph
+                        presentlyShownRoadmap={presentlyShownRoadmap}
+                        handleAddTask={handleAddTask}
+                        handleConnect={handleConnect}
+                        handleSetGoal={setGoal}
+                        handleRemoveTask={removeTask}
+                        handleRemoveEdge={edgeRemove}
+                        handleUpdateEdge={edgeUpdate}
+                        handleToggleComplete={toggleComplete}
+                        handleChangeRoadmapContext={changeRoadmapContext}
+                        handleCreatePlanForTask={createPlanForTask}
+                        handleSelectTask={selectTask}
+                        showTaskDetails={toggleTaskDetails}
+                        showNextTasks={toggleNextTaskDrawer}
+                        handlePaste={handlePaste}
+                        handleUndo={handleUndo}
+                        toggleInbox={toggleInbox}
+                        promptForText={promptForText}
+                    />
+                </ReactFlowProvider>
+            );
         };
 
-        // Create the event object with client coordinates
-        const mockEvent = { clientX: 200, clientY: 100 };
+        test("lays the graph out once the new task's edge has landed", async () => {
+            promptForText.mockResolvedValue("New Task");
+            let release: () => void = () => {};
+            const releaseConnect = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            const { container } = render(<ServerBackedGraph releaseConnect={releaseConnect} />);
 
-        // Mock the useCallback behavior and extract onConnectEnd
-        jest.mock("react", () => ({
-            ...jest.requireActual("react"),
-            useCallback: (fn) => fn,
-        }));
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+            fireEvent.click(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
 
-        // Mock implementation of the RoadmapGraph's dependencies for this test.
-        // handleAddTask is async and resolves with the created task (or null).
-        const mockAddTask = jest.fn().mockResolvedValue({
-            id: "new-task-id",
-            name: "New Task",
-            completionState: false,
-            plan: null,
-        });
+            mockLayoutEdgeCounts.length = 0;
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: " " });
 
-        const mockHandleConnect = jest.fn();
+            // The task arrives first, so it is on the canvas with no edge yet.
+            await waitFor(() => expect(screen.getByText("New Task")).toBeInTheDocument());
+            release();
 
-        // Render with minimal props for this test
-        const testTasksList = [
-            { task: { name: "Task 1", id: "1", completionState: false, plan: null }, state: TaskState.UNBLOCKED },
-        ];
-
-        render(
-            <ReactFlowProvider>
-                <RoadmapGraph
-                    presentlyShownRoadmap={{
-                        tasksList: testTasksList,
-                        dependenciesList: [],
-                        isSubplan: false,
-                        ancestors: [],
-                    }}
-                    handleAddTask={mockAddTask}
-                    handleConnect={mockHandleConnect}
-                    // Include required props with mock functions
-                    handleSetGoal={setGoal}
-                    handleRemoveTask={removeTask}
-                    handleRemoveEdge={edgeRemove}
-                    handleUpdateEdge={edgeUpdate}
-                    handleToggleComplete={toggleComplete}
-                    handleChangeRoadmapContext={changeRoadmapContext}
-                    handleCreatePlanForTask={createPlanForTask}
-                    handleSelectTask={selectTask}
-                    showTaskDetails={toggleTaskDetails}
-                    showNextTasks={toggleNextTaskDrawer}
-                    handlePaste={handlePaste}
-                    handleUndo={handleUndo}
-                    toggleInbox={toggleInbox}
-                    promptForText={promptForText}
-                />
-            </ReactFlowProvider>,
-        );
-
-        // Even though we can't directly test the implementation details of the position adjustment,
-        // we can verify that the component renders properly with the adjustment code in place
-        await waitFor(() => {
-            const taskNode = screen.getByText("Task 1");
-            expect(taskNode).toBeInTheDocument();
+            // Where a task belongs follows from what it connects to, so the last
+            // word on its position has to be a layout that has seen the edge.
+            await waitFor(() => expect(mockLayoutEdgeCounts[mockLayoutEdgeCounts.length - 1]).toBe(1));
         });
     });
 });

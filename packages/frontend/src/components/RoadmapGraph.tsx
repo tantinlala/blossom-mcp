@@ -29,7 +29,7 @@ import { GOAL_ID, createGoalNode } from "../utils/goalNodeUtils";
 import { TaskAndState, TaskState } from "../types/extendedTasks";
 import { Dependency, Task } from "@blossom/common";
 import { Roadmap } from "../types/roadmap";
-import TaskNode, { NODE_HALF_WIDTH, EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, DIMMED_OPACITY, Position } from "./TaskNode";
+import TaskNode, { EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, DIMMED_OPACITY, Position } from "./TaskNode";
 import { useGraphHighlight } from "../hooks/useGraphHighlight";
 import { PromptForText } from "../hooks/useTextPrompt";
 import { palette } from "../theme/tokens";
@@ -100,9 +100,9 @@ interface RoadmapGraphProps {
     handleSetGoal: (goalName: string) => void;
     handleAddTask: (taskName: string) => Promise<Task | null>;
     handleRemoveTask: (taskId: string) => void;
-    handleConnect: (source: string, target: string) => void;
+    handleConnect: (source: string, target: string) => Promise<void>;
     handleUpdateEdge: (oldSource: string, oldTarget: string, newSource: string, newTarget: string) => void;
-    handleRemoveEdge: (source: string, target: string) => void;
+    handleRemoveEdge: (source: string, target: string) => Promise<void>;
     handleToggleComplete: (taskId: string) => void;
     handleChangeRoadmapContext: (taskId: string) => void;
     handleCreatePlanForTask: (taskId: string) => void;
@@ -141,41 +141,57 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     const [menu, setMenu] = useState(null as any);
     const ref = useRef(null);
     const pendingFitRef = useRef(false);
-    const { getNodes, getEdges, screenToFlowPosition, fitView } = useReactFlow();
+    // Set while a task is being added and wired up. See createTaskWithEdges.
+    const layoutHeldRef = useRef(false);
+    const { getNodes, getEdges, fitView } = useReactFlow();
     const nodesInitialized = useNodesInitialized();
 
-    // Go through presently shown plan update the nodes and edges
+    /**
+     * Rebuilds the graph from the plan every time the server sends one.
+     *
+     * A task already on the canvas keeps its own node object, which is what
+     * carries its position and the size ReactFlow measured for it. A node handed
+     * back without that size is treated as unmeasured and stays hidden, and
+     * nothing re-measures it while its box on screen is unchanged - so the update
+     * reads the nodes it is replacing, rather than a snapshot that a mutation
+     * still in flight may already have moved past. Dimming is stripped on the way
+     * through: it belongs to whatever chain is being traced right now, and baking
+     * it into a node would leave it faded once the tracing stops.
+     */
     useEffect(() => {
-        let newEdges: Edge[] = [];
-        presentlyShownRoadmap.dependenciesList.forEach((dependency: Dependency) => {
-            let newEdge = createEdge(dependency.source, dependency.target);
-            newEdges.push(newEdge);
+        const newEdges: Edge[] = presentlyShownRoadmap.dependenciesList.map((dependency: Dependency) =>
+            createEdge(dependency.source, dependency.target),
+        );
+
+        setNodes((currentNodes: Node[]) => {
+            const newNodes: Node[] = [];
+
+            presentlyShownRoadmap.tasksList.forEach((task: TaskAndState) => {
+                const existingNode = currentNodes.find((node) => node.id === task.task.id);
+
+                if (task.task.id === GOAL_ID) {
+                    if (!task.task.name) {
+                        return;
+                    }
+                    newNodes.push(
+                        existingNode
+                            ? { ...withoutDimming(existingNode), data: { ...existingNode.data, label: task.task.name } }
+                            : createGoalNode(task.task.name),
+                    );
+                    return;
+                }
+
+                newNodes.push(
+                    existingNode
+                        ? createTaskNodeFromExisting(task, withoutDimming(existingNode))
+                        : createTaskNode(task, { x: 0, y: 0 }, handleToggleComplete, false),
+                );
+            });
+
+            return newNodes;
         });
-
-        let newNodes: Node[] = [];
-        let existingNodes: Node[] = getNodes();
-
-        presentlyShownRoadmap.tasksList.forEach((task: TaskAndState) => {
-            if (task.task.id === GOAL_ID && task.task.name) {
-                let goalNode = createGoalNode(task.task.name);
-                newNodes.push(goalNode);
-                return;
-            }
-
-            const existingNode = existingNodes.find((node) => node.id === task.task.id);
-            if (existingNode) {
-                // Update existing node
-                const updatedNode = createTaskNodeFromExisting(task, existingNode);
-                newNodes.push(updatedNode);
-            } else {
-                let newTaskNode = createTaskNode(task, { x: 0, y: 0 }, handleToggleComplete, false);
-                newNodes.push(newTaskNode);
-            }
-        });
-
-        setNodes(newNodes);
         setEdges(newEdges);
-    }, [presentlyShownRoadmap, getNodes, setNodes, setEdges, handleToggleComplete]);
+    }, [presentlyShownRoadmap, setNodes, setEdges, handleToggleComplete]);
 
     // When the user connects two nodes, call a callback to add the edge to the plan
     const onConnect = useCallback(
@@ -183,53 +199,6 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             handleConnect(newConnection.source, newConnection.target);
         },
         [handleConnect],
-    );
-
-    const onConnectEnd = useCallback(
-        async (event, connectionState) => {
-            // when a connection is dropped on the pane it's not valid
-            if (connectionState.isValid) {
-                return;
-            }
-
-            // Connection dropped on the pane
-            const taskLabel = await promptForText(TASK_PROMPT);
-            if (!taskLabel) {
-                return;
-            }
-
-            const newTask: Task | null = await handleAddTask(taskLabel);
-            if (!newTask) {
-                return;
-            }
-
-            // we need to remove the wrapper bounds, in order to get the correct position
-            const { clientX, clientY } = "changedTouches" in event ? event.changedTouches[0] : event;
-
-            // Calculate position for the new node
-            const dropPosition = screenToFlowPosition({ x: clientX, y: clientY });
-
-            // Adjust position based on where the connection is coming from
-            let adjustedPosition = { ...dropPosition };
-            if (connectionState.fromPosition === Position.Right) {
-                // Connection from right handle, so adjust X to place the left handle at the drop point
-                adjustedPosition.x += NODE_HALF_WIDTH;
-            } else if (connectionState.fromPosition === Position.Left) {
-                // Connection from left handle, so adjust X to place the right handle at the drop point
-                adjustedPosition.x -= NODE_HALF_WIDTH;
-            }
-
-            if (connectionState.fromPosition === Position.Right) {
-                const sourceId = connectionState.fromNode.id;
-                const targetId = newTask.id;
-                handleConnect(sourceId, targetId);
-            } else if (connectionState.fromPosition === Position.Left) {
-                const sourceId = newTask.id;
-                const targetId = connectionState.fromNode.id;
-                handleConnect(sourceId, targetId);
-            }
-        },
-        [screenToFlowPosition, handleAddTask, handleConnect, promptForText],
     );
 
     const showDetails = useCallback(
@@ -332,14 +301,33 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         setHoveredNodeId(null);
     }, [getNodes, getEdges, setNodes]);
 
+    // What the layouter actually reads: which tasks are on the canvas and what
+    // joins them. Positions are left out, so a layout run - which only moves
+    // nodes - never asks for another.
+    const graphShape = useMemo(() => {
+        const nodeIds = nodes
+            .map((node) => node.id)
+            .sort()
+            .join(",");
+        const edgeIds = edges
+            .map((edge) => `${edge.source}>${edge.target}`)
+            .sort()
+            .join(",");
+        return `${nodeIds}|${edgeIds}`;
+    }, [nodes, edges]);
+
+    // Every structural change gets a layout, because where a task sits is decided
+    // by what it connects to: a task and its dependencies arrive in separate
+    // round trips, so the edge that settles its position can land a beat after
+    // the task itself.
     useEffect(() => {
         // Only run this effect when nodes are initialized
-        if (!nodesInitialized) {
+        if (!nodesInitialized || layoutHeldRef.current) {
             return;
         }
         onLayout();
         pendingFitRef.current = true;
-    }, [nodesInitialized, onLayout]);
+    }, [nodesInitialized, graphShape, onLayout]);
 
     // Laying out moves every node, so the viewport has to be refitted or the graph
     // ends up parked off-screen. This has to wait for the laid-out positions to
@@ -386,6 +374,49 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         }
         handleSetGoal(goalLabel);
     }, [handleSetGoal, promptForText]);
+
+    /**
+     * Adds a task and wires it into the plan.
+     *
+     * The task and each of its dependencies are separate round trips, so in
+     * between them the task is on the canvas with nothing attached to it. Laying
+     * out is held off until `wireUp` has finished, so the task is placed once,
+     * from where its edges say it belongs.
+     */
+    const createTaskWithEdges = useCallback(
+        async (wireUp: (task: Task) => Promise<void>) => {
+            layoutHeldRef.current = true;
+            try {
+                const newTask = await onCreateTask();
+                if (!newTask) {
+                    return;
+                }
+                await wireUp(newTask);
+            } finally {
+                layoutHeldRef.current = false;
+            }
+        },
+        [onCreateTask],
+    );
+
+    // Dragging out of a handle and letting go over empty canvas makes a task and
+    // joins it to the one it was dragged from, the way round the handle implies.
+    const onConnectEnd = useCallback(
+        async (event, connectionState) => {
+            // when a connection is dropped on the pane it's not valid
+            if (connectionState.isValid) {
+                return;
+            }
+
+            const draggedFromId = connectionState.fromNode.id;
+            if (connectionState.fromPosition === Position.Right) {
+                await createTaskWithEdges((newTask) => handleConnect(draggedFromId, newTask.id));
+            } else if (connectionState.fromPosition === Position.Left) {
+                await createTaskWithEdges((newTask) => handleConnect(newTask.id, draggedFromId));
+            }
+        },
+        [createTaskWithEdges, handleConnect],
+    );
 
     const onCrumbClick = useCallback(
         (taskId: string) => () => {
@@ -541,14 +572,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 if (event.key === "Tab" || event.key === " ") {
                     event.preventDefault();
 
-                    const newTask = await onCreateTask();
-                    if (!newTask) return;
-
-                    if (event.key === "Tab") {
-                        handleConnect(newTask.id, selectedNodeId);
-                    } else if (event.key === " ") {
-                        handleConnect(selectedNodeId, newTask.id);
-                    }
+                    const feedsIntoSelection = event.key === "Tab";
+                    await createTaskWithEdges((newTask) =>
+                        feedsIntoSelection
+                            ? handleConnect(newTask.id, selectedNodeId)
+                            : handleConnect(selectedNodeId, newTask.id),
+                    );
                 }
             } else if (selectedNodes.length === 2 && (event.key === "Tab" || event.key === " ")) {
                 event.preventDefault();
@@ -565,12 +594,11 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                     const targetNode = nodes.find((node) => node.id === targetId);
 
                     if (sourceNode && targetNode) {
-                        const newTask = await onCreateTask();
-                        if (!newTask) return;
-
-                        handleRemoveEdge(sourceId, targetId);
-                        handleConnect(sourceId, newTask.id);
-                        handleConnect(newTask.id, targetId);
+                        await createTaskWithEdges(async (newTask) => {
+                            await handleRemoveEdge(sourceId, targetId);
+                            await handleConnect(sourceId, newTask.id);
+                            await handleConnect(newTask.id, targetId);
+                        });
                     }
                 }
             }
@@ -579,7 +607,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             selectedNodes,
             nodes,
             edges,
-            onCreateTask,
+            createTaskWithEdges,
             handleConnect,
             handleRemoveTask,
             handleRemoveEdge,
@@ -667,6 +695,11 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             onNodeContextMenu={onNodeContextMenu}
             onNodeClick={onNodeClick}
             onNodeDoubleClick={onNodeDoubleClick}
+            // Keyboard work is driven from the pane, which owns the shortcuts and
+            // reads the selection. Leaving nodes out of the focus order keeps them
+            // from taking focus off a dialog opened by one of those shortcuts.
+            nodesFocusable={false}
+            edgesFocusable={false}
             onNodeMouseEnter={onNodeMouseEnter}
             onNodeMouseLeave={onNodeMouseLeave}
             deleteKeyCode={null}
