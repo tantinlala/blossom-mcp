@@ -4,6 +4,8 @@ import { SelectChangeEvent } from "@mui/material/Select";
 import SaveIcon from "@mui/icons-material/Save";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { SaveState } from "../hooks/useServerSync";
+import { ConnectionState } from "../utils/RealtimeClient";
+import ConnectionIndicator from "./ConnectionIndicator";
 
 const SAVE_STATE_LABEL: Record<SaveState, string> = {
     neverSaved: "Not saved yet",
@@ -18,6 +20,7 @@ interface HeaderProps {
     onSave: () => void;
     onRestore: () => void;
     saveState: SaveState;
+    connectionState: ConnectionState;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -27,6 +30,7 @@ const Header: React.FC<HeaderProps> = ({
     onSave,
     onRestore,
     saveState,
+    connectionState,
 }) => {
     return (
         <Paper
@@ -72,6 +76,7 @@ const Header: React.FC<HeaderProps> = ({
             </Box>
 
             <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1, flex: 1 }}>
+                <ConnectionIndicator connectionState={connectionState} />
                 <Typography variant="caption" color="text.secondary" data-testid="save-state">
                     {SAVE_STATE_LABEL[saveState]}
                 </Typography>

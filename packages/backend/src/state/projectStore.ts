@@ -3,6 +3,7 @@ import {
     Plan,
     Dependency,
     ProjectState,
+    Author,
     GOAL_ID,
     TaskState,
     TaskAndStateAndBlockers,
@@ -16,6 +17,9 @@ const MAX_UNDO_STACK_SIZE = 50;
 interface UndoSnapshot {
     goal: Task;
     inbox: string[];
+    // Who made the change this snapshot precedes, so undo can refuse to
+    // rewind somebody else's work. Null for changes made without an identity.
+    author: Author | null;
 }
 
 class TaskNotFoundError extends Error {
@@ -40,6 +44,30 @@ class InvalidIndexError extends Error {
 }
 
 /**
+ * A write carried a precondition that no longer holds: either the caller's
+ * baseVersion is behind the store, or the inbox row it addressed no longer
+ * holds the text the caller expected.
+ */
+class VersionConflictError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "VersionConflictError";
+    }
+}
+
+/** Undo would have reverted a change made by somebody else. */
+class UndoBlockedError extends Error {
+    constructor(blockedBy: Author) {
+        super(
+            blockedBy.kind === "assistant"
+                ? "The assistant has changed the project since your last change"
+                : "Someone else has changed the project since your last change",
+        );
+        this.name = "UndoBlockedError";
+    }
+}
+
+/**
  * Single source of truth for the active project's state. Both the REST API and
  * the MCP server mutate project state exclusively through this store. Every
  * mutation pushes an undo snapshot and increments the monotonic version
@@ -51,6 +79,9 @@ class ProjectStore {
     private _activeProject: string | null;
     private _version: number;
     private _undoStack: UndoSnapshot[];
+    private _listeners: Set<() => void>;
+    private _currentAuthor: Author | null;
+    private _lastChangeAuthor: Author | null;
 
     constructor() {
         this._goal = this._emptyGoal();
@@ -58,6 +89,9 @@ class ProjectStore {
         this._activeProject = null;
         this._version = 1;
         this._undoStack = [];
+        this._listeners = new Set();
+        this._currentAuthor = null;
+        this._lastChangeAuthor = null;
     }
 
     private _emptyGoal(): Task {
@@ -69,7 +103,11 @@ class ProjectStore {
     }
 
     private _saveSnapshot() {
-        this._undoStack.push({ goal: this._deepClone(this._goal), inbox: [...this._inbox] });
+        this._undoStack.push({
+            goal: this._deepClone(this._goal),
+            inbox: [...this._inbox],
+            author: this._currentAuthor,
+        });
         if (this._undoStack.length > MAX_UNDO_STACK_SIZE) {
             this._undoStack.shift();
         }
@@ -77,6 +115,56 @@ class ProjectStore {
 
     private _bump() {
         this._version++;
+        this._lastChangeAuthor = this._currentAuthor;
+        this._notify();
+    }
+
+    // ------------------------------------------------------- change notification
+
+    /**
+     * Registers a listener fired after every mutation. The payload is deliberately
+     * empty: listeners call getState() themselves, which lets the realtime layer
+     * coalesce a burst of mutations into a single clone and a single broadcast.
+     * Returns an unsubscribe function.
+     */
+    public onChange(listener: () => void): () => void {
+        this._listeners.add(listener);
+        return () => {
+            this._listeners.delete(listener);
+        };
+    }
+
+    private _notify() {
+        for (const listener of this._listeners) {
+            try {
+                listener();
+            } catch (error) {
+                // A broken listener must never fail the mutation that triggered it.
+                console.error("ProjectStore change listener threw:", error);
+            }
+        }
+    }
+
+    // ------------------------------------------------------- authorship
+
+    /**
+     * Runs a synchronous mutation attributed to the given author, so undo
+     * snapshots and change broadcasts know who is responsible. Restores the
+     * previous author afterwards; callers outside a runAs block are anonymous
+     * and keep the pre-existing unattributed behaviour.
+     */
+    public runAs<T>(author: Author, fn: () => T): T {
+        const previous = this._currentAuthor;
+        this._currentAuthor = author;
+        try {
+            return fn();
+        } finally {
+            this._currentAuthor = previous;
+        }
+    }
+
+    public get lastChangeAuthor(): Author | null {
+        return this._lastChangeAuthor;
     }
 
     // ------------------------------------------------------------------ reads
@@ -175,10 +263,23 @@ class ProjectStore {
         this._bump();
     }
 
+    /**
+     * Reverts the most recent change. Snapshots restore whole state, so undoing
+     * a change that somebody else has since built on would silently discard
+     * their work - when the caller has an identity and the newest change is not
+     * theirs, undo refuses instead.
+     */
     public undo(): boolean {
         if (this._undoStack.length === 0) {
             return false;
         }
+
+        const author = this._currentAuthor;
+        const newest = this._undoStack[this._undoStack.length - 1];
+        if (author && newest.author && newest.author.id !== author.id) {
+            throw new UndoBlockedError(newest.author);
+        }
+
         const snapshot = this._undoStack.pop()!;
         this._goal = snapshot.goal;
         this._inbox = snapshot.inbox;
@@ -186,9 +287,16 @@ class ProjectStore {
         return true;
     }
 
+    /** Who made the change undo would revert, if anyone. */
+    public get undoableBy(): Author | null {
+        const newest = this._undoStack[this._undoStack.length - 1];
+        return newest ? newest.author : null;
+    }
+
     // ------------------------------------------------------- goal & tasks
 
-    public setGoal(name: string, description?: string) {
+    public setGoal(name: string, description?: string, baseVersion?: number) {
+        this._assertVersion(baseVersion);
         this._saveSnapshot();
         this._goal.name = name;
         if (description !== undefined) {
@@ -220,12 +328,13 @@ class ProjectStore {
         return this._deepClone(newTask);
     }
 
-    public updateTask(taskId: string, updates: { name?: string; description?: string }) {
+    public updateTask(taskId: string, updates: { name?: string; description?: string; baseVersion?: number }) {
         const task = this.findTask(taskId);
         if (!task) {
             throw new TaskNotFoundError(taskId);
         }
 
+        this._assertVersion(updates.baseVersion);
         this._saveSnapshot();
         if (updates.name !== undefined && updates.name !== "") {
             task.name = updates.name;
@@ -420,28 +529,61 @@ class ProjectStore {
         this._bump();
     }
 
-    public updateIdea(index: number, text: string) {
+    public updateIdea(index: number, text: string, expectedText?: string) {
         this._assertIndex(index);
+        this._assertIdeaText(index, expectedText);
         this._saveSnapshot();
         this._inbox[index] = text;
         this._bump();
     }
 
-    public removeIdea(index: number) {
+    public removeIdea(index: number, expectedText?: string) {
         this._assertIndex(index);
+        this._assertIdeaText(index, expectedText);
         this._saveSnapshot();
         this._inbox.splice(index, 1);
         this._bump();
     }
 
-    public promoteIdea(index: number, parentId: string = GOAL_ID): Task {
+    public promoteIdea(index: number, parentId: string = GOAL_ID, expectedText?: string): Task {
         this._assertIndex(index);
+        this._assertIdeaText(index, expectedText);
         const parent = this.findTask(parentId);
         if (!parent) {
             throw new TaskNotFoundError(parentId);
         }
 
         this._saveSnapshot();
+        const newTask = this._promote(index, parent);
+        this._bump();
+        return this._deepClone(newTask);
+    }
+
+    /**
+     * Promotes every idea into the parent's plan in one mutation, so the inbox
+     * cannot shift underneath a caller part-way through the way a sequence of
+     * single promotions can.
+     */
+    public promoteAllIdeas(parentId: string = GOAL_ID): Task[] {
+        const parent = this.findTask(parentId);
+        if (!parent) {
+            throw new TaskNotFoundError(parentId);
+        }
+        if (this._inbox.length === 0) {
+            return [];
+        }
+
+        this._saveSnapshot();
+        const promoted: Task[] = [];
+        // Always take the first idea: each promotion shifts the rest up.
+        while (this._inbox.length > 0) {
+            promoted.push(this._promote(0, parent));
+        }
+        this._bump();
+        return this._deepClone(promoted);
+    }
+
+    private _promote(index: number, parent: Task): Task {
         const [text] = this._inbox.splice(index, 1);
         if (!parent.plan) {
             parent.plan = { tasksList: [], dependenciesList: [] };
@@ -449,13 +591,31 @@ class ProjectStore {
         const newTask: Task = { name: text, id: uuidv4(), completionState: false, plan: null };
         parent.plan.tasksList.push(newTask);
         parent.completionState = false;
-        this._bump();
-        return this._deepClone(newTask);
+        return newTask;
     }
 
     private _assertIndex(index: number) {
         if (!Number.isInteger(index) || index < 0 || index >= this._inbox.length) {
             throw new InvalidIndexError(index);
+        }
+    }
+
+    // Inbox rows are addressed by index, and adding an idea unshifts, so any
+    // concurrent write renumbers every row. Callers that know which text they
+    // were looking at pass it here rather than trusting the index alone.
+    private _assertIdeaText(index: number, expectedText?: string) {
+        if (expectedText !== undefined && this._inbox[index] !== expectedText) {
+            throw new VersionConflictError(
+                `Inbox item ${index} has changed since you last read it. Expected "${expectedText}".`,
+            );
+        }
+    }
+
+    private _assertVersion(baseVersion?: number) {
+        if (baseVersion !== undefined && baseVersion !== this._version) {
+            throw new VersionConflictError(
+                `The project changed since you started editing (expected version ${baseVersion}, now ${this._version}).`,
+            );
         }
     }
 
@@ -514,4 +674,11 @@ class ProjectStore {
     }
 }
 
-export { ProjectStore, TaskNotFoundError, InvalidDependencyError, InvalidIndexError };
+export {
+    ProjectStore,
+    TaskNotFoundError,
+    InvalidDependencyError,
+    InvalidIndexError,
+    VersionConflictError,
+    UndoBlockedError,
+};

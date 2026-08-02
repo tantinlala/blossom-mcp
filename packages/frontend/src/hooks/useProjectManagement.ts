@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { APIClient } from "../utils/APIClient";
 import { ProjectState, Task } from "@blossom/common";
 import { PromptForText } from "./useTextPrompt";
@@ -10,6 +10,8 @@ interface UseProjectManagementDeps {
     promptForText: PromptForText;
     markSaved: () => void;
     markNeverSaved: () => void;
+    /** Shows the user something worth knowing that is not an error. */
+    notify?: (message: string) => void;
 }
 
 export function useProjectManagement({
@@ -19,28 +21,69 @@ export function useProjectManagement({
     promptForText,
     markSaved,
     markNeverSaved,
+    notify,
 }: UseProjectManagementDeps) {
     const [existingProjects, setExistingProjects] = useState<string[]>([]);
     const [selectedProject, setSelectedProject] = useState("");
+    const existingProjectsRef = useRef(existingProjects);
+    existingProjectsRef.current = existingProjects;
+
+    /**
+     * Follows the active project the server reports. Anyone opening or saving a
+     * project changes it for everybody, so the selector has to track state
+     * arriving from other people rather than only what this browser chose.
+     *
+     * A project somebody else has just saved under a new name will not be in
+     * this browser's list yet, and a selector whose value has no matching option
+     * renders blank - so the list is refetched when that happens.
+     */
+    const applyActiveProject = useCallback(
+        (activeProject: string | null) => {
+            setSelectedProject(activeProject ?? "");
+            if (!activeProject || existingProjectsRef.current.includes(activeProject)) {
+                return;
+            }
+            apiClient.listExistingProjects().then((projects) => {
+                if (projects) {
+                    setExistingProjects(projects);
+                }
+            });
+        },
+        [apiClient],
+    );
+
+    // Declining a confirmation is a decision, not a failure, so it is reported
+    // as neither. Everything else is surfaced without an alert(), which blocks
+    // the whole tab - unacceptable when the trigger may be somebody else's
+    // activity rather than this person's own action.
+    const reportProblem = useCallback(
+        (message: string) => {
+            if (apiClient.lastFailure()?.code === "cancelled") {
+                return;
+            }
+            notify?.(message);
+        },
+        [apiClient, notify],
+    );
 
     const setupNewProject = useCallback(async () => {
         setSelectedProject("");
         const state = await apiClient.newProject();
         if (state === undefined) {
-            alert("Error: Unable to start a new project.");
+            reportProblem("Could not start a new project.");
             return;
         }
         applyState(state);
         setSelectedTask({ ...state.goal });
         // A brand new project has no file behind it yet
         markNeverSaved();
-    }, [apiClient, applyState, setSelectedTask, markNeverSaved]);
+    }, [apiClient, applyState, setSelectedTask, markNeverSaved, reportProblem]);
 
     const restoreProject = useCallback(
         async (filename: string): Promise<boolean> => {
             const state = await apiClient.restoreProject(filename);
             if (state === undefined) {
-                alert("Error: Unable to restore project.");
+                reportProblem("Could not open that project.");
                 return false;
             }
 
@@ -50,13 +93,13 @@ export function useProjectManagement({
             markSaved();
             return true;
         },
-        [apiClient, applyState, setSelectedTask, markSaved],
+        [apiClient, applyState, setSelectedTask, markSaved, reportProblem],
     );
 
     const initializeApp = useCallback(async () => {
         const retrievedProjects = await apiClient.listExistingProjects();
         if (retrievedProjects === undefined) {
-            alert("Error: Unable to list existing projects.");
+            reportProblem("Could not list the saved projects.");
             return;
         }
         setExistingProjects(retrievedProjects);
@@ -64,7 +107,7 @@ export function useProjectManagement({
         // The server owns the state; just adopt whatever it currently has
         const state = await apiClient.getState();
         if (state === undefined) {
-            alert("Error: Unable to fetch project state.");
+            reportProblem("Could not load the project.");
             return;
         }
         applyState(state);
@@ -76,19 +119,19 @@ export function useProjectManagement({
         } else {
             markNeverSaved();
         }
-    }, [apiClient, applyState, setSelectedTask, markSaved, markNeverSaved]);
+    }, [apiClient, applyState, setSelectedTask, markSaved, markNeverSaved, reportProblem]);
 
     const saveProject = useCallback(
         async (filename: string): Promise<void> => {
             const projects = await apiClient.saveProject(filename);
             if (projects === undefined) {
-                alert("Error: Unable to save project.");
+                reportProblem("Could not save the project.");
                 return;
             }
             setExistingProjects(projects);
             markSaved();
         },
-        [apiClient, markSaved],
+        [apiClient, markSaved, reportProblem],
     );
 
     const onSave = useCallback(async () => {
@@ -110,9 +153,9 @@ export function useProjectManagement({
             await saveProject(filename);
             setSelectedProject(filename);
         } else {
-            alert("Filename cannot be empty or whitespace only.");
+            notify?.("A filename cannot be blank.");
         }
-    }, [selectedProject, saveProject, promptForText]);
+    }, [selectedProject, saveProject, promptForText, notify]);
 
     const onRestore = useCallback(async () => {
         if (selectedProject === "") {
@@ -142,6 +185,7 @@ export function useProjectManagement({
     return {
         existingProjects,
         selectedProject,
+        applyActiveProject,
         initializeApp,
         onSave,
         onRestore,

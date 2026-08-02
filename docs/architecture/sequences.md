@@ -30,22 +30,21 @@ sequenceDiagram
     participant L as Claude Desktop (LLM)
     participant M as MCP Server (/mcp)
     participant S as ProjectStore
-    participant F as Frontend (useServerSync)
+    participant R as Realtime Server (/ws)
+    participant F as Ana's browser
+    participant G as Ben's browser
 
     L->>M: tools/call add_task { name: "Buy ingredients" }
-    M->>S: store.addTask("Goal", name)
+    M->>S: runAs(MCP, () => store.addTask("Goal", name))
     Note over S: version: n → n+1
+    S-->>R: onChange (coalesced onto the next tick)
     S-->>M: New task id
     M-->>L: { taskId, version: n+1 }
 
-    loop Every 3 seconds
-        F->>+S: GET /api/state/version
-        S-->>-F: { version: n+1 }
-        Note over F: Version moved → refetch
-        F->>+S: GET /api/state
-        S-->>-F: Full ProjectState
-        F->>F: applyState(state) → UI updates without reload
-    end
+    R->>F: { type: "state", state, author: "Assistant (MCP)" }
+    R->>G: { type: "state", state, author: "Assistant (MCP)" }
+    F->>F: applyState(state) → UI updates without reload
+    G->>G: applyState(state) → UI updates without reload
 ```
 
 # Saving and Restoring a Project

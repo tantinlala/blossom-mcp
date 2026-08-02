@@ -18,12 +18,15 @@ describe("useRoadmap", () => {
     let mockedPlanManager: jest.Mocked<PlanManager>;
     let mockedAPIClient: jest.Mocked<APIClient>;
     let mockApplyState: jest.Mock;
+    let mockNotify: jest.Mock;
 
     beforeEach(() => {
         jest.clearAllMocks();
         mockedPlanManager = new PlanManager() as jest.Mocked<PlanManager>;
         mockedAPIClient = new APIClient() as jest.Mocked<APIClient>;
         mockApplyState = jest.fn();
+        mockNotify = jest.fn();
+        mockedAPIClient.lastFailure.mockReturnValue(null);
         window.alert = jest.fn();
 
         Object.defineProperty(mockedPlanManager, "presentContextGoal", {
@@ -40,7 +43,7 @@ describe("useRoadmap", () => {
         });
     });
 
-    const render = () => renderHook(() => useRoadmap(mockedPlanManager, mockedAPIClient, mockApplyState));
+    const render = () => renderHook(() => useRoadmap(mockedPlanManager, mockedAPIClient, mockApplyState, mockNotify));
 
     it("initializes with empty roadmap state", () => {
         const { result } = render();
@@ -107,10 +110,10 @@ describe("useRoadmap", () => {
 
         expect(mockedAPIClient.setGoal).toHaveBeenCalledWith("My new goal");
         expect(mockApplyState).toHaveBeenCalledWith(state);
-        expect(window.alert).not.toHaveBeenCalled();
+        expect(mockNotify).not.toHaveBeenCalled();
     });
 
-    it("setGoal refetches state when the API call fails", async () => {
+    it("setGoal reports the failure and refetches state when the API call fails", async () => {
         const refetched = makeState(3);
         mockedAPIClient.setGoal.mockResolvedValue(undefined);
         mockedAPIClient.getState.mockResolvedValue(refetched);
@@ -121,7 +124,7 @@ describe("useRoadmap", () => {
             await result.current.setGoal("My new goal");
         });
 
-        expect(window.alert).toHaveBeenCalled();
+        expect(mockNotify).toHaveBeenCalledWith("That did not work. Refreshing the project.");
         expect(mockApplyState).toHaveBeenCalledWith(refetched);
     });
 
@@ -142,7 +145,7 @@ describe("useRoadmap", () => {
         expect(returnedTask).toEqual(newTask);
     });
 
-    it("addTask returns null and alerts when the API call fails", async () => {
+    it("addTask returns null and reports the failure when the API call fails", async () => {
         mockedAPIClient.addTask.mockResolvedValue(undefined);
 
         const { result } = render();
@@ -153,7 +156,7 @@ describe("useRoadmap", () => {
         });
 
         expect(returnedTask).toBeNull();
-        expect(window.alert).toHaveBeenCalledWith("Error: Unable to add task.");
+        expect(mockNotify).toHaveBeenCalledWith("Could not add that task.");
         expect(mockApplyState).not.toHaveBeenCalled();
     });
 
@@ -169,11 +172,11 @@ describe("useRoadmap", () => {
 
         expect(mockedAPIClient.removeTask).toHaveBeenCalledWith("t1");
         expect(mockApplyState).toHaveBeenCalledWith(state);
-        expect(window.alert).not.toHaveBeenCalled();
+        expect(mockNotify).not.toHaveBeenCalled();
         expect(mockedAPIClient.getState).not.toHaveBeenCalled();
     });
 
-    it("removeTask alerts and refetches state when the API call fails", async () => {
+    it("removeTask reports the failure and refetches state when the API call fails", async () => {
         const refetchedState = makeState(3);
         mockedAPIClient.removeTask.mockResolvedValue(undefined);
         mockedAPIClient.getState.mockResolvedValue(refetchedState);
@@ -184,7 +187,7 @@ describe("useRoadmap", () => {
             await result.current.removeTask("t1");
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Error: The operation failed. Refreshing project state.");
+        expect(mockNotify).toHaveBeenCalledWith("That did not work. Refreshing the project.");
         expect(mockedAPIClient.getState).toHaveBeenCalled();
         expect(mockApplyState).toHaveBeenCalledWith(refetchedState);
     });
@@ -245,7 +248,7 @@ describe("useRoadmap", () => {
         expect(mockApplyState).toHaveBeenCalledWith(state);
     });
 
-    it("createPlanForTask alerts and refetches state on failure", async () => {
+    it("createPlanForTask reports the failure and refetches state", async () => {
         const refetchedState = makeState(3);
         mockedAPIClient.createSubplan.mockResolvedValue(undefined);
         mockedAPIClient.getState.mockResolvedValue(refetchedState);
@@ -256,7 +259,7 @@ describe("useRoadmap", () => {
             await result.current.createPlanForTask("t1");
         });
 
-        expect(window.alert).toHaveBeenCalledWith("Error: The operation failed. Refreshing project state.");
+        expect(mockNotify).toHaveBeenCalledWith("That did not work. Refreshing the project.");
         expect(mockApplyState).toHaveBeenCalledWith(refetchedState);
     });
 

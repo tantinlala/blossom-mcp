@@ -1,5 +1,12 @@
-import { ProjectStore, TaskNotFoundError, InvalidDependencyError, InvalidIndexError } from "./projectStore";
-import { GOAL_ID, Task } from "@blossom/common";
+import {
+    ProjectStore,
+    TaskNotFoundError,
+    InvalidDependencyError,
+    InvalidIndexError,
+    VersionConflictError,
+    UndoBlockedError,
+} from "./projectStore";
+import { Author, GOAL_ID, Task } from "@blossom/common";
 
 describe("ProjectStore", () => {
     let store: ProjectStore;
@@ -864,6 +871,205 @@ describe("ProjectStore", () => {
             store.setGoal("Goal");
 
             expect(store.findTask("unknown")).toBeNull();
+        });
+    });
+
+    describe("change notification", () => {
+        const ana: Author = { id: "ana", kind: "person" };
+
+        it("should notify listeners on every mutation", () => {
+            const listener = jest.fn();
+            store.onChange(listener);
+
+            store.setGoal("Ship it");
+            store.addIdea("an idea");
+
+            expect(listener).toHaveBeenCalledTimes(2);
+        });
+
+        it("should stop notifying once unsubscribed", () => {
+            const listener = jest.fn();
+            const unsubscribe = store.onChange(listener);
+
+            unsubscribe();
+            store.setGoal("Ship it");
+
+            expect(listener).not.toHaveBeenCalled();
+        });
+
+        it("should not let a broken listener fail the mutation that triggered it", () => {
+            const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+            const healthy = jest.fn();
+            store.onChange(() => {
+                throw new Error("listener exploded");
+            });
+            store.onChange(healthy);
+
+            expect(() => store.setGoal("Ship it")).not.toThrow();
+            expect(store.getState().goal.name).toBe("Ship it");
+            expect(healthy).toHaveBeenCalled();
+
+            consoleError.mockRestore();
+        });
+
+        it("should report who made the most recent change", () => {
+            store.runAs(ana, () => store.setGoal("Ship it"));
+
+            expect(store.lastChangeAuthor).toEqual(ana);
+        });
+
+        it("should leave changes made outside runAs unattributed", () => {
+            store.setGoal("Ship it");
+
+            expect(store.lastChangeAuthor).toBeNull();
+        });
+
+        it("should restore the previous author after runAs returns", () => {
+            store.runAs(ana, () => store.setGoal("Ship it"));
+            store.addIdea("later, by nobody in particular");
+
+            expect(store.lastChangeAuthor).toBeNull();
+        });
+    });
+
+    describe("preconditions", () => {
+        it("should reject a write whose baseVersion is behind", () => {
+            store.setGoal("Ship it");
+            const stale = store.getVersion();
+            store.addIdea("meanwhile, something else happened");
+
+            expect(() => store.setGoal("Ship something else", undefined, stale)).toThrow(VersionConflictError);
+        });
+
+        it("should accept a write whose baseVersion is current", () => {
+            store.setGoal("Ship it");
+
+            expect(() => store.setGoal("Ship it well", undefined, store.getVersion())).not.toThrow();
+        });
+
+        it("should reject a task update whose baseVersion is behind", () => {
+            store.setGoal("Ship it");
+            const task = store.addTask(GOAL_ID, "Do the thing");
+            const stale = store.getVersion();
+            store.addIdea("meanwhile");
+
+            expect(() => store.updateTask(task.id, { name: "Renamed", baseVersion: stale })).toThrow(
+                VersionConflictError,
+            );
+        });
+
+        it("should reject an inbox update whose row no longer holds the expected text", () => {
+            store.addIdea("theirs");
+
+            expect(() => store.updateIdea(0, "mine", "something else")).toThrow(VersionConflictError);
+            expect(store.getState().inbox).toEqual(["theirs"]);
+        });
+
+        it("should reject a removal aimed at a row that has shifted underneath", () => {
+            store.addIdea("second");
+            // Adding unshifts, so index 0 is no longer the row the caller saw.
+            store.addIdea("first");
+
+            expect(() => store.removeIdea(0, "second")).toThrow(VersionConflictError);
+            expect(store.getState().inbox).toEqual(["first", "second"]);
+        });
+
+        it("should allow an inbox write whose expected text still matches", () => {
+            store.addIdea("mine");
+
+            expect(() => store.updateIdea(0, "mine, edited", "mine")).not.toThrow();
+            expect(store.getState().inbox).toEqual(["mine, edited"]);
+        });
+
+        it("should ignore preconditions that were not supplied", () => {
+            store.addIdea("whatever");
+
+            expect(() => store.updateIdea(0, "changed")).not.toThrow();
+        });
+    });
+
+    describe("author-scoped undo", () => {
+        const ana: Author = { id: "ana", kind: "person" };
+        const ben: Author = { id: "ben", kind: "person" };
+
+        it("should undo your own most recent change", () => {
+            store.runAs(ana, () => store.setGoal("Ship it"));
+            store.runAs(ana, () => store.addTask(GOAL_ID, "Do the thing"));
+
+            expect(store.runAs(ana, () => store.undo())).toBe(true);
+            expect(store.getState().goal.plan.tasksList).toHaveLength(0);
+        });
+
+        it("should refuse to revert somebody else's change", () => {
+            store.runAs(ana, () => store.setGoal("Ana's goal"));
+
+            expect(() => store.runAs(ben, () => store.undo())).toThrow(UndoBlockedError);
+            expect(store.getState().goal.name).toBe("Ana's goal");
+        });
+
+        it("should explain that somebody else stands in the way", () => {
+            store.runAs(ana, () => store.setGoal("Ana's goal"));
+
+            expect(() => store.runAs(ben, () => store.undo())).toThrow(
+                "Someone else has changed the project since your last change",
+            );
+        });
+
+        it("should call out the assistant by role when it made the change", () => {
+            store.runAs({ id: "mcp", kind: "assistant" }, () => store.setGoal("Set over MCP"));
+
+            expect(() => store.runAs(ana, () => store.undo())).toThrow(
+                "The assistant has changed the project since your last change",
+            );
+        });
+
+        it("should report who the next undo would affect", () => {
+            store.runAs(ana, () => store.setGoal("Ana's goal"));
+
+            expect(store.undoableBy).toEqual(ana);
+        });
+
+        it("should stay unrestricted when nobody is identified", () => {
+            store.setGoal("Ship it");
+
+            expect(store.undo()).toBe(true);
+        });
+    });
+
+    describe("promoteAllIdeas", () => {
+        it("should promote every idea into the parent plan", () => {
+            store.addIdea("c");
+            store.addIdea("b");
+            store.addIdea("a");
+
+            const promoted = store.promoteAllIdeas(GOAL_ID);
+
+            expect(promoted.map((task) => task.name)).toEqual(["a", "b", "c"]);
+            expect(store.getState().inbox).toEqual([]);
+            expect(store.getState().goal.plan.tasksList).toHaveLength(3);
+        });
+
+        it("should count as a single change, so one undo puts every idea back", () => {
+            store.addIdea("b");
+            store.addIdea("a");
+
+            store.promoteAllIdeas(GOAL_ID);
+            store.undo();
+
+            expect(store.getState().inbox).toEqual(["a", "b"]);
+        });
+
+        it("should do nothing for an empty inbox", () => {
+            const versionBefore = store.getVersion();
+
+            expect(store.promoteAllIdeas(GOAL_ID)).toEqual([]);
+            expect(store.getVersion()).toBe(versionBefore);
+        });
+
+        it("should throw for an unknown parent", () => {
+            store.addIdea("a");
+
+            expect(() => store.promoteAllIdeas("nope")).toThrow(TaskNotFoundError);
         });
     });
 });

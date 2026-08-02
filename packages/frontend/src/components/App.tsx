@@ -1,5 +1,6 @@
 import { APIClient } from "../utils/APIClient";
 import { PlanManager } from "../utils/PlanManager";
+import { RealtimeClient } from "../utils/RealtimeClient";
 import { useEffect } from "react";
 import NextTasksDrawer from "./NextTasksDrawer";
 import TaskDetailsDrawer from "./TaskDetailsDrawer";
@@ -13,19 +14,35 @@ import { useServerSync } from "../hooks/useServerSync";
 import { useProjectManagement } from "../hooks/useProjectManagement";
 import { useSidePanel } from "../hooks/useSidePanel";
 import { useTextPrompt } from "../hooks/useTextPrompt";
+import { useConfirm } from "../hooks/useConfirm";
+import { useNotices } from "../hooks/useNotices";
+import { getAuthor } from "../utils/identity";
 import TextPromptDialog from "./TextPromptDialog";
+import ConfirmDialog from "./ConfirmDialog";
+import NoticeSnackbar from "./NoticeSnackbar";
 
-const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: PlanManager }) => {
-    const sync = useServerSync({ apiClient, planManager });
-    const roadmap = useRoadmap(planManager, apiClient, sync.applyState);
+const App = ({
+    apiClient,
+    planManager,
+    realtime,
+}: {
+    apiClient: APIClient;
+    planManager: PlanManager;
+    realtime: RealtimeClient;
+}) => {
+    const { notice, notify, dismissNotice } = useNotices();
+    const { promptForText, dialogProps } = useTextPrompt();
+    const { askForConfirmation, dialogProps: confirmDialogProps } = useConfirm();
+
+    const sync = useServerSync({ apiClient, planManager, realtime, notify });
+    const roadmap = useRoadmap(planManager, apiClient, sync.applyState, notify);
     const inbox = useInbox({
         apiClient,
         planManager,
         applyState: sync.applyState,
-        setEditingPaused: sync.setEditingPaused,
+        notify,
     });
     const panel = useSidePanel();
-    const { promptForText, dialogProps } = useTextPrompt();
     const project = useProjectManagement({
         apiClient,
         applyState: sync.applyState,
@@ -33,16 +50,37 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
         promptForText,
         markSaved: sync.markSaved,
         markNeverSaved: sync.markNeverSaved,
+        notify,
     });
+
+    // Labels this browser's writes. Nobody is asked for anything: the id only
+    // exists so undo cannot revert somebody else's work.
+    useEffect(() => {
+        apiClient.setAuthor(getAuthor());
+    }, [apiClient]);
 
     // useServerSync is created before the hooks that own React state, so the
     // setters it fans state out to are registered here
     const { registerTargets } = sync;
     const { syncRoadmap } = roadmap;
-    const { setIdeaList } = inbox;
+    const { applyRemoteInbox } = inbox;
+    const { applyActiveProject } = project;
     useEffect(() => {
-        registerTargets({ setIdeaList, syncRoadmap });
-    }, [registerTargets, setIdeaList, syncRoadmap]);
+        registerTargets({ applyRemoteInbox, applyActiveProject, syncRoadmap });
+    }, [registerTargets, applyRemoteInbox, applyActiveProject, syncRoadmap]);
+
+    // Opening or creating a project replaces what everyone connected is looking
+    // at, so the server refuses to do it unattended and asks through here.
+    useEffect(() => {
+        apiClient.setConfirmHandler(async (otherCount: number) => {
+            const others = otherCount === 1 ? "Somebody else is" : `${otherCount} other people are`;
+            return await askForConfirmation({
+                title: "Switch everyone's project?",
+                message: `${others} working on this project right now. Opening another one changes what they see too.`,
+                confirmLabel: "Switch anyway",
+            });
+        });
+    }, [apiClient, askForConfirmation]);
 
     const { initializeApp } = project;
     useEffect(() => {
@@ -58,6 +96,7 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
                 onSave={project.onSave}
                 onRestore={project.onRestore}
                 saveState={sync.saveState}
+                connectionState={sync.connectionState}
             />
 
             <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden" }}>
@@ -116,6 +155,8 @@ const App = ({ apiClient, planManager }: { apiClient: APIClient; planManager: Pl
             </div>
 
             <TextPromptDialog {...dialogProps} />
+            <ConfirmDialog {...confirmDialogProps} />
+            <NoticeSnackbar message={notice} onDismiss={dismissNotice} />
         </div>
     );
 };
