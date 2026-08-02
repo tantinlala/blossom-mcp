@@ -125,25 +125,32 @@ describe("Project", () => {
     });
 
     it("should delete a project's file", async () => {
-        fileIO.exists.mockResolvedValue(true);
-
         await project.deleteProject("testProject");
 
         expect(fileIO.unlink).toHaveBeenCalledWith("./projects/testProject.txt");
     });
 
     it("should report a project that has no file", async () => {
-        fileIO.exists.mockResolvedValue(false);
+        const missing: NodeJS.ErrnoException = new Error("ENOENT: no such file or directory");
+        missing.code = "ENOENT";
+        fileIO.unlink.mockRejectedValue(missing);
 
         await expect(project.deleteProject("missingProject")).rejects.toThrow(ProjectNotFoundError);
-        expect(fileIO.unlink).not.toHaveBeenCalled();
+    });
+
+    it("should report a file that cannot be removed as itself", async () => {
+        const denied: NodeJS.ErrnoException = new Error("EACCES: permission denied");
+        denied.code = "EACCES";
+        fileIO.unlink.mockRejectedValue(denied);
+
+        // Only a missing file is a missing project; anything else is a real
+        // failure and must not be dressed up as one.
+        await expect(project.deleteProject("lockedProject")).rejects.toThrow("EACCES: permission denied");
     });
 
     it.each(["../secrets", "nested/project", "back\\slash", "..", ""])(
         "should refuse to delete the name %p, which addresses a file outside the projects folder",
         async (filename) => {
-            fileIO.exists.mockResolvedValue(true);
-
             await expect(project.deleteProject(filename)).rejects.toThrow(InvalidProjectNameError);
             expect(fileIO.unlink).not.toHaveBeenCalled();
         },

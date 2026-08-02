@@ -87,10 +87,17 @@ class Project {
      */
     public deleteProject = async (filename: string): Promise<void> => {
         const filepath = this.filepath(filename);
-        if (!(await this.fileIO.exists(filepath))) {
-            throw new ProjectNotFoundError(filename);
+        try {
+            await this.fileIO.unlink(filepath);
+        } catch (error) {
+            // The removal itself reports the missing file, so two callers
+            // deleting the same project both get told what happened; asking
+            // first would leave a window where the answer goes stale.
+            if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+                throw new ProjectNotFoundError(filename);
+            }
+            throw error;
         }
-        await this.fileIO.unlink(filepath);
     };
 
     public restoreProject = async (filename: string): Promise<{ goal: Task; inbox: string[] }> => {

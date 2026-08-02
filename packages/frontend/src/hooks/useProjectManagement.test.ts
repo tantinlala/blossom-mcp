@@ -368,6 +368,31 @@ describe("useProjectManagement", () => {
             expect(mockMarkNeverSaved).toHaveBeenCalled();
         });
 
+        it("clears the selection when the project that was open is deleted", async () => {
+            mockedAPIClient.restoreProject.mockResolvedValue(makeState("My Project", 2));
+            mockedAPIClient.deleteProject.mockResolvedValue({ projects: [], state: makeState(null, 3) });
+            mockedAPIClient.listExistingProjects.mockResolvedValue([]);
+
+            const { result } = render();
+            await act(async () => {
+                await result.current.handleProjectChange("My Project");
+            });
+            expect(result.current.selectedProject).toBe("My Project");
+
+            // App fans applyState out through applyActiveProject, so the
+            // selector follows the active project the server reports on the
+            // deletion's own response, whichever transport carried it.
+            mockApplyState.mockImplementation((state: ProjectState) =>
+                result.current.applyActiveProject(state.activeProject),
+            );
+
+            await act(async () => {
+                await result.current.deleteProject("My Project");
+            });
+
+            expect(result.current.selectedProject).toBe("");
+        });
+
         it("reports a failure to delete and keeps the project list", async () => {
             mockedAPIClient.listExistingProjects.mockResolvedValue(["Old Project"]);
             mockedAPIClient.getState.mockResolvedValue(makeState(null));
