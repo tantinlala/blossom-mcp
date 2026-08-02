@@ -596,6 +596,102 @@ describe("RoadmapGraph", () => {
             expect(toggleCompletion).toHaveBeenCalledWith("a");
         });
 
+        test("Shift+Enter steps out to the plan this one sits in", async () => {
+            const changeContext = jest.fn();
+            const { container } = renderRoadmapGraph(
+                [task("a", "Task A")],
+                [],
+                {
+                    isSubplan: true,
+                    ancestors: [
+                        { id: GOAL_ID, name: "Ship product" },
+                        { id: "t2", name: "Prepare for departure" },
+                    ],
+                },
+                { handleChangeRoadmapContext: changeContext },
+            );
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter", shiftKey: true });
+
+            expect(changeContext).toHaveBeenCalledWith(GOAL_ID);
+        });
+
+        test("Shift+Enter lands the highlight on the task whose subplan was left", async () => {
+            /** Swaps the subplan for the plan holding it, the way the app does. */
+            const SteppingOutGraph: React.FC = () => {
+                const [inSubplan, setInSubplan] = React.useState(true);
+                const roadmap = React.useMemo(
+                    () =>
+                        inSubplan
+                            ? {
+                                  tasksList: [task("child", "Subtask")],
+                                  dependenciesList: [],
+                                  isSubplan: true,
+                                  ancestors: [
+                                      { id: GOAL_ID, name: "Ship product" },
+                                      { id: "holder", name: "Book lodging" },
+                                  ],
+                              }
+                            : {
+                                  tasksList: [task("holder", "Book lodging"), task("other", "Buy travel insurance")],
+                                  dependenciesList: [],
+                                  isSubplan: false,
+                                  ancestors: [{ id: GOAL_ID, name: "Ship product" }],
+                              },
+                    [inSubplan],
+                );
+
+                return (
+                    <ReactFlowProvider>
+                        <RoadmapGraph
+                            presentlyShownRoadmap={roadmap}
+                            handleChangeRoadmapContext={() => setInSubplan(false)}
+                            handleSetGoal={setGoal}
+                            handleAddTask={addTask}
+                            handleRemoveTask={removeTask}
+                            handleConnect={connect}
+                            handleRemoveEdge={edgeRemove}
+                            handleUpdateEdge={edgeUpdate}
+                            handleToggleComplete={toggleComplete}
+                            handleCreatePlanForTask={createPlanForTask}
+                            handleSelectTask={selectTask}
+                            showTaskDetails={toggleTaskDetails}
+                            showNextTasks={toggleNextTaskDrawer}
+                            handlePaste={handlePaste}
+                            handleUndo={handleUndo}
+                            toggleInbox={toggleInbox}
+                            promptForText={promptForText}
+                        />
+                    </ReactFlowProvider>
+                );
+            };
+
+            const { container } = render(<SteppingOutGraph />);
+            await waitFor(() => expect(screen.getByText("Subtask")).toBeInTheDocument());
+
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter", shiftKey: true });
+
+            await waitFor(() => expect(screen.getByText("Book lodging")).toBeInTheDocument());
+            await waitFor(() => expect(isHighlighted("Book lodging")).toBe(true));
+            expect(isHighlighted("Buy travel insurance")).toBe(false);
+        });
+
+        test("Shift+Enter stays put at the top of the plan", async () => {
+            const changeContext = jest.fn();
+            const { container } = renderRoadmapGraph(
+                [task("a", "Task A")],
+                [],
+                { isSubplan: false, ancestors: [{ id: GOAL_ID, name: "Ship product" }] },
+                { handleChangeRoadmapContext: changeContext },
+            );
+            await waitFor(() => expect(screen.getByText("Task A")).toBeInTheDocument());
+
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter", shiftKey: true });
+
+            expect(changeContext).not.toHaveBeenCalled();
+        });
+
         test("Escape puts the highlight down", async () => {
             const { container } = renderRoadmapGraph(
                 [task("a", "Task A"), task("b", "Task B")],

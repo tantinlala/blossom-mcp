@@ -181,6 +181,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     // can be done at a moment nothing else would have prompted the question.
     const layoutOwedRef = useRef(true);
     const [layoutRecheck, setLayoutRecheck] = useState(0);
+    // A task to highlight as soon as the plan holding it is on the canvas.
+    const highlightOnArrivalRef = useRef<string | null>(null);
     const { fitView } = useReactFlow();
     const updateNodeInternals = useUpdateNodeInternals();
     const storeApi = useStoreApi();
@@ -467,6 +469,31 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         setSelectedNodes([]);
     }, [setNodes]);
 
+    /** Picks a task out, the way clicking it does. */
+    const highlightTask = useCallback(
+        (taskId: string) => {
+            setNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: node.id === taskId })));
+            // Arriving by keyboard says as much about which task is being worked
+            // on as clicking it does, so the details panel follows either way.
+            if (taskId !== GOAL_ID) {
+                handleSelectTask(taskId);
+            }
+        },
+        [setNodes, handleSelectTask],
+    );
+
+    // A task asked for while its plan was still being swapped in gets the
+    // highlight as soon as it is on the canvas - which is how stepping out of a
+    // subplan lands on the task that holds it.
+    useEffect(() => {
+        const arriving = highlightOnArrivalRef.current;
+        if (!arriving || !nodes.some((node) => node.id === arriving)) {
+            return;
+        }
+        highlightOnArrivalRef.current = null;
+        highlightTask(arriving);
+    }, [nodes, highlightTask]);
+
     /**
      * Moves the highlight to the task lying that way across the canvas, leaving
      * it where it is when there is nothing that way. Node positions are centres
@@ -480,14 +507,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 return;
             }
 
-            setNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: node.id === nextId })));
-            // Arriving by keyboard says as much about which task is being worked
-            // on as clicking it does, so the details panel follows either way.
-            if (nextId !== GOAL_ID) {
-                handleSelectTask(nextId);
-            }
+            highlightTask(nextId);
         },
-        [nodes, selectedNodes, setNodes, handleSelectTask],
+        [nodes, selectedNodes, highlightTask],
     );
 
     const onNodeDoubleClick = useCallback(
@@ -701,6 +723,22 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             if ((event.ctrlKey || event.metaKey) && event.key === "v") {
                 event.preventDefault();
                 handlePasteAction();
+                return;
+            }
+
+            // Shift+Enter: step out to the plan this one sits in. The ancestors
+            // run from the goal down to the plan on screen, so the one before the
+            // end is the plan being stepped out to, and the last is the task that
+            // holds the plan being left - which is where the highlight lands, so
+            // it is clear where you came out.
+            if (event.key === "Enter" && event.shiftKey) {
+                event.preventDefault();
+                const ancestors = presentlyShownRoadmap.ancestors;
+                if (ancestors.length > 1) {
+                    const planLeft = ancestors[ancestors.length - 1].id;
+                    changeContext(ancestors[ancestors.length - 2].id);
+                    highlightOnArrivalRef.current = planLeft;
+                }
                 return;
             }
 
