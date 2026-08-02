@@ -177,6 +177,10 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     const pendingFitRef = useRef(false);
     // Set while a task is being added and wired up. See createTaskWithEdges.
     const layoutHeldRef = useRef(false);
+    // Whether the graph is waiting on a layout, and a counter that asks whether it
+    // can be done at a moment nothing else would have prompted the question.
+    const layoutOwedRef = useRef(true);
+    const [layoutRecheck, setLayoutRecheck] = useState(0);
     const { fitView } = useReactFlow();
     const updateNodeInternals = useUpdateNodeInternals();
     const storeApi = useStoreApi();
@@ -282,10 +286,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         return () => document.removeEventListener("visibilitychange", remeasureWhenVisible);
     }, [updateNodeInternals]);
 
-    // When the user connects two nodes, call a callback to add the edge to the plan
+    // When the user connects two nodes, call a callback to add the edge to the
+    // plan. Nothing here waits on the round trip: the edge arrives with the plan
+    // the server sends back, and a refusal is reported from the APIClient.
     const onConnect = useCallback(
         (newConnection) => {
-            handleConnect(newConnection.source, newConnection.target);
+            void handleConnect(newConnection.source, newConnection.target);
         },
         [handleConnect],
     );
@@ -393,12 +399,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         setHoveredNodeId(null);
     }, [setNodes]);
 
-    // What the layouter actually reads: which tasks are on the canvas and what
-    // joins them. Positions are left out, so a layout run - which only moves
-    // nodes - never asks for another.
+    // What the layouter actually reads: which tasks are on the canvas, how big
+    // each one turned out to be, and what joins them. Positions are left out, so
+    // a layout run - which only moves nodes - never asks for another.
     const graphShape = useMemo(() => {
         const nodeIds = nodes
-            .map((node) => node.id)
+            .map((node) => `${node.id}@${node.measured?.width ?? 0}x${node.measured?.height ?? 0}`)
             .sort()
             .join(",");
         const edgeIds = edges
@@ -408,18 +414,31 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         return `${nodeIds}|${edgeIds}`;
     }, [nodes, edges]);
 
-    // Every structural change gets a layout, because where a task sits is decided
-    // by what it connects to: a task and its dependencies arrive in separate
-    // round trips, so the edge that settles its position can land a beat after
-    // the task itself.
+    // Every shape the graph takes owes itself a layout, because where a task sits
+    // is decided by what it connects to: a task and its dependencies arrive in
+    // separate round trips, so the edge that settles its position can land a beat
+    // after the task itself.
     useEffect(() => {
-        // Only run this effect when nodes are initialized
-        if (!nodesInitialized || layoutHeldRef.current) {
+        layoutOwedRef.current = true;
+    }, [graphShape]);
+
+    /**
+     * Lays the graph out once whatever is owed can actually be done.
+     *
+     * A layout waits on the tasks having been measured, and on nothing holding it
+     * off. Both pass in their own time, so what is owed is remembered until it
+     * can be paid rather than being dropped - and paying it clears the debt, so a
+     * shape that has been laid out is not laid out again while a task is dragged
+     * or picked out.
+     */
+    useEffect(() => {
+        if (!nodesInitialized || layoutHeldRef.current || !layoutOwedRef.current) {
             return;
         }
+        layoutOwedRef.current = false;
         onLayout();
         pendingFitRef.current = true;
-    }, [nodesInitialized, graphShape, onLayout]);
+    }, [nodesInitialized, graphShape, layoutRecheck, onLayout]);
 
     // Laying out moves every node, so the viewport has to be refitted or the graph
     // ends up parked off-screen. This has to wait for the laid-out positions to
@@ -502,7 +521,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
      * The task and each of its dependencies are separate round trips, so in
      * between them the task is on the canvas with nothing attached to it. Laying
      * out is held off until `wireUp` has finished, so the task is placed once,
-     * from where its edges say it belongs.
+     * from where its edges say it belongs. Whatever shape the graph reached in
+     * the meantime is put back up for a layout as the hold ends.
      */
     const createTaskWithEdges = useCallback(
         async (wireUp: (task: Task) => Promise<void>) => {
@@ -515,6 +535,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 await wireUp(newTask);
             } finally {
                 layoutHeldRef.current = false;
+                setLayoutRecheck((count) => count + 1);
             }
         },
         [onCreateTask],
@@ -646,7 +667,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 // Delete selected edges
                 const selectedEdgesList = edges.filter((edge) => edge.selected);
                 selectedEdgesList.forEach((edge) => {
-                    handleRemoveEdge(edge.source, edge.target);
+                    void handleRemoveEdge(edge.source, edge.target);
                 });
 
                 // Delete selected nodes
