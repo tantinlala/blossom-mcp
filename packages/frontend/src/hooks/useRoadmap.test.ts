@@ -27,7 +27,6 @@ describe("useRoadmap", () => {
         mockApplyState = jest.fn();
         mockNotify = jest.fn();
         mockedAPIClient.lastFailure.mockReturnValue(null);
-        window.alert = jest.fn();
 
         Object.defineProperty(mockedPlanManager, "presentContextGoal", {
             get: jest.fn().mockReturnValue({ name: "Goal", id: GOAL_ID, completionState: false, plan: null }),

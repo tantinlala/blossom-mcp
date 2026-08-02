@@ -10,12 +10,12 @@ export interface TextPromptOptions {
 export type PromptForText = (options: TextPromptOptions) => Promise<string | null>;
 
 /**
- * An in-app replacement for `window.prompt`.
+ * Asks the user for a line of text and resolves to what they typed, or to null
+ * if they cancel.
  *
- * Resolving a promise rather than exposing open/close state keeps call sites
- * reading exactly as they did when they were synchronous - `await promptForText(...)`
- * in place of `window.prompt(...)` - so whatever context the caller had stays in
- * scope instead of having to be parked in state until the dialog closes.
+ * Resolving a promise keeps a call site reading as straight-line code -
+ * `await promptForText(...)` - so whatever context it holds stays in scope
+ * across the await.
  */
 export function useTextPrompt() {
     const [pending, setPending] = useState<TextPromptOptions | null>(null);

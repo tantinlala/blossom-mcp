@@ -7,10 +7,10 @@ interface NoticeSnackbarProps {
 }
 
 /**
- * Surfaces things that happened rather than things the user did - somebody else
+ * Surfaces things that happened while the user was working - somebody else
  * switching projects, a write refused because it would have overwritten their
- * edit. Non-blocking on purpose: an alert() triggered by another person's
- * activity would freeze this tab until it was dismissed.
+ * edit. It is non-blocking on purpose: the trigger is usually another person's
+ * activity, so the tab stays usable and the message fades on its own.
  */
 const NoticeSnackbar: React.FC<NoticeSnackbarProps> = ({ message, onDismiss }) => (
     <Snackbar

@@ -9,9 +9,10 @@ export interface ConfirmOptions {
 export type AskForConfirmation = (options: ConfirmOptions) => Promise<boolean>;
 
 /**
- * An in-app replacement for `window.confirm`, resolving a promise for the same
- * reason [[useTextPrompt]] does: call sites keep reading as straight-line code
- * with their context still in scope.
+ * Asks the user a yes/no question and resolves to their answer.
+ *
+ * Resolving a promise, as [[useTextPrompt]] does, keeps a call site reading as
+ * straight-line code with its context still in scope.
  */
 export function useConfirm() {
     const [pending, setPending] = useState<ConfirmOptions | null>(null);

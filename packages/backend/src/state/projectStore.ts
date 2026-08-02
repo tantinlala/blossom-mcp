@@ -70,8 +70,8 @@ class UndoBlockedError extends Error {
 /**
  * Single source of truth for the active project's state. Both the REST API and
  * the MCP server mutate project state exclusively through this store. Every
- * mutation pushes an undo snapshot and increments the monotonic version
- * counter so clients can poll for external changes.
+ * mutation pushes an undo snapshot, increments the monotonic version counter,
+ * and notifies listeners so connected clients can be sent the change.
  */
 class ProjectStore {
     private _goal: Task;
@@ -150,8 +150,8 @@ class ProjectStore {
     /**
      * Runs a synchronous mutation attributed to the given author, so undo
      * snapshots and change broadcasts know who is responsible. Restores the
-     * previous author afterwards; callers outside a runAs block are anonymous
-     * and keep the pre-existing unattributed behaviour.
+     * previous author afterwards; a mutation made outside a runAs block is
+     * unattributed, and undo does not restrict it.
      */
     public runAs<T>(author: Author, fn: () => T): T {
         const previous = this._currentAuthor;
@@ -358,8 +358,7 @@ class ProjectStore {
         this._bump();
     }
 
-    // Sets completion and propagates completion state up through parents,
-    // ported from PlanManager._toggleComplete.
+    // Sets completion and propagates completion state up through parents.
     private _setCompletion(taskId: string, completed: boolean, plan: Plan): boolean {
         for (let task of plan.tasksList) {
             if (task.id === taskId) {

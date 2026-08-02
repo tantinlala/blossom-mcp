@@ -10,7 +10,7 @@ Writes that overwrite text carry a precondition, so one person cannot silently c
 | `inbox/update`, `inbox/remove`, `inbox/promote` | `expectedText` | Inbox rows are index-addressed and adding an idea unshifts, renumbering them all. |
 | everything else                                 | none           | Additive or commutative.                                                          |
 
-`baseVersion` is captured when the local edit **begins**, not when it is sent — at send time it is always current and would catch nothing. Both are optional; omitting them keeps the old last-write-wins behaviour.
+`baseVersion` is captured when the local edit **begins**, not when it is sent — at send time it is always current and would catch nothing. Both are optional; omitting them leaves the write unguarded, so the last one wins.
 
 ## REST API (`/api`)
 
@@ -74,7 +74,7 @@ Project management — listing, saving, opening, and creating projects — is de
 
 ### Workflow steering
 
-The server sends **instructions** in the MCP initialize response (clients like Claude Desktop inject them into the model's context on connect). They port the original Ideator/Planner system prompts to the tool-based workflow: Phase 1 goal clarification (one question at a time, WHAT/WHY not HOW), Phase 2 comprehensive task ideation into the inbox, Phase 3 structuring — promote ideas to tasks, group into subgoals past ~8 tasks per level, and wire dependencies into a DAG.
+The server sends **instructions** in the MCP initialize response (clients like Claude Desktop inject them into the model's context on connect). They lay out the workflow: Phase 1 goal clarification (one question at a time, WHAT/WHY not HOW), Phase 2 comprehensive task ideation into the inbox, Phase 3 structuring — promote ideas to tasks, group into subgoals past ~8 tasks per level, and wire dependencies into a DAG.
 
 The instructions also carry a **naming** rule: every goal and task name must start with an imperative verb and read as one actionable item ("Sign software engineering offer", not "Resume" or a full sentence), and it is a label on a graph node, so it stays under ~40 characters. All specifics, measures, deadlines and rationale go in the `description` field the UI shows in the details drawer. The same guidance is repeated in the `generate-plan` prompt and in the `set_goal`/`add_task`/`update_task` parameter descriptions, and inbox ideas are phrased as imperative actions too, since a promoted idea takes its full text as the task name and otherwise needs rewriting afterwards.
 
@@ -138,4 +138,4 @@ The primary transport. Message types are defined in `@blossom/common/realtime.ts
 
 `serverId` identifies the process. The version counter restarts with it, so a client seeing a new `serverId` trusts the snapshot rather than comparing versions.
 
-WebSocket upgrades do not use CORS, and there is no origin check — a deliberate omission for a LAN tool with no authentication.
+WebSocket upgrades bypass CORS, and the server accepts any origin — a deliberate choice for a tool that runs on a trusted local network.

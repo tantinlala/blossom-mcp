@@ -5,8 +5,8 @@ import { useCallback, useState } from "react";
  * interrupting for: someone else opened a different project, a write was
  * refused because it would have overwritten their edit.
  *
- * These used to be `alert()`, which blocks the whole tab - unacceptable when
- * the trigger is someone else's activity rather than your own action.
+ * Deliberately non-blocking: the trigger is often someone else's activity, so
+ * the tab stays usable and the message fades on its own.
  */
 export function useNotices() {
     const [notice, setNotice] = useState<string | null>(null);

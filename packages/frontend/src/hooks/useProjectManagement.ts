@@ -53,9 +53,8 @@ export function useProjectManagement({
     );
 
     // Declining a confirmation is a decision, not a failure, so it is reported
-    // as neither. Everything else is surfaced without an alert(), which blocks
-    // the whole tab - unacceptable when the trigger may be somebody else's
-    // activity rather than this person's own action.
+    // as neither. Everything else goes to the notice channel, which leaves the
+    // tab usable while the message is up.
     const reportProblem = useCallback(
         (message: string) => {
             if (apiClient.lastFailure()?.code === "cancelled") {

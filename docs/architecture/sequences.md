@@ -31,8 +31,8 @@ sequenceDiagram
     participant M as MCP Server (/mcp)
     participant S as ProjectStore
     participant R as Realtime Server (/ws)
-    participant F as Ana's browser
-    participant G as Ben's browser
+    participant F as One browser
+    participant G as Another browser
 
     L->>M: tools/call add_task { name: "Buy ingredients" }
     M->>S: runAs(MCP, () => store.addTask("Goal", name))
@@ -41,8 +41,8 @@ sequenceDiagram
     S-->>M: New task id
     M-->>L: { taskId, version: n+1 }
 
-    R->>F: { type: "state", state, author: "Assistant (MCP)" }
-    R->>G: { type: "state", state, author: "Assistant (MCP)" }
+    R->>F: { type: "state", state, author: { id: "mcp", kind: "assistant" } }
+    R->>G: { type: "state", state, author: { id: "mcp", kind: "assistant" } }
     F->>F: applyState(state) → UI updates without reload
     G->>G: applyState(state) → UI updates without reload
 ```

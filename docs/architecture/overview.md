@@ -14,7 +14,7 @@ graph TD
     B -->|Uses| C
 ```
 
-There is no LLM inside the application. Instead, the backend exposes an **MCP (Model Context Protocol) server** so that any external chat application (e.g. Claude Desktop) can act as the conversational interface. The LLM collaborates on the project plan by calling MCP tools; every connected frontend visualizes the same state and is **pushed** each change over a WebSocket as it happens, whoever made it.
+The backend exposes an **MCP (Model Context Protocol) server** so that any external chat application (e.g. Claude Desktop) acts as the conversational interface. The LLM collaborates on the project plan by calling MCP tools; every connected frontend visualizes the same state and is **pushed** each change over a WebSocket as it happens, whoever made it.
 
 ## Common Package
 
@@ -30,7 +30,7 @@ For more information on the backend architecture, refer to the [Backend Architec
 
 ## Frontend Package
 
-The Frontend visualizes the project plan as a roadmap graph, shows the inbox of raw ideas, allows editing tasks/dependencies, and saving/restoring projects. There is no chat window — conversations happen in the external chat app connected via MCP.
+The Frontend visualizes the project plan as a roadmap graph, shows the inbox of raw ideas, allows editing tasks/dependencies, and saving/restoring projects. Conversations happen in the external chat app connected via MCP.
 
 Several people can work on the project at once, from different devices. There are no accounts and nobody is asked for a name: each browser holds an anonymous id in `localStorage` purely so changes can be told apart, and sends its mutations over the same socket it receives them on.
 

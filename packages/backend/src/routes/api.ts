@@ -76,8 +76,8 @@ const errorStatus = (error: unknown): number => {
 };
 
 // Identity is advisory: it distinguishes the author of a change so undo can
-// refuse to revert somebody else's work. There is no authentication here, and
-// no name - a missing or malformed header simply means an unattributed write.
+// refuse to revert somebody else's work. Anyone may send any id, so treat it as
+// a hint; a missing or malformed header means an unattributed write.
 const readAuthor = (req: Request): Author | null => {
     const header = req.get("X-Blossom-Author");
     if (!header) {

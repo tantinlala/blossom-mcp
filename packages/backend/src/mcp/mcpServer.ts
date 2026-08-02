@@ -10,8 +10,7 @@ const TREE_EXPLANATION =
     `directly into that plan's goal. A dependency {source, target} means the source task must finish before ` +
     `the target can start.`;
 
-// How many top-level tasks a plan should hold before grouping into subgoals,
-// carried over from the original Planner.
+// How many top-level tasks a plan should hold before grouping into subgoals.
 const MAX_TOP_LEVEL_TASKS = 8;
 
 // Roughly what fits on one or two lines of a roadmap node before the box grows
@@ -34,12 +33,10 @@ const NAMING_GUIDANCE =
     `When you promote an inbox idea whose text reads as a full sentence or a bare noun, follow up with ` +
     `update_task to rewrite the name as a short imperative action and move the detail into the description.`;
 
-// Workflow guidance ported from the original Ideator/Planner system prompts.
 // Sent as server instructions on connect, so any MCP client steers the LLM
-// through the same goal-clarification -> ideation -> planning flow the old
-// built-in chat used. The user watches the roadmap and inbox update live in
-// the web UI, so changes should be made through tools as the conversation
-// progresses, not batched at the end.
+// through the same goal-clarification -> ideation -> planning flow. The user
+// watches the roadmap and inbox update live in the web UI, so changes should be
+// made through tools as the conversation progresses, not batched at the end.
 const SERVER_INSTRUCTIONS =
     `You are a project planning assistant helping the user define a goal and build a project roadmap. ` +
     `Assume the user may lack experience and needs suggestions and guidance. The user is watching the ` +

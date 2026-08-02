@@ -31,7 +31,6 @@ describe("useProjectManagement", () => {
         mockMarkNeverSaved = jest.fn();
         mockNotify = jest.fn();
         mockedAPIClient.lastFailure.mockReturnValue(null);
-        window.alert = jest.fn();
     });
 
     const render = () =>
@@ -227,7 +226,7 @@ describe("useProjectManagement", () => {
         expect(mockedAPIClient.saveProject).not.toHaveBeenCalled();
     });
 
-    it("onSave alerts for a whitespace-only filename", async () => {
+    it("onSave reports a whitespace-only filename without saving", async () => {
         mockPromptForText.mockResolvedValue("   ");
 
         const { result } = render();
