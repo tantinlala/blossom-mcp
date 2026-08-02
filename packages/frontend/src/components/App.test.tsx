@@ -34,6 +34,9 @@ jest.mock("./Header", () => (props: any) => (
         <button data-testid="restore-btn" onClick={props.onRestore}>
             Open
         </button>
+        <button data-testid="delete-btn" onClick={() => props.onDeleteProject("Old Project")}>
+            Delete
+        </button>
     </div>
 ));
 jest.mock("@xyflow/react", () => ({
@@ -130,6 +133,7 @@ describe("App", () => {
             initializeApp: jest.fn(),
             onSave: jest.fn(),
             onRestore: jest.fn(),
+            deleteProject: jest.fn(),
             handleProjectChange: jest.fn(),
         };
     }
@@ -227,6 +231,7 @@ describe("App", () => {
                 applyState: mockSync.applyState,
                 setSelectedTask: mockRoadmap.setSelectedTask,
                 promptForText: expect.any(Function),
+                askForConfirmation: expect.any(Function),
                 markSaved: mockSync.markSaved,
                 markNeverSaved: mockSync.markNeverSaved,
                 notify: expect.any(Function),
@@ -286,6 +291,13 @@ describe("App", () => {
             fireEvent.click(screen.getByTestId("restore-btn"));
 
             expect(mockProject.onRestore).toHaveBeenCalled();
+        });
+
+        it("passes deleteProject from useProjectManagement to Header", () => {
+            renderApp();
+            fireEvent.click(screen.getByTestId("delete-btn"));
+
+            expect(mockProject.deleteProject).toHaveBeenCalledWith("Old Project");
         });
     });
 });

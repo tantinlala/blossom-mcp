@@ -46,6 +46,7 @@ Mutations may send an `X-Blossom-Author` header (`{ id, kind }`) identifying the
 | **/projects/new**         | POST   | None                                             | Resets to a fresh empty project.                                       |
 | **/projects/save**        | POST   | `{ filename }`                                   | Saves current state to disk; returns `{ projects }`.                   |
 | **/projects/restore**     | POST   | `{ filename }`                                   | Loads a saved project into the store.                                  |
+| **/projects/delete**      | POST   | `{ filename }`                                   | Deletes a saved project's file; returns `{ projects, state }`.         |
 | **/projects/active**      | GET    | None                                             | Returns `{ activeProject }`.                                           |
 
 ## MCP Server (`/mcp`)
@@ -70,7 +71,7 @@ External chat applications connect over Streamable HTTP. Tools mirror the REST s
 | `promote_inbox_idea`  | `index, parentId?`              | Turn an idea into a task.                                    |
 | `undo_last_change`    | —                               | Undo the most recent change (global).                        |
 
-Project management — listing, saving, opening, and creating projects — is deliberately not exposed over MCP; only the user can do that, from the frontend. MCP therefore only ever operates on whichever project is currently active in the store.
+Project management — listing, saving, opening, creating, and deleting projects — is deliberately not exposed over MCP; only the user can do that, from the frontend. MCP therefore only ever operates on whichever project is currently active in the store.
 
 ### Workflow steering
 

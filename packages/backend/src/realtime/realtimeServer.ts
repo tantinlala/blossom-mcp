@@ -30,7 +30,7 @@ interface Connection {
 }
 
 const errorCode = (error: unknown): CommandError["code"] => {
-    if (error instanceof TaskNotFoundError) {
+    if (error instanceof TaskNotFoundError || (error instanceof Error && error.name === "ProjectNotFoundError")) {
         return "not-found";
     }
     if (error instanceof InvalidCommandError) {
@@ -48,9 +48,12 @@ const errorCode = (error: unknown): CommandError["code"] => {
     if (error instanceof ConfirmRequiredError) {
         return "confirm-required";
     }
-    // InvalidDependencyError and InvalidIndexError both mean "you asked for
-    // something the model does not allow", which is the same class of problem.
-    if (error instanceof Error && (error.name === "InvalidDependencyError" || error.name === "InvalidIndexError")) {
+    // These all mean "you asked for something the model does not allow", which
+    // is the same class of problem.
+    if (
+        error instanceof Error &&
+        ["InvalidDependencyError", "InvalidIndexError", "InvalidProjectNameError"].includes(error.name)
+    ) {
         return "invalid";
     }
     return "internal";

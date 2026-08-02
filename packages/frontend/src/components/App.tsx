@@ -48,6 +48,7 @@ const App = ({
         applyState: sync.applyState,
         setSelectedTask: roadmap.setSelectedTask,
         promptForText,
+        askForConfirmation,
         markSaved: sync.markSaved,
         markNeverSaved: sync.markNeverSaved,
         notify,
@@ -93,6 +94,7 @@ const App = ({
                 existingProjects={project.existingProjects}
                 selectedProject={project.selectedProject}
                 handleProjectChange={project.handleProjectChange}
+                onDeleteProject={project.deleteProject}
                 onSave={project.onSave}
                 onRestore={project.onRestore}
                 saveState={sync.saveState}

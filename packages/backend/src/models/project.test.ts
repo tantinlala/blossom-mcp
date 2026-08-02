@@ -1,4 +1,4 @@
-import { Project } from "./project";
+import { InvalidProjectNameError, Project, ProjectNotFoundError } from "./project";
 import { FileIO } from "../utils/fileIO";
 import { Task, StoredProjectV2 } from "@blossom/common";
 
@@ -23,6 +23,7 @@ describe("Project", () => {
         fileIO.exists = jest.fn();
         fileIO.readdir = jest.fn();
         fileIO.mkdir = jest.fn();
+        fileIO.unlink = jest.fn();
         project = new Project(fileIO);
     });
 
@@ -121,5 +122,47 @@ describe("Project", () => {
         const result = await project.restoreProject("invalidProject");
 
         expect(result).toEqual({ goal: project.emptyGoal, inbox: [] });
+    });
+
+    it("should delete a project's file", async () => {
+        await project.deleteProject("testProject");
+
+        expect(fileIO.unlink).toHaveBeenCalledWith("./projects/testProject.txt");
+    });
+
+    it("should report a project that has no file", async () => {
+        const missing: NodeJS.ErrnoException = new Error("ENOENT: no such file or directory");
+        missing.code = "ENOENT";
+        fileIO.unlink.mockRejectedValue(missing);
+
+        await expect(project.deleteProject("missingProject")).rejects.toThrow(ProjectNotFoundError);
+    });
+
+    it("should report a file that cannot be removed as itself", async () => {
+        const denied: NodeJS.ErrnoException = new Error("EACCES: permission denied");
+        denied.code = "EACCES";
+        fileIO.unlink.mockRejectedValue(denied);
+
+        // Only a missing file is a missing project; anything else is a real
+        // failure and must not be dressed up as one.
+        await expect(project.deleteProject("lockedProject")).rejects.toThrow("EACCES: permission denied");
+    });
+
+    it.each(["../secrets", "nested/project", "back\\slash", "..", ""])(
+        "should refuse to delete the name %p, which addresses a file outside the projects folder",
+        async (filename) => {
+            await expect(project.deleteProject(filename)).rejects.toThrow(InvalidProjectNameError);
+            expect(fileIO.unlink).not.toHaveBeenCalled();
+        },
+    );
+
+    it("should refuse to save under a name that escapes the projects folder", async () => {
+        await expect(project.saveProject("../escape", goal, [])).rejects.toThrow(InvalidProjectNameError);
+        expect(fileIO.writeFile).not.toHaveBeenCalled();
+    });
+
+    it("should refuse to restore a name that escapes the projects folder", async () => {
+        await expect(project.restoreProject("../escape")).rejects.toThrow(InvalidProjectNameError);
+        expect(fileIO.readFile).not.toHaveBeenCalled();
     });
 });

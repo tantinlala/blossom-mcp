@@ -212,6 +212,18 @@ const COMMANDS: CommandTable = {
         return { projects: await ctx.project.listExistingProjects() };
     },
 
+    "projects/delete": async (ctx, payload): Promise<{ projects: string[]; state: ProjectState }> => {
+        const filename = requireString(payload?.filename, "Filename");
+        await ctx.project.deleteProject(filename);
+
+        // The work stays on screen; it simply has no file behind it any more,
+        // which is what a null active project means everywhere else.
+        if (ctx.store.activeProject === filename) {
+            ctx.run(() => ctx.store.setActiveProject(null));
+        }
+        return { projects: await ctx.project.listExistingProjects(), state: ctx.store.getState() };
+    },
+
     "projects/restore": async (ctx, payload): Promise<ProjectState> => {
         assertSwitchConfirmed(ctx, payload);
         const filename = payload?.filename;

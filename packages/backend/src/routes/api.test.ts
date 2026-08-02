@@ -4,7 +4,7 @@ import { mock, MockProxy } from "jest-mock-extended";
 import { GOAL_ID, Task } from "@blossom/common";
 import { createApiRouter } from "./api";
 import { ProjectStore } from "../state/projectStore";
-import { Project } from "../models/project";
+import { InvalidProjectNameError, Project, ProjectNotFoundError } from "../models/project";
 
 describe("api router", () => {
     let store: ProjectStore;
@@ -305,6 +305,60 @@ describe("api router", () => {
             expect(res.body.response.goal.name).toBe("Restored Goal");
             expect(res.body.response.inbox).toEqual(["saved idea"]);
             expect(res.body.response.activeProject).toBe("myProject");
+        });
+    });
+
+    describe("POST /api/projects/delete", () => {
+        it("should return 400 when the filename is missing", async () => {
+            const res = await request(app).post("/api/projects/delete").send({});
+
+            expect(res.status).toBe(400);
+            expect(project.deleteProject).not.toHaveBeenCalled();
+        });
+
+        it("should delete the file and return the projects that remain", async () => {
+            store.setActiveProject("keptProject");
+            project.listExistingProjects.mockResolvedValue(["keptProject"]);
+
+            const res = await request(app).post("/api/projects/delete").send({ filename: "oldProject" });
+
+            expect(res.status).toBe(200);
+            expect(project.deleteProject).toHaveBeenCalledWith("oldProject");
+            expect(res.body.response.projects).toEqual(["keptProject"]);
+            // Deleting some other project leaves the open one alone
+            expect(res.body.response.state.activeProject).toBe("keptProject");
+            expect(store.activeProject).toBe("keptProject");
+        });
+
+        it("should leave the open project on screen with no file behind it", async () => {
+            store.setGoal("Ship it");
+            store.setActiveProject("myProject");
+            project.listExistingProjects.mockResolvedValue([]);
+
+            const res = await request(app).post("/api/projects/delete").send({ filename: "myProject" });
+
+            expect(res.status).toBe(200);
+            expect(res.body.response.state.activeProject).toBeNull();
+            expect(res.body.response.state.goal.name).toBe("Ship it");
+            expect(store.activeProject).toBeNull();
+        });
+
+        it("should return 404 when the project has no file", async () => {
+            project.deleteProject.mockRejectedValue(new ProjectNotFoundError("gone"));
+
+            const res = await request(app).post("/api/projects/delete").send({ filename: "gone" });
+
+            expect(res.status).toBe(404);
+            expect(res.body.code).toBe("not-found");
+        });
+
+        it("should return 400 for a name that addresses a file outside the projects folder", async () => {
+            project.deleteProject.mockRejectedValue(new InvalidProjectNameError("../escape"));
+
+            const res = await request(app).post("/api/projects/delete").send({ filename: "../escape" });
+
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe("invalid");
         });
     });
 

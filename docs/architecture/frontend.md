@@ -8,6 +8,7 @@ graph TD
         App -->|Uses| NextTasksDrawer
         App -->|Uses| TaskDetailsDrawer
         App -->|Uses| Header
+        Header -->|Uses| ProjectSelector
         NextTasksDrawer -->|Uses| SidePanel
         TaskDetailsDrawer -->|Uses| SidePanel
     end
@@ -35,7 +36,8 @@ Conversations with an LLM happen in an external chat app connected to the backen
 - **InboxPanel / Inbox**: Displays the list of unorganized ideas. Ideas can be edited (committed on blur/Enter), deleted, or promoted into tasks. Ideas can also be added by an LLM through MCP.
 - **SidePanel**: The docked right-hand panel shell (title, close button, fixed width) used by both drawers. It is a plain flex sibling of the canvas rather than a modal drawer, so the graph stays visible and interactive while a panel is open.
 - **NextTasksDrawer / TaskDetailsDrawer**: `SidePanel` contents showing unblocked "next" tasks and the selected task's editable details.
-- **Header**: Project selection dropdown plus Save/Reload buttons and a save-state indicator. Choosing a project in the dropdown loads it immediately; Reload re-reads the saved copy, discarding changes.
+- **Header**: The brand mark, the project selector, and Save/Reload beside a status pill carrying the connection state and the save state. Reload re-reads the saved copy, discarding changes.
+- **ProjectSelector**: The project dropdown. Choosing a project loads it immediately. Each saved project carries a delete control on its own row, so a project can be cleared out without being opened first; picking it up closes the menu, since deleting asks for confirmation.
 - **TextPromptDialog** / **useTextPrompt**: Asks the user for a line of text, used to name tasks and goals and to choose save filenames. The hook resolves a promise, so a call site reads as straight-line code and its context stays in scope across the await.
 
 ### Hooks
@@ -51,7 +53,7 @@ Conversations with an LLM happen in an external chat app connected to the backen
 - **useRoadmap**: Roadmap view state and mutations. Each mutation is an async REST call whose response is applied via `applyState`. Drill-down context stays client-side.
 - **useGraphHighlight**: Given the edge list and a focused node, walks outwards in both directions to return the dependency chain that node belongs to — everything it depends on plus everything depending on it. `RoadmapGraph` uses it to highlight that chain and fade the rest, which is what makes a densely connected plan readable one chain at a time. Upstream and downstream are walked separately on purpose: following edges in either direction from every visited node would drag in unrelated siblings that merely share a blocker. The dimming is applied to copies of the nodes and edges rather than to state, and `withoutDimming` strips it from anything ReactFlow's store hands back, so a focused chain can never be persisted into the real graph.
 - **useInbox**: Inbox state. Keystrokes are held in a pending-edits map keyed by row and laid over the server's list, rather than replacing it — so a change arriving for a _different_ row applies immediately while your typing survives. If the row you are editing changes underneath you, your text is **kept** and you are told: discarding what somebody is mid-sentence loses their work without warning, which is the failure the overlay exists to prevent. The edit is rebased onto the new value, so the next commit knowingly replaces it. Only a row deleted outright drops its edit, since there is nothing left to commit onto. Commits carry the text the row held when editing began, as a compare-and-swap precondition. Every write to the map goes through one helper that updates the ref and the state together, because a pushed update can arrive between a state update and the render that applies it.
-- **useProjectManagement**: Listing, saving, and restoring projects. `applyActiveProject` follows the active project reported by the server, since anyone opening a project changes it for everybody.
+- **useProjectManagement**: Listing, saving, restoring and deleting projects. `applyActiveProject` follows the active project reported by the server, since anyone opening a project changes it for everybody. Deleting the project that is open leaves the work on screen with no file behind it, which is reported as `neverSaved` — the same state a project that has never been saved is in.
 - **useConfirm** / **useNotices**: A yes/no question (same promise-resolving shape as `useTextPrompt`) and a transient message channel. Notices are deliberately non-blocking, since their trigger is usually somebody else's activity rather than this person's own action.
 
 ### Utilities

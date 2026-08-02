@@ -1,6 +1,22 @@
 import { Task, StoredProjectV2 } from "@blossom/common";
 import { FileIO } from "../utils/fileIO";
 
+/** The named project has no file behind it. */
+class ProjectNotFoundError extends Error {
+    constructor(filename: string) {
+        super(`Project not found: ${filename}`);
+        this.name = "ProjectNotFoundError";
+    }
+}
+
+/** A filename that would address a file outside the projects folder. */
+class InvalidProjectNameError extends Error {
+    constructor(filename: string) {
+        super(`Invalid project name: ${filename}`);
+        this.name = "InvalidProjectNameError";
+    }
+}
+
 class Project {
     private fileIO: FileIO;
 
@@ -19,6 +35,22 @@ class Project {
         this.fileIO = fileIO;
     }
 
+    /**
+     * Where a named project lives. Names arrive from callers and are pasted
+     * into a path, so anything holding a separator or a parent reference would
+     * address a file outside the projects folder; those are rejected here, at
+     * the one point every path is built.
+     */
+    private filepath = (filename: string): string => {
+        if (typeof filename !== "string" || filename === "") {
+            throw new InvalidProjectNameError(String(filename));
+        }
+        if (/[/\\]/.test(filename) || filename === "." || filename === "..") {
+            throw new InvalidProjectNameError(filename);
+        }
+        return `./projects/${filename}.txt`;
+    };
+
     public saveProject = async (filename: string, goal: Task, inbox: string[]) => {
         const project: StoredProjectV2 = {
             formatVersion: 2,
@@ -26,11 +58,11 @@ class Project {
             inbox,
         };
 
+        const filepath = this.filepath(filename);
         if (!(await this.fileIO.exists("./projects"))) {
             await this.fileIO.mkdir("./projects");
         }
 
-        let filepath: string = `./projects/${filename}.txt`;
         await this.fileIO.writeFile(filepath, JSON.stringify(project));
     };
 
@@ -48,8 +80,28 @@ class Project {
         return projects;
     };
 
+    /**
+     * Removes a project's file. The active project is a separate concern the
+     * store owns, so deleting the file a project was loaded from leaves what is
+     * on screen untouched.
+     */
+    public deleteProject = async (filename: string): Promise<void> => {
+        const filepath = this.filepath(filename);
+        try {
+            await this.fileIO.unlink(filepath);
+        } catch (error) {
+            // The removal itself reports the missing file, so two callers
+            // deleting the same project both get told what happened; asking
+            // first would leave a window where the answer goes stale.
+            if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+                throw new ProjectNotFoundError(filename);
+            }
+            throw error;
+        }
+    };
+
     public restoreProject = async (filename: string): Promise<{ goal: Task; inbox: string[] }> => {
-        let filepath: string = `./projects/${filename}.txt`;
+        const filepath = this.filepath(filename);
 
         if (!(await this.fileIO.exists(filepath))) {
             return { goal: this.emptyGoal, inbox: [] };
@@ -72,4 +124,4 @@ class Project {
     };
 }
 
-export { Project };
+export { Project, ProjectNotFoundError, InvalidProjectNameError };
