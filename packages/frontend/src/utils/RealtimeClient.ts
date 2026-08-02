@@ -27,6 +27,8 @@ export interface StateUpdate {
 export interface Notice {
     kind: "project-switched";
     project: string | null;
+    /** Whether this browser is the one that caused what the notice describes. */
+    byThisBrowser: boolean;
 }
 
 /** Rejection reason for a command that never got a successful reply. */
@@ -277,7 +279,11 @@ export class RealtimeClient {
                 });
                 return;
             case "notice":
-                this.emit(this.noticeListeners, { kind: message.kind, project: message.project });
+                this.emit(this.noticeListeners, {
+                    kind: message.kind,
+                    project: message.project,
+                    byThisBrowser: message.author !== undefined && message.author.id === this.author?.id,
+                });
                 return;
             case "result": {
                 const pending = this.pending.get(message.id);

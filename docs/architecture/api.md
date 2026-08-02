@@ -132,7 +132,7 @@ The primary transport. Message types are defined in `@blossom/common/realtime.ts
 | ---------- | -------------------------------------- | -------------------------------------------------------------------------------------- |
 | `snapshot` | `{ protocolVersion, serverId, state }` | Sent on connect and on `resync`. Applied unconditionally, bypassing the version guard. |
 | `state`    | `{ state, author? }`                   | A change happened, from any writer.                                                    |
-| `notice`   | `{ kind, project }`                    | Somebody switched everyone's project.                                                  |
+| `notice`   | `{ kind, project, author? }`           | The active project changed for everyone; `author` is whoever asked for it.             |
 | `result`   | `{ id, result }`                       | A command succeeded. `result` is byte-identical to REST's `response`.                  |
 | `error`    | `{ id, error, state }`                 | A command failed; `state` is authoritative so conflicts self-heal.                     |
 | `ping`     | None                                   | Heartbeat, every 25s. A socket silent for 60s is terminated.                           |

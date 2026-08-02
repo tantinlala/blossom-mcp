@@ -115,11 +115,15 @@ export function useServerSync({ apiClient, planManager, realtime, notify }: UseS
                 notifyRef.current?.("This page is out of date and has stopped syncing. Reload to continue."),
             ),
             realtime.onNotice((notice: Notice) => {
-                const target = notice.project ?? "a new project";
-                notifyRef.current?.(`Somebody switched everyone to ${target}`);
+                // Everyone gets told the project changed under them, except the
+                // person who changed it - they watched themselves do it.
+                if (!notice.byThisBrowser) {
+                    const target = notice.project ?? "a new project";
+                    notifyRef.current?.(`Somebody switched everyone to ${target}`);
+                }
                 // The notice follows the state that carried the switch, so the
-                // version is already current. Whoever did the switching knows
-                // how it stands against disk; everyone else learns it here.
+                // version is already current, and where it stands against disk
+                // follows from whether there is a file behind it.
                 if (notice.project) {
                     markSaved();
                 } else {

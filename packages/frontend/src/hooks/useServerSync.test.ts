@@ -249,11 +249,26 @@ describe("useServerSync", () => {
 
             act(() => {
                 realtime.listeners.notice.forEach((listener) =>
-                    listener({ kind: "project-switched", project: "q3-roadmap" }),
+                    listener({ kind: "project-switched", project: "q3-roadmap", byThisBrowser: false }),
                 );
             });
 
             expect(mockNotify).toHaveBeenCalledWith("Somebody switched everyone to q3-roadmap");
+        });
+
+        it("stays quiet about a project switch this browser made", () => {
+            const { result } = render();
+            act(() => result.current.applyState(makeState(4)));
+            act(() => result.current.markNeverSaved());
+
+            act(() => {
+                realtime.listeners.notice.forEach((listener) =>
+                    listener({ kind: "project-switched", project: "q3-roadmap", byThisBrowser: true }),
+                );
+            });
+
+            expect(mockNotify).not.toHaveBeenCalled();
+            expect(result.current.saveState).toBe("saved");
         });
 
         it("treats a project somebody else opened as matching disk", () => {
@@ -265,7 +280,7 @@ describe("useServerSync", () => {
 
             act(() => {
                 realtime.listeners.notice.forEach((listener) =>
-                    listener({ kind: "project-switched", project: "q3-roadmap" }),
+                    listener({ kind: "project-switched", project: "q3-roadmap", byThisBrowser: false }),
                 );
             });
 
@@ -277,7 +292,9 @@ describe("useServerSync", () => {
             pushState({ state: makeState(12) });
 
             act(() => {
-                realtime.listeners.notice.forEach((listener) => listener({ kind: "project-switched", project: null }));
+                realtime.listeners.notice.forEach((listener) =>
+                    listener({ kind: "project-switched", project: null, byThisBrowser: false }),
+                );
             });
 
             expect(result.current.saveState).toBe("neverSaved");

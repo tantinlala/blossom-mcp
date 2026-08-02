@@ -228,10 +228,45 @@ describe("RealtimeClient", () => {
         const notices: any[] = [];
         client.onNotice((notice) => notices.push(notice));
         socket.simulateOpen();
+        client.identify({ id: "this-browser", kind: "person" });
+
+        socket.simulateMessage({
+            type: "notice",
+            kind: "project-switched",
+            project: "q3",
+            author: { id: "another-browser", kind: "person" },
+        });
+
+        expect(notices).toEqual([{ kind: "project-switched", project: "q3", byThisBrowser: false }]);
+    });
+
+    it("marks a notice carrying this browser's own author as its own doing", () => {
+        const socket = connect();
+        const notices: any[] = [];
+        client.onNotice((notice) => notices.push(notice));
+        socket.simulateOpen();
+        client.identify({ id: "this-browser", kind: "person" });
+
+        socket.simulateMessage({
+            type: "notice",
+            kind: "project-switched",
+            project: "q3",
+            author: { id: "this-browser", kind: "person" },
+        });
+
+        expect(notices).toEqual([{ kind: "project-switched", project: "q3", byThisBrowser: true }]);
+    });
+
+    it("treats an unattributed notice as somebody else's doing", () => {
+        const socket = connect();
+        const notices: any[] = [];
+        client.onNotice((notice) => notices.push(notice));
+        socket.simulateOpen();
+        client.identify({ id: "this-browser", kind: "person" });
 
         socket.simulateMessage({ type: "notice", kind: "project-switched", project: "q3" });
 
-        expect(notices).toEqual([{ kind: "project-switched", project: "q3" }]);
+        expect(notices).toEqual([{ kind: "project-switched", project: "q3", byThisBrowser: false }]);
     });
 
     it("reconnects after a drop, backing off before trying again", () => {

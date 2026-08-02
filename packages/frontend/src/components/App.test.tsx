@@ -115,7 +115,6 @@ describe("App", () => {
     function createMockPanel() {
         return {
             activePanel: "inbox" as string | null,
-            inboxDismissed: false,
             showNextTasks: jest.fn(),
             showDetails: jest.fn(),
             toggleNextTasks: jest.fn(),

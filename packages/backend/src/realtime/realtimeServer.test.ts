@@ -238,8 +238,9 @@ describe("realtime server", () => {
         });
         await settle();
 
+        // The author rides along so Ben's own browser can tell it was his doing.
         const notice = firstOfType(a.received, "notice");
-        expect(notice).toEqual({ type: "notice", kind: "project-switched", project: "q3-roadmap" });
+        expect(notice).toEqual({ type: "notice", kind: "project-switched", project: "q3-roadmap", author: ben });
     });
 
     it("ignores a malformed frame rather than dropping the connection", async () => {

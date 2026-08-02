@@ -6,10 +6,10 @@ describe("useSidePanel", () => {
         window.localStorage.clear();
     });
 
-    it("starts on the inbox", () => {
+    it("starts with the slot empty", () => {
         const { result } = renderHook(() => useSidePanel());
 
-        expect(result.current.activePanel).toBe("inbox");
+        expect(result.current.activePanel).toBeNull();
     });
 
     it("only ever shows one panel", () => {
@@ -25,28 +25,42 @@ describe("useSidePanel", () => {
         expect(result.current.activePanel).toBe("nextTasks");
     });
 
-    it("hands the slot back to the inbox when a panel is closed", () => {
+    it("empties the slot when a panel over the inbox is closed", () => {
         const { result } = renderHook(() => useSidePanel());
 
+        act(() => result.current.showInbox());
         act(() => result.current.showDetails());
-        act(() => result.current.closeActivePanel());
-
-        expect(result.current.activePanel).toBe("inbox");
-    });
-
-    it("closes the inbox itself, leaving nothing on screen", () => {
-        const { result } = renderHook(() => useSidePanel());
-
         act(() => result.current.closeActivePanel());
 
         expect(result.current.activePanel).toBeNull();
     });
 
-    it("keeps the inbox dismissed when a later panel is closed", () => {
+    it("keeps the slot empty across a reload once a panel is closed", () => {
+        const { result, unmount } = renderHook(() => useSidePanel());
+
+        act(() => result.current.showInbox());
+        act(() => result.current.showNextTasks());
+        act(() => result.current.closeActivePanel());
+        unmount();
+
+        const remounted = renderHook(() => useSidePanel());
+
+        expect(remounted.result.current.activePanel).toBeNull();
+    });
+
+    it("leaves the slot empty when a panel is closed over a closed inbox", () => {
         const { result } = renderHook(() => useSidePanel());
 
+        act(() => result.current.showDetails());
         act(() => result.current.closeActivePanel());
-        act(() => result.current.showNextTasks());
+
+        expect(result.current.activePanel).toBeNull();
+    });
+
+    it("closes the inbox itself, leaving nothing on screen", () => {
+        const { result } = renderHook(() => useSidePanel());
+
+        act(() => result.current.showInbox());
         act(() => result.current.closeActivePanel());
 
         expect(result.current.activePanel).toBeNull();
@@ -59,10 +73,10 @@ describe("useSidePanel", () => {
         expect(result.current.activePanel).toBe("nextTasks");
 
         act(() => result.current.toggleNextTasks());
-        expect(result.current.activePanel).toBe("inbox");
+        expect(result.current.activePanel).toBeNull();
     });
 
-    it("reveals the inbox from behind another panel rather than dismissing it", () => {
+    it("reveals the inbox from behind another panel", () => {
         const { result } = renderHook(() => useSidePanel());
 
         act(() => result.current.showNextTasks());
@@ -71,34 +85,34 @@ describe("useSidePanel", () => {
         expect(result.current.activePanel).toBe("inbox");
     });
 
-    it("toggleInbox dismisses and restores the inbox when nothing is over it", () => {
+    it("toggleInbox opens and closes the inbox when nothing is over it", () => {
         const { result } = renderHook(() => useSidePanel());
 
         act(() => result.current.toggleInbox());
-        expect(result.current.activePanel).toBeNull();
+        expect(result.current.activePanel).toBe("inbox");
 
         act(() => result.current.toggleInbox());
-        expect(result.current.activePanel).toBe("inbox");
+        expect(result.current.activePanel).toBeNull();
     });
 
-    it("remembers a dismissed inbox across reloads", () => {
+    it("remembers an open inbox across reloads", () => {
         const { result, unmount } = renderHook(() => useSidePanel());
-        act(() => result.current.closeActivePanel());
+        act(() => result.current.showInbox());
         unmount();
 
         const remounted = renderHook(() => useSidePanel());
 
-        expect(remounted.result.current.activePanel).toBeNull();
+        expect(remounted.result.current.activePanel).toBe("inbox");
     });
 
-    it("falls back to showing the inbox when localStorage is unavailable", () => {
+    it("leaves the slot empty when localStorage is unavailable", () => {
         const getItem = jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
             throw new Error("denied");
         });
 
         const { result } = renderHook(() => useSidePanel());
 
-        expect(result.current.activePanel).toBe("inbox");
+        expect(result.current.activePanel).toBeNull();
         getItem.mockRestore();
     });
 });
