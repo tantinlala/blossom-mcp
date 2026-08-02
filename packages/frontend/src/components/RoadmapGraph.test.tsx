@@ -551,6 +551,22 @@ describe("RoadmapGraph", () => {
             await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
         });
 
+        test("Escape puts the highlight down", async () => {
+            const { container } = renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B")],
+                [{ source: "a", target: "b" }],
+            );
+            await waitFor(() => expect(screen.getByText("Task B")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Task A").closest(".react-flow__node") as HTMLElement);
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(true));
+
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Escape" });
+
+            await waitFor(() => expect(isHighlighted("Task A")).toBe(false));
+            expect(isHighlighted("Task B")).toBe(false);
+        });
+
         test("leaves the highlight where it is at the edge of the graph", async () => {
             const { container } = renderRoadmapGraph(
                 [task("a", "Task A"), task("b", "Task B")],

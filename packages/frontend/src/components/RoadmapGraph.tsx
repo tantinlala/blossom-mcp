@@ -365,6 +365,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [handleSelectTask],
     );
 
+    /** Drops the highlight, leaving the graph with nothing picked out. */
+    const clearHighlight = useCallback(() => {
+        setNodes((currentNodes) => currentNodes.map((node) => (node.selected ? { ...node, selected: false } : node)));
+        setSelectedNodes([]);
+    }, [setNodes]);
+
     /**
      * Moves the highlight to the task lying that way across the canvas, leaving
      * it where it is when there is nothing that way. Node positions are centres
@@ -600,6 +606,13 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 return;
             }
 
+            // Escape: put the highlight down
+            if (event.key === "Escape") {
+                event.preventDefault();
+                clearHighlight();
+                return;
+            }
+
             // Arrow keys: move the highlight to the task that way across the canvas
             const direction = ARROW_DIRECTIONS[event.key];
             if (direction) {
@@ -655,6 +668,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             edges,
             createTaskWithEdges,
             selectNeighbour,
+            clearHighlight,
             handleConnect,
             handleRemoveTask,
             handleRemoveEdge,
