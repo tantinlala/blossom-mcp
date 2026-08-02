@@ -32,7 +32,8 @@ export type CommandName =
     | "undo"
     | "projects/new"
     | "projects/save"
-    | "projects/restore";
+    | "projects/restore"
+    | "projects/delete";
 
 export const COMMAND_NAMES: CommandName[] = [
     "goal",
@@ -54,6 +55,7 @@ export const COMMAND_NAMES: CommandName[] = [
     "projects/new",
     "projects/save",
     "projects/restore",
+    "projects/delete",
 ];
 
 /** What each command puts in REST's `{ response }` and the socket's `result`. */
@@ -77,6 +79,8 @@ export type CommandResultMap = {
     "projects/new": ProjectState;
     "projects/save": { projects: string[] };
     "projects/restore": ProjectState;
+    /** `state` carries the active project, which the deleted file may have been. */
+    "projects/delete": { projects: string[]; state: ProjectState };
 };
 
 /**

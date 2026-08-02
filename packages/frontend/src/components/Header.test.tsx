@@ -8,6 +8,7 @@ describe("Header component", () => {
         existingProjects: ["Project 1", "Project 2"],
         selectedProject: "Project 1",
         handleProjectChange: jest.fn(),
+        onDeleteProject: jest.fn(),
         onSave: jest.fn(),
         onRestore: jest.fn(),
         saveState: "saved" as const,
@@ -19,6 +20,7 @@ describe("Header component", () => {
 
         // Check if the app title is rendered
         expect(screen.getByText("Blossom")).toBeInTheDocument();
+        expect(screen.getByTestId("brand-mark")).toBeInTheDocument();
 
         // Check if project dropdown is rendered showing the current project
         expect(screen.getByRole("combobox")).toHaveTextContent("Project 1");
@@ -71,5 +73,14 @@ describe("Header component", () => {
         fireEvent.click(screen.getByTestId("project-option-Project 2"));
 
         expect(mockProps.handleProjectChange).toHaveBeenCalledWith("Project 2");
+    });
+
+    it("passes a project up to be deleted", () => {
+        render(<Header {...mockProps} />);
+
+        fireEvent.mouseDown(screen.getByRole("combobox"));
+        fireEvent.click(screen.getByTestId("delete-project-Project 2"));
+
+        expect(mockProps.onDeleteProject).toHaveBeenCalledWith("Project 2");
     });
 });

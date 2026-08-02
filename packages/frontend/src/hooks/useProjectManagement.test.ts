@@ -17,6 +17,7 @@ describe("useProjectManagement", () => {
     let mockApplyState: jest.Mock;
     let mockSetSelectedTask: jest.Mock;
     let mockPromptForText: jest.Mock;
+    let mockAskForConfirmation: jest.Mock;
     let mockMarkSaved: jest.Mock;
     let mockMarkNeverSaved: jest.Mock;
     let mockNotify: jest.Mock;
@@ -27,6 +28,7 @@ describe("useProjectManagement", () => {
         mockApplyState = jest.fn();
         mockSetSelectedTask = jest.fn();
         mockPromptForText = jest.fn();
+        mockAskForConfirmation = jest.fn().mockResolvedValue(true);
         mockMarkSaved = jest.fn();
         mockMarkNeverSaved = jest.fn();
         mockNotify = jest.fn();
@@ -40,6 +42,7 @@ describe("useProjectManagement", () => {
                 applyState: mockApplyState,
                 setSelectedTask: mockSetSelectedTask,
                 promptForText: mockPromptForText,
+                askForConfirmation: mockAskForConfirmation,
                 markSaved: mockMarkSaved,
                 markNeverSaved: mockMarkNeverSaved,
                 notify: mockNotify,
@@ -301,6 +304,87 @@ describe("useProjectManagement", () => {
         });
 
         expect(mockedAPIClient.restoreProject).toHaveBeenCalledTimes(1);
+    });
+
+    describe("deleteProject", () => {
+        it("asks before removing anything", async () => {
+            mockAskForConfirmation.mockResolvedValue(false);
+
+            const { result } = render();
+
+            await act(async () => {
+                await result.current.deleteProject("Old Project");
+            });
+
+            expect(mockAskForConfirmation).toHaveBeenCalledWith(
+                expect.objectContaining({ title: "Delete Old Project?" }),
+            );
+            expect(mockedAPIClient.deleteProject).not.toHaveBeenCalled();
+        });
+
+        it("keeps the project list in step with what is left on disk", async () => {
+            const state = makeState("Kept Project", 2);
+            mockedAPIClient.deleteProject.mockResolvedValue({ projects: ["Kept Project"], state });
+
+            const { result } = render();
+
+            await act(async () => {
+                await result.current.deleteProject("Old Project");
+            });
+
+            expect(mockedAPIClient.deleteProject).toHaveBeenCalledWith("Old Project");
+            expect(result.current.existingProjects).toEqual(["Kept Project"]);
+            expect(mockApplyState).toHaveBeenCalledWith(state);
+            expect(mockNotify).toHaveBeenCalledWith("Deleted Old Project.");
+        });
+
+        it("leaves another project open and saved when it is not the one deleted", async () => {
+            mockedAPIClient.deleteProject.mockResolvedValue({
+                projects: ["Kept Project"],
+                state: makeState("Kept Project", 2),
+            });
+
+            const { result } = render();
+
+            await act(async () => {
+                await result.current.deleteProject("Old Project");
+            });
+
+            expect(mockMarkNeverSaved).not.toHaveBeenCalled();
+        });
+
+        it("reports the open project as unsaved once its file is gone", async () => {
+            const state = makeState(null, 2);
+            mockedAPIClient.deleteProject.mockResolvedValue({ projects: [], state });
+
+            const { result } = render();
+
+            await act(async () => {
+                await result.current.deleteProject("My Project");
+            });
+
+            // The work is still on screen; there is just nothing behind it now.
+            expect(mockApplyState).toHaveBeenCalledWith(state);
+            expect(mockMarkNeverSaved).toHaveBeenCalled();
+        });
+
+        it("reports a failure to delete and keeps the project list", async () => {
+            mockedAPIClient.listExistingProjects.mockResolvedValue(["Old Project"]);
+            mockedAPIClient.getState.mockResolvedValue(makeState(null));
+            mockedAPIClient.deleteProject.mockResolvedValue(undefined);
+
+            const { result } = render();
+            await act(async () => {
+                await result.current.initializeApp();
+            });
+
+            await act(async () => {
+                await result.current.deleteProject("Old Project");
+            });
+
+            expect(mockNotify).toHaveBeenCalledWith("Could not delete that project.");
+            expect(result.current.existingProjects).toEqual(["Old Project"]);
+        });
     });
 
     describe("following a project switch made by somebody else", () => {

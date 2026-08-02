@@ -261,6 +261,11 @@ class APIClient {
         return await this.post("projects/restore", { filename });
     }
 
+    /** Resolves to the projects that remain, and the state the deletion left behind. */
+    public async deleteProject(filename: string): Promise<{ projects: string[]; state: ProjectState } | undefined> {
+        return await this.post("projects/delete", { filename });
+    }
+
     public async getActiveProject(): Promise<string | null | undefined> {
         return (await this.get("/projects/active"))?.activeProject;
     }

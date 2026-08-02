@@ -2,12 +2,14 @@ import { useCallback, useRef, useState } from "react";
 import { APIClient } from "../utils/APIClient";
 import { ProjectState, Task } from "@blossom/common";
 import { PromptForText } from "./useTextPrompt";
+import { AskForConfirmation } from "./useConfirm";
 
 interface UseProjectManagementDeps {
     apiClient: APIClient;
     applyState: (state: ProjectState) => void;
     setSelectedTask: React.Dispatch<React.SetStateAction<Task | null>>;
     promptForText: PromptForText;
+    askForConfirmation: AskForConfirmation;
     markSaved: () => void;
     markNeverSaved: () => void;
     /** Shows the user something worth knowing that is not an error. */
@@ -19,6 +21,7 @@ export function useProjectManagement({
     applyState,
     setSelectedTask,
     promptForText,
+    askForConfirmation,
     markSaved,
     markNeverSaved,
     notify,
@@ -164,6 +167,39 @@ export function useProjectManagement({
         }
     }, [selectedProject, restoreProject, setupNewProject]);
 
+    /**
+     * Removes a saved project's file. Deleting the one that is open leaves the
+     * work on screen with nothing behind it, which is the state a project that
+     * has never been saved is already in, so it is reported the same way.
+     */
+    const deleteProject = useCallback(
+        async (filename: string): Promise<void> => {
+            const confirmed = await askForConfirmation({
+                title: `Delete ${filename}?`,
+                message:
+                    "The saved copy is removed for everyone and cannot be recovered. Anything currently open stays on screen.",
+                confirmLabel: "Delete",
+            });
+            if (!confirmed) {
+                return;
+            }
+
+            const result = await apiClient.deleteProject(filename);
+            if (result === undefined) {
+                reportProblem("Could not delete that project.");
+                return;
+            }
+
+            setExistingProjects(result.projects);
+            applyState(result.state);
+            if (result.state.activeProject === null) {
+                markNeverSaved();
+            }
+            notify?.(`Deleted ${filename}.`);
+        },
+        [apiClient, applyState, askForConfirmation, markNeverSaved, notify, reportProblem],
+    );
+
     /** Picking a project loads it: the dropdown reads as a project switcher, so it behaves like one. */
     const handleProjectChange = useCallback(
         async (filename: string) => {
@@ -188,6 +224,7 @@ export function useProjectManagement({
         initializeApp,
         onSave,
         onRestore,
+        deleteProject,
         handleProjectChange,
     };
 }

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { Author, CommandErrorCode, COMMAND_NAMES } from "@blossom/common";
-import { Project } from "../models/project";
+import { InvalidProjectNameError, Project, ProjectNotFoundError } from "../models/project";
 import {
     ProjectStore,
     TaskNotFoundError,
@@ -29,10 +29,10 @@ const Status = {
 // rather than making the client re-infer it from a status shared by several
 // distinct failures.
 const errorCode = (error: unknown): CommandErrorCode => {
-    if (error instanceof TaskNotFoundError) {
+    if (error instanceof TaskNotFoundError || error instanceof ProjectNotFoundError) {
         return "not-found";
     }
-    if (error instanceof InvalidCommandError) {
+    if (error instanceof InvalidCommandError || error instanceof InvalidProjectNameError) {
         return "invalid";
     }
     if (error instanceof UnknownCommandError) {
@@ -54,13 +54,14 @@ const errorCode = (error: unknown): CommandErrorCode => {
 };
 
 const errorStatus = (error: unknown): number => {
-    if (error instanceof TaskNotFoundError) {
+    if (error instanceof TaskNotFoundError || error instanceof ProjectNotFoundError) {
         return Status.NOT_FOUND;
     }
     if (
         error instanceof InvalidDependencyError ||
         error instanceof InvalidIndexError ||
         error instanceof InvalidCommandError ||
+        error instanceof InvalidProjectNameError ||
         error instanceof UnknownCommandError
     ) {
         return Status.BAD_REQUEST;
