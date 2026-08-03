@@ -70,10 +70,21 @@ const requireString = (value: unknown, field: string): string => {
 // Which inbox entry a payload means. Callers may name it by `ideaId`, which
 // holds however the list shifts around it, or by `index` into the current
 // newest-first order; `ideaId` decides when both are sent.
-const ideaRef = (payload: any): { ideaId?: string; index?: number } => ({
-    ideaId: typeof payload?.ideaId === "string" ? payload.ideaId : undefined,
-    index: payload?.index,
-});
+//
+// A payload that names neither is rejected here, where the reference is read.
+// Passing it on would have the store report an out-of-range position for a
+// position the caller never gave, which says nothing about what was wrong.
+const ideaRef = (payload: any): { ideaId?: string; index?: number } => {
+    if (typeof payload?.ideaId === "string" && payload.ideaId !== "") {
+        return { ideaId: payload.ideaId };
+    }
+    if (!Number.isInteger(payload?.index)) {
+        throw new InvalidCommandError(
+            "An inbox idea reference is required: pass ideaId, or index as an integer position",
+        );
+    }
+    return { index: payload.index };
+};
 
 // Guards the two commands that replace the project everyone is looking at.
 const assertSwitchConfirmed = (ctx: CommandContext, payload: any) => {

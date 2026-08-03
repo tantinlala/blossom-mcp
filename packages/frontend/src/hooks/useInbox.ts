@@ -8,10 +8,9 @@ interface PendingEdit {
     /** What has been typed so far. */
     text: string;
     /**
-     * What the row held when editing began. Sent as a precondition so a commit
-     * cannot overwrite a change somebody else made to the same row in the
-     * meantime - and, because inbox rows are addressed by index and adding an
-     * idea shifts every index, cannot land on the wrong row either.
+     * What the idea held when editing began. Sent as a precondition so a commit
+     * cannot overwrite a change somebody else made to the same idea in the
+     * meantime.
      */
     original: string;
 }
@@ -24,9 +23,19 @@ interface UseInboxDeps {
 }
 
 export function useInbox({ apiClient, planManager, applyState, notify }: UseInboxDeps) {
-    const [remoteIdeas, setRemoteIdeas] = useState<string[]>([]);
-    const [pendingEdits, setPendingEdits] = useState<Map<number, PendingEdit>>(new Map());
+    const [remoteIdeas, setRemoteIdeas] = useState<InboxIdea[]>([]);
+    // Keyed by idea id, not by row: an idea keeps its id wherever it moves to,
+    // so an edit stays attached to the idea it was started on however the list
+    // shifts around it.
+    const [pendingEdits, setPendingEdits] = useState<Map<string, PendingEdit>>(new Map());
     const pendingEditsRef = useRef(pendingEdits);
+    // What callers outside rendering read, for the same reason the edits keep a
+    // ref: a pushed update can land between a state update and its render.
+    const remoteIdeasRef = useRef(remoteIdeas);
+
+    // The rows the panel renders are positions, so the position a caller hands
+    // back is turned into an id here, at the one point it still means anything.
+    const ideaIdAt = useCallback((index: number): string | undefined => remoteIdeasRef.current[index]?.id, []);
 
     /**
      * Updates the pending edits, keeping the ref and the state in step.
@@ -37,7 +46,7 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
      * already been cleared, so every write goes through here instead.
      */
     const updatePendingEdits = useCallback(
-        (update: (previous: Map<number, PendingEdit>) => Map<number, PendingEdit>) => {
+        (update: (previous: Map<string, PendingEdit>) => Map<string, PendingEdit>) => {
             const next = update(pendingEditsRef.current);
             if (next === pendingEditsRef.current) {
                 return;
@@ -48,36 +57,31 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
         [],
     );
 
-    // What the user sees: the server's list with any in-progress typing laid
-    // over the top, so an incoming change to one row never disturbs another.
+    // What the user sees: the server's list in the server's order, with any
+    // in-progress typing laid over the idea it was typed into, so an incoming
+    // change to one idea never disturbs another.
     const ideaList = useMemo(() => {
-        if (pendingEdits.size === 0) {
-            return remoteIdeas;
-        }
-        const merged = [...remoteIdeas];
-        pendingEdits.forEach((edit, index) => {
-            if (index < merged.length) {
-                merged[index] = edit.text;
-            }
-        });
-        return merged;
+        return remoteIdeas.map((idea) => pendingEdits.get(idea.id)?.text ?? idea.text);
     }, [remoteIdeas, pendingEdits]);
 
     /**
      * Adopts the server's inbox, keeping whatever is being typed laid over it.
      *
-     * When somebody changes the very row being edited, the local text is kept
+     * When somebody changes the very idea being edited, the local text is kept
      * rather than replaced: discarding what a person is in the middle of typing
      * loses their work with no warning, which is precisely the failure this
      * overlay exists to prevent. Instead they are told, and the edit is rebased
-     * onto the new value so their next commit knowingly replaces it. A row that
-     * has been deleted outright has nothing left to commit onto, so that edit
-     * is dropped - again with a word about why.
+     * onto the new value so their next commit knowingly replaces it. An idea
+     * that has been removed outright has nothing left to commit onto, so that
+     * edit is dropped - again with a word about why.
+     *
+     * Both of those turn on the idea's id, so ideas added or removed elsewhere
+     * in the list leave an edit exactly where it was.
      */
     const applyRemoteInbox = useCallback(
         (entries: InboxIdea[]) => {
-            const ideas = entries.map((entry) => entry.text);
-            setRemoteIdeas(ideas);
+            remoteIdeasRef.current = entries;
+            setRemoteIdeas(entries);
 
             let rebased = false;
             let removed = false;
@@ -85,17 +89,19 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
                 if (pending.size === 0) {
                     return pending;
                 }
+                const byId = new Map(entries.map((entry) => [entry.id, entry.text]));
                 const next = new Map(pending);
-                pending.forEach((edit, index) => {
-                    if (ideas[index] === edit.original) {
+                pending.forEach((edit, ideaId) => {
+                    const text = byId.get(ideaId);
+                    if (text === edit.original) {
                         return;
                     }
-                    if (index >= ideas.length) {
-                        next.delete(index);
+                    if (text === undefined) {
+                        next.delete(ideaId);
                         removed = true;
                         return;
                     }
-                    next.set(index, { ...edit, original: ideas[index] });
+                    next.set(ideaId, { ...edit, original: text });
                     rebased = true;
                 });
                 return rebased || removed ? next : pending;
@@ -112,13 +118,13 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
     );
 
     const clearPendingEdit = useCallback(
-        (index: number) => {
+        (ideaId: string) => {
             updatePendingEdits((previous) => {
-                if (!previous.has(index)) {
+                if (!previous.has(ideaId)) {
                     return previous;
                 }
                 const next = new Map(previous);
-                next.delete(index);
+                next.delete(ideaId);
                 return next;
             });
         },
@@ -156,53 +162,72 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
 
     const deleteIdea = useCallback(
         async (index: number) => {
-            const expectedText = pendingEditsRef.current.get(index)?.original ?? remoteIdeas[index];
-            clearPendingEdit(index);
-            await applyResult(await apiClient.removeIdea(index, expectedText));
+            const ideaId = ideaIdAt(index);
+            if (ideaId === undefined) {
+                return;
+            }
+            const expectedText = pendingEditsRef.current.get(ideaId)?.original ?? remoteIdeasRef.current[index].text;
+            clearPendingEdit(ideaId);
+            await applyResult(await apiClient.removeIdea(ideaId, expectedText));
         },
-        [apiClient, applyResult, clearPendingEdit, remoteIdeas],
+        [apiClient, applyResult, clearPendingEdit, ideaIdAt],
     );
 
     // Keystrokes stay local until blur/Enter so every character does not cost a
     // round trip; commitIdea persists them.
     const changeIdea = useCallback(
         (index: number, newIdea: string) => {
+            const ideaId = ideaIdAt(index);
+            if (ideaId === undefined) {
+                return;
+            }
             updatePendingEdits((previous) => {
                 const next = new Map(previous);
-                const existing = previous.get(index);
-                next.set(index, { text: newIdea, original: existing?.original ?? remoteIdeas[index] ?? "" });
+                const existing = previous.get(ideaId);
+                next.set(ideaId, {
+                    text: newIdea,
+                    original: existing?.original ?? remoteIdeasRef.current[index].text,
+                });
                 return next;
             });
         },
-        [remoteIdeas, updatePendingEdits],
+        [ideaIdAt, updatePendingEdits],
     );
 
     const commitIdea = useCallback(
         async (index: number) => {
-            const pending = pendingEditsRef.current.get(index);
+            const ideaId = ideaIdAt(index);
+            if (ideaId === undefined) {
+                return;
+            }
+            const pending = pendingEditsRef.current.get(ideaId);
             if (!pending) {
                 return;
             }
             if (pending.text === pending.original) {
-                clearPendingEdit(index);
+                clearPendingEdit(ideaId);
                 return;
             }
 
-            const succeeded = await applyResult(await apiClient.updateIdea(index, pending.text, pending.original));
+            const succeeded = await applyResult(await apiClient.updateIdea(ideaId, pending.text, pending.original));
             if (succeeded) {
-                clearPendingEdit(index);
+                clearPendingEdit(ideaId);
             }
         },
-        [apiClient, applyResult, clearPendingEdit],
+        [apiClient, applyResult, clearPendingEdit, ideaIdAt],
     );
 
     const addTaskToContextAndRemove = useCallback(
         async (index: number): Promise<void> => {
-            const expectedText = pendingEditsRef.current.get(index)?.original ?? remoteIdeas[index];
-            clearPendingEdit(index);
-            await applyResult(await apiClient.promoteIdea(index, planManager.presentContextGoal.id, expectedText));
+            const ideaId = ideaIdAt(index);
+            if (ideaId === undefined) {
+                return;
+            }
+            const expectedText = pendingEditsRef.current.get(ideaId)?.original ?? remoteIdeasRef.current[index].text;
+            clearPendingEdit(ideaId);
+            await applyResult(await apiClient.promoteIdea(ideaId, planManager.presentContextGoal.id, expectedText));
         },
-        [apiClient, planManager, applyResult, clearPendingEdit, remoteIdeas],
+        [apiClient, planManager, applyResult, clearPendingEdit, ideaIdAt],
     );
 
     // One command rather than a promotion per idea: the inbox cannot shift

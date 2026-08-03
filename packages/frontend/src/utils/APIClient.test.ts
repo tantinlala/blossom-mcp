@@ -99,7 +99,7 @@ describe("APIClient", () => {
             );
             const client = new APIClient(realtime);
 
-            await client.updateIdea(0, "mine", "theirs");
+            await client.updateIdea("idea-1", "mine", "theirs");
 
             expect(client.lastFailure()).toMatchObject({ code: "conflict", state: makeState(8) });
         });

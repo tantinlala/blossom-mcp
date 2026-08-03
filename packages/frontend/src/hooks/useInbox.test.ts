@@ -101,7 +101,7 @@ describe("useInbox", () => {
         expect(mockedAPIClient.getState).not.toHaveBeenCalled();
     });
 
-    it("deleteIdea removes the idea at the given index, guarded by the text it expects", async () => {
+    it("deleteIdea removes the idea in that row by its id, guarded by the text it expects", async () => {
         const state = makeState(2);
         mockedAPIClient.removeIdea.mockResolvedValue(state);
 
@@ -112,7 +112,7 @@ describe("useInbox", () => {
             await result.current.deleteIdea(1);
         });
 
-        expect(mockedAPIClient.removeIdea).toHaveBeenCalledWith(1, "second");
+        expect(mockedAPIClient.removeIdea).toHaveBeenCalledWith("idea-1", "second");
         expect(mockApplyState).toHaveBeenCalledWith(state);
     });
 
@@ -139,7 +139,7 @@ describe("useInbox", () => {
             await result.current.commitIdea(0);
         });
 
-        expect(mockedAPIClient.updateIdea).toHaveBeenCalledWith(0, "hello there", "hello");
+        expect(mockedAPIClient.updateIdea).toHaveBeenCalledWith("idea-0", "hello there", "hello");
         expect(mockApplyState).toHaveBeenCalledWith(state);
     });
 
@@ -181,6 +181,44 @@ describe("useInbox", () => {
         );
     });
 
+    it("leaves an edit alone when somebody adds an idea above it", () => {
+        const { result } = render();
+
+        act(() => result.current.applyRemoteInbox([{ id: "mine", text: "mine" }]));
+        act(() => result.current.changeIdea(0, "mine, half typed"));
+
+        // Adding an idea puts it at the front, so every row below it moves down.
+        act(() =>
+            result.current.applyRemoteInbox([
+                { id: "theirs", text: "something they just added" },
+                { id: "mine", text: "mine" },
+            ]),
+        );
+
+        expect(result.current.ideaList).toEqual(["something they just added", "mine, half typed"]);
+        expect(mockNotify).not.toHaveBeenCalled();
+    });
+
+    it("commits an edit against the idea it was typed into, not the row it started in", async () => {
+        mockedAPIClient.updateIdea.mockResolvedValue(makeState(3));
+
+        const { result } = render();
+        act(() => result.current.applyRemoteInbox([{ id: "mine", text: "mine" }]));
+        act(() => result.current.changeIdea(0, "mine, half typed"));
+        act(() =>
+            result.current.applyRemoteInbox([
+                { id: "theirs", text: "something they just added" },
+                { id: "mine", text: "mine" },
+            ]),
+        );
+
+        await act(async () => {
+            await result.current.commitIdea(1);
+        });
+
+        expect(mockedAPIClient.updateIdea).toHaveBeenCalledWith("mine", "mine, half typed", "mine");
+    });
+
     it("commits over the value that landed underneath, having warned about it", async () => {
         const state = makeState(9, ["mine, half typed"]);
         mockedAPIClient.updateIdea.mockResolvedValue(state);
@@ -196,7 +234,11 @@ describe("useInbox", () => {
 
         // The precondition is the value actually on the server, so the commit
         // succeeds as the informed overwrite the notice promised.
-        expect(mockedAPIClient.updateIdea).toHaveBeenCalledWith(0, "mine, half typed", "somebody else got there first");
+        expect(mockedAPIClient.updateIdea).toHaveBeenCalledWith(
+            "idea-0",
+            "mine, half typed",
+            "somebody else got there first",
+        );
     });
 
     it("gives up an edit whose row was deleted by somebody else", () => {
@@ -278,7 +320,7 @@ describe("useInbox", () => {
             await result.current.addTaskToContextAndRemove(2);
         });
 
-        expect(mockedAPIClient.promoteIdea).toHaveBeenCalledWith(2, GOAL_ID, "c");
+        expect(mockedAPIClient.promoteIdea).toHaveBeenCalledWith("idea-2", GOAL_ID, "c");
         expect(mockApplyState).toHaveBeenCalledWith(state);
     });
 
@@ -288,6 +330,7 @@ describe("useInbox", () => {
         mockedAPIClient.getState.mockResolvedValue(refetchedState);
 
         const { result } = render();
+        act(() => result.current.applyRemoteInbox(ideas("a")));
 
         await act(async () => {
             await result.current.addTaskToContextAndRemove(0);

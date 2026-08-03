@@ -4,11 +4,11 @@
 
 Writes that overwrite text carry a precondition, so one person cannot silently clobber another's edit:
 
-| Command                                         | Precondition   | Why                                                                        |
-| ----------------------------------------------- | -------------- | -------------------------------------------------------------------------- |
-| `goal`, `tasks/update`                          | `baseVersion`  | Text overwrite against a stable, id-addressed target.                      |
-| `inbox/update`, `inbox/remove`, `inbox/promote` | `expectedText` | Guards a write that names its row by `index`, which any other write moves. |
-| everything else                                 | none           | Additive or commutative.                                                   |
+| Command                                         | Precondition   | Why                                                           |
+| ----------------------------------------------- | -------------- | ------------------------------------------------------------- |
+| `goal`, `tasks/update`                          | `baseVersion`  | Text overwrite against a stable, id-addressed target.         |
+| `inbox/update`, `inbox/remove`, `inbox/promote` | `expectedText` | Text overwrite against an idea somebody else may have edited. |
+| everything else                                 | none           | Additive or commutative.                                      |
 
 `baseVersion` is captured when the local edit **begins**, not when it is sent — at send time it is always current and would catch nothing. Both are optional; omitting them leaves the write unguarded, so the last one wins.
 
@@ -35,7 +35,7 @@ Every error body also carries a `code` drawn from the same `CommandErrorCode` un
 
 Mutations may send an `X-Blossom-Author` header (`{ id, kind }`) identifying the browser that made the change. There are no names and no authentication — it only lets undo tell one browser's work from another's.
 
-The three inbox commands take either an `ideaId` or an `index`; `ideaId` wins when both are sent. An `ideaId` the inbox no longer holds returns 404 with code `not-found`.
+The three inbox commands take either an `ideaId` or an `index`; `ideaId` wins when both are sent, and a payload naming neither — or an `index` that is not an integer — returns 400 with code `invalid`. An `ideaId` the inbox no longer holds returns 404 with code `not-found`. The frontend addresses ideas by `ideaId`.
 
 | Endpoint                  | Method | Input                                            | Description                                                            |
 | ------------------------- | ------ | ------------------------------------------------ | ---------------------------------------------------------------------- |

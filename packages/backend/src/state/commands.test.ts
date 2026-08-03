@@ -1,6 +1,6 @@
 import { mock, MockProxy } from "jest-mock-extended";
 import { Author, COMMAND_NAMES, GOAL_ID } from "@blossom/common";
-import { ConfirmRequiredError, dispatchCommand, COMMANDS, UnknownCommandError } from "./commands";
+import { ConfirmRequiredError, dispatchCommand, COMMANDS, InvalidCommandError, UnknownCommandError } from "./commands";
 import { ProjectStore, VersionConflictError } from "./projectStore";
 import { Project } from "../models/project";
 
@@ -130,6 +130,45 @@ describe("commands", () => {
             await expect(run("inbox/remove", { index: 0, expectedText: "second" }, ana)).rejects.toBeInstanceOf(
                 VersionConflictError,
             );
+        });
+    });
+
+    describe("naming an inbox idea", () => {
+        it("addresses the idea by ideaId wherever it now sits", async () => {
+            await run("inbox/add", { text: "mine" });
+            const [idea] = store.getState().inbox;
+            await run("inbox/add", { text: "added above it" });
+
+            const result: any = await run("inbox/update", { ideaId: idea.id, text: "mine, edited" });
+
+            expect(result.inbox.map((entry: any) => entry.text)).toEqual(["added above it", "mine, edited"]);
+        });
+
+        it("prefers ideaId over an index that points elsewhere", async () => {
+            await run("inbox/add", { text: "mine" });
+            const [idea] = store.getState().inbox;
+            await run("inbox/add", { text: "added above it" });
+
+            const result: any = await run("inbox/remove", { ideaId: idea.id, index: 0 });
+
+            expect(result.inbox.map((entry: any) => entry.text)).toEqual(["added above it"]);
+        });
+
+        it("rejects a payload naming no idea at all", async () => {
+            await run("inbox/add", { text: "mine" });
+
+            await expect(run("inbox/remove", {})).rejects.toBeInstanceOf(InvalidCommandError);
+            await expect(run("inbox/update", { text: "mine, edited" })).rejects.toBeInstanceOf(InvalidCommandError);
+            await expect(run("inbox/promote", {})).rejects.toBeInstanceOf(InvalidCommandError);
+            expect(store.getState().inbox).toHaveLength(1);
+        });
+
+        it("rejects an index that is not an integer position", async () => {
+            await run("inbox/add", { text: "mine" });
+
+            await expect(run("inbox/remove", { index: "0" })).rejects.toBeInstanceOf(InvalidCommandError);
+            await expect(run("inbox/remove", { index: 1.5 })).rejects.toBeInstanceOf(InvalidCommandError);
+            expect(store.getState().inbox).toHaveLength(1);
         });
     });
 
