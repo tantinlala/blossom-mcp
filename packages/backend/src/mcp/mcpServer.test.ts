@@ -11,17 +11,26 @@ const EXPECTED_TOOLS = [
     "get_next_tasks",
     "set_goal",
     "add_task",
+    "add_tasks",
     "update_task",
+    "move_task",
     "set_task_completion",
     "delete_task",
     "create_subplan",
     "add_dependency",
+    "add_dependencies",
     "remove_dependency",
     "add_inbox_idea",
+    "add_inbox_ideas",
     "remove_inbox_idea",
     "promote_inbox_idea",
+    "promote_inbox_ideas",
     "undo_last_change",
 ];
+
+// Every tool that changes the project. Each has to hand back what it changed,
+// so a caller can tell a write that did what it meant from one that did not.
+const MUTATING_TOOLS = EXPECTED_TOOLS.filter((name) => !name.startsWith("get_"));
 
 describe("mcpServer", () => {
     let store: ProjectStore;
@@ -50,7 +59,7 @@ describe("mcpServer", () => {
         await server.close();
     });
 
-    it("should list all 15 tools", async () => {
+    it("should list every tool", async () => {
         await connect();
 
         const result = await client.listTools();
@@ -77,9 +86,25 @@ describe("mcpServer", () => {
         const instructions = client.getInstructions();
 
         expect(instructions).toContain("**Naming:**");
-        expect(instructions).toContain("start with a verb in the imperative");
-        expect(instructions).toContain("one actionable item");
-        expect(instructions).toContain("description field");
+        expect(instructions).toContain("one short imperative action");
+        expect(instructions).toContain("description");
+    });
+
+    it("should offer the inbox as a review step, not a required one", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("when you want the user to review or prune them");
+        expect(instructions).toContain("go straight to add_task");
+    });
+
+    it("should tell the caller to read what the write tools echo back", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("echoes back what it changed");
     });
 
     it("should describe the name/description split on the mutating tools", async () => {
@@ -90,12 +115,24 @@ describe("mcpServer", () => {
 
         for (const toolName of ["set_goal", "add_task", "update_task"]) {
             const schema = byName.get(toolName)!.inputSchema as any;
-            expect(schema.properties.name.description).toContain("imperative verb");
-            expect(schema.properties.name.description).toContain("actionable item");
+            expect(schema.properties.name.description).toContain("imperative action");
             expect(schema.properties.description.description).toMatch(/detail/i);
         }
+    });
 
-        expect(byName.get("promote_inbox_idea")!.description).toContain("update_task");
+    it("should document ideaId as the way to address an inbox entry, and index as deprecated", async () => {
+        await connect();
+
+        const result = await client.listTools();
+        const byName = new Map(result.tools.map((tool) => [tool.name, tool]));
+
+        for (const toolName of ["remove_inbox_idea", "promote_inbox_idea"]) {
+            const schema = byName.get(toolName)!.inputSchema as any;
+            expect(schema.properties.ideaId.description).toContain("Id of the inbox idea");
+            expect(schema.properties.index.description).toContain("DEPRECATED");
+        }
+
+        expect(byName.get("get_project_state")!.description).toContain("newest first");
     });
 
     it("should expose the plan-project and generate-plan prompts", async () => {
@@ -127,7 +164,7 @@ describe("mcpServer", () => {
             const state = parseResult(result);
             expect(state.goal.id).toBe(GOAL_ID);
             expect(state.goal.name).toBe("My Goal");
-            expect(state.inbox).toEqual(["idea 1"]);
+            expect(state.inbox).toEqual([{ id: expect.any(String), text: "idea 1" }]);
             expect(state.version).toBe(store.getVersion());
         });
     });
@@ -293,35 +330,458 @@ describe("mcpServer", () => {
     });
 
     describe("inbox tools", () => {
-        it("should add and remove inbox ideas", async () => {
+        it("should add an idea and return its id", async () => {
             await connect();
 
-            await callTool("add_inbox_idea", { text: "idea 1" });
-            expect(store.getState().inbox).toEqual(["idea 1"]);
+            const result = parseResult(await callTool("add_inbox_idea", { text: "idea 1" }));
 
-            await callTool("remove_inbox_idea", { index: 0 });
+            expect(result).toEqual({
+                ideaId: expect.any(String),
+                text: "idea 1",
+                duplicate: false,
+                version: store.getVersion(),
+            });
+            expect(store.getState().inbox).toEqual([{ id: result.ideaId, text: "idea 1" }]);
+        });
+
+        it("should return the existing id for an idea the inbox already holds", async () => {
+            await connect();
+            const first = parseResult(await callTool("add_inbox_idea", { text: "Book the venue" }));
+
+            const second = parseResult(await callTool("add_inbox_idea", { text: "  book the   VENUE " }));
+
+            expect(second).toEqual({
+                ideaId: first.ideaId,
+                text: "Book the venue",
+                duplicate: true,
+                version: store.getVersion(),
+            });
+            expect(store.getState().inbox).toHaveLength(1);
+        });
+
+        it("should remove an idea by id and say which it was", async () => {
+            await connect();
+            const idea = parseResult(await callTool("add_inbox_idea", { text: "idea 1" }));
+
+            const result = parseResult(await callTool("remove_inbox_idea", { ideaId: idea.ideaId }));
+
+            expect(result).toEqual({
+                ideaId: idea.ideaId,
+                text: "idea 1",
+                removed: true,
+                version: store.getVersion(),
+            });
             expect(store.getState().inbox).toEqual([]);
         });
 
-        it("should promote an inbox idea to a task", async () => {
+        it("should still accept the deprecated index", async () => {
+            await connect();
+            store.addIdea("idea 1");
+
+            await callTool("remove_inbox_idea", { index: 0 });
+
+            expect(store.getState().inbox).toEqual([]);
+        });
+
+        it("should let ideaId win when an index is sent as well", async () => {
+            await connect();
+            const first = store.addIdea("first");
+            store.addIdea("second");
+
+            const result = parseResult(await callTool("remove_inbox_idea", { ideaId: first.id, index: 0 }));
+
+            expect(result.text).toBe("first");
+            expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["second"]);
+        });
+
+        it("should add several ideas at once, keeping the order supplied", async () => {
+            await connect();
+
+            const result = parseResult(await callTool("add_inbox_ideas", { texts: ["a", "b", "a", "c"] }));
+
+            expect(result.ideas.map((idea: any) => idea.text)).toEqual(["a", "b", "a", "c"]);
+            expect(result.ideas.map((idea: any) => idea.duplicate)).toEqual([false, false, true, false]);
+            expect(result.ideas[2].ideaId).toBe(result.ideas[0].ideaId);
+            expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["c", "b", "a"]);
+        });
+
+        it("should promote an inbox idea to a task and echo the task", async () => {
             await connect();
             store.setGoal("Goal");
-            store.addIdea("promote me");
+            const idea = store.addIdea("promote me");
 
-            const result = parseResult(await callTool("promote_inbox_idea", { index: 0 }));
+            const result = parseResult(await callTool("promote_inbox_idea", { ideaId: idea.id }));
 
-            expect(result.taskId).toBeDefined();
+            expect(result).toEqual({
+                taskId: expect.any(String),
+                name: "promote me",
+                parentId: GOAL_ID,
+                version: store.getVersion(),
+            });
             const state = store.getState();
             expect(state.inbox).toEqual([]);
             expect(state.goal.plan!.tasksList[0].id).toBe(result.taskId);
-            expect(state.goal.plan!.tasksList[0].name).toBe("promote me");
         });
 
-        it("should return isError for an invalid inbox index", async () => {
+        it("should give the task its final name and description in the one call", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const idea = store.addIdea("we should probably sort out the venue at some point");
+
+            const result = parseResult(
+                await callTool("promote_inbox_idea", {
+                    ideaId: idea.id,
+                    name: "Book venue",
+                    description: "Seats 80, within 20 minutes of the station",
+                }),
+            );
+
+            expect(result.name).toBe("Book venue");
+            const task = store.findTask(result.taskId)!;
+            expect(task.name).toBe("Book venue");
+            expect(task.description).toBe("Seats 80, within 20 minutes of the station");
+        });
+
+        it("should build each task from the idea whose id was passed, promoted in any order", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const texts = Array.from({ length: 12 }, (unused, position) => `idea ${position}`);
+            const added: { ideaId: string; text: string }[] = [];
+            for (const text of texts) {
+                added.push(parseResult(await callTool("add_inbox_idea", { text })));
+            }
+            // A deterministic shuffle: nothing is promoted in the order it was
+            // added, and neither oldest-first nor newest-first would pass.
+            const shuffled = [7, 0, 11, 3, 9, 1, 5, 10, 2, 8, 4, 6].map((position) => added[position]);
+
+            for (const idea of shuffled) {
+                const result = parseResult(await callTool("promote_inbox_idea", { ideaId: idea.ideaId }));
+                expect(result.name).toBe(idea.text);
+                expect(store.findTask(result.taskId)!.name).toBe(idea.text);
+            }
+
+            expect(store.getState().inbox).toEqual([]);
+        });
+
+        it("should fail loudly for an idea that was already promoted, rather than take its neighbour", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const kept = store.addIdea("keep me");
+            const promoted = store.addIdea("promote me");
+            await callTool("promote_inbox_idea", { ideaId: promoted.id });
+
+            const result = await callTool("promote_inbox_idea", { ideaId: promoted.id });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain(promoted.id);
+            expect(store.getState().inbox).toEqual([{ id: kept.id, text: "keep me" }]);
+        });
+
+        it("should return isError for an unknown idea id or an invalid index", async () => {
             await connect();
 
+            expect((await callTool("remove_inbox_idea", { ideaId: "never existed" })).isError).toBe(true);
             expect((await callTool("remove_inbox_idea", { index: 3 })).isError).toBe(true);
             expect((await callTool("promote_inbox_idea", { index: 0 })).isError).toBe(true);
+        });
+
+        it("should promote several ideas at once, pairing each task with the idea asked for", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const added = ["a", "b", "c"].map((text) => store.addIdea(text));
+
+            const result = parseResult(
+                await callTool("promote_inbox_ideas", {
+                    promotions: [
+                        { ideaId: added[2].id, name: "Do C" },
+                        { ideaId: added[0].id, parentId: parent.id },
+                        { ideaId: added[1].id },
+                    ],
+                }),
+            );
+
+            expect(result.tasks).toEqual([
+                { taskId: expect.any(String), name: "Do C", parentId: GOAL_ID },
+                { taskId: expect.any(String), name: "a", parentId: parent.id },
+                { taskId: expect.any(String), name: "b", parentId: GOAL_ID },
+            ]);
+            expect(store.getState().inbox).toEqual([]);
+        });
+
+        it("should apply no promotion at all when one idea in the batch is unknown", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const idea = store.addIdea("a");
+
+            const result = await callTool("promote_inbox_ideas", {
+                promotions: [{ ideaId: idea.id }, { ideaId: "gone" }],
+            });
+
+            expect(result.isError).toBe(true);
+            expect(store.getState().inbox).toEqual([{ id: idea.id, text: "a" }]);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+    });
+
+    describe("echoing what was changed", () => {
+        // Left deliberately as a loop over every mutating tool: a tool added
+        // later that reports nothing but a counter fails here without anyone
+        // remembering to come back and add a case for it.
+        it("should never answer a write with the version alone", async () => {
+            await connect();
+            store.setGoal("Ship it");
+            const first = store.addTask(GOAL_ID, "Draft copy");
+            const second = store.addTask(GOAL_ID, "Print flyers");
+            const parent = store.addTask(GOAL_ID, "Run the launch");
+            store.createSubplan(parent.id);
+            store.addDependency(first.id, second.id);
+            const ideas = ["a", "b", "c"].map((text) => store.addIdea(text));
+
+            const args: Record<string, Record<string, unknown>> = {
+                set_goal: { name: "Ship it" },
+                add_task: { name: "Sort the printing" },
+                add_tasks: { tasks: [{ name: "Sort the printing" }] },
+                update_task: { taskId: first.id, name: "Draft the copy" },
+                move_task: { taskId: first.id, newParentId: parent.id },
+                set_task_completion: { taskId: second.id, completed: true },
+                delete_task: { taskId: second.id },
+                create_subplan: { taskId: parent.id },
+                add_dependency: { sourceId: parent.id, targetId: GOAL_ID },
+                add_dependencies: { dependencies: [{ sourceId: parent.id, targetId: GOAL_ID }] },
+                remove_dependency: { sourceId: parent.id, targetId: GOAL_ID },
+                add_inbox_idea: { text: "something new" },
+                add_inbox_ideas: { texts: ["something else new"] },
+                remove_inbox_idea: { ideaId: ideas[0].id },
+                promote_inbox_idea: { ideaId: ideas[1].id },
+                promote_inbox_ideas: { promotions: [{ ideaId: ideas[2].id }] },
+                undo_last_change: {},
+            };
+
+            for (const toolName of MUTATING_TOOLS) {
+                const result = await callTool(toolName, args[toolName]);
+
+                expect(result.isError).toBeFalsy();
+                const keys = Object.keys(parseResult(result)).filter((key) => key !== "version");
+                expect({ toolName, keys }).toEqual({ toolName, keys: expect.arrayContaining([expect.any(String)]) });
+            }
+        });
+
+        it("should name both ends of a dependency it stores", async () => {
+            await connect();
+            store.setGoal("Ship it");
+            const first = store.addTask(GOAL_ID, "Draft copy");
+            const second = store.addTask(GOAL_ID, "Print flyers");
+
+            const added = parseResult(await callTool("add_dependency", { sourceId: first.id, targetId: second.id }));
+            const goalward = parseResult(await callTool("add_dependency", { sourceId: second.id, targetId: GOAL_ID }));
+
+            expect(added).toEqual({
+                sourceId: first.id,
+                sourceName: "Draft copy",
+                targetId: second.id,
+                targetName: "Print flyers",
+                version: expect.any(Number),
+            });
+            expect(goalward.targetName).toBe("Ship it");
+        });
+
+        it("should resolve a subplan's own task id to that plan's goal and say so", async () => {
+            await connect();
+            store.setGoal("Ship it");
+            const parent = store.addTask(GOAL_ID, "Run the launch");
+            const child = store.addTask(parent.id, "Draft copy");
+
+            const result = parseResult(await callTool("add_dependency", { sourceId: child.id, targetId: parent.id }));
+
+            expect(result).toEqual({
+                sourceId: child.id,
+                sourceName: "Draft copy",
+                targetId: GOAL_ID,
+                targetName: "Run the launch",
+                version: expect.any(Number),
+            });
+        });
+    });
+
+    describe("batch tools", () => {
+        it("should add tasks in the order supplied and echo each one", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const parent = store.addTask(GOAL_ID, "Parent");
+
+            const result = parseResult(
+                await callTool("add_tasks", {
+                    tasks: [
+                        { name: "Draft copy" },
+                        { name: "Print flyers", parentId: parent.id, description: "150gsm" },
+                        { name: "Post flyers" },
+                    ],
+                }),
+            );
+
+            expect(result.tasks).toEqual([
+                { taskId: expect.any(String), name: "Draft copy", parentId: GOAL_ID },
+                { taskId: expect.any(String), name: "Print flyers", parentId: parent.id },
+                { taskId: expect.any(String), name: "Post flyers", parentId: GOAL_ID },
+            ]);
+            expect(store.findTask(result.tasks[1].taskId)!.description).toBe("150gsm");
+        });
+
+        it("should add no task when one parent in the batch is unknown", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = await callTool("add_tasks", {
+                tasks: [{ name: "Draft copy" }, { name: "Print flyers", parentId: "nope" }],
+            });
+
+            expect(result.isError).toBe(true);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should add dependencies in the order supplied", async () => {
+            await connect();
+            store.setGoal("Ship it");
+            const first = store.addTask(GOAL_ID, "Draft copy");
+            const second = store.addTask(GOAL_ID, "Print flyers");
+
+            const result = parseResult(
+                await callTool("add_dependencies", {
+                    dependencies: [
+                        { sourceId: first.id, targetId: second.id },
+                        { sourceId: second.id, targetId: GOAL_ID },
+                    ],
+                }),
+            );
+
+            expect(result.dependencies).toEqual([
+                { sourceId: first.id, sourceName: "Draft copy", targetId: second.id, targetName: "Print flyers" },
+                { sourceId: second.id, sourceName: "Print flyers", targetId: GOAL_ID, targetName: "Ship it" },
+            ]);
+        });
+
+        it("should apply no dependency at all when the batch would close a cycle, and name it", async () => {
+            await connect();
+            store.setGoal("Ship it");
+            const first = store.addTask(GOAL_ID, "Draft copy");
+            const second = store.addTask(GOAL_ID, "Print flyers");
+            const third = store.addTask(GOAL_ID, "Post flyers");
+
+            const result = await callTool("add_dependencies", {
+                dependencies: [
+                    { sourceId: first.id, targetId: second.id },
+                    { sourceId: second.id, targetId: third.id },
+                    { sourceId: third.id, targetId: first.id },
+                ],
+            });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain('"Post flyers" -> "Draft copy" would create a cycle');
+            expect(result.content[0].text).toContain("Draft copy -> Print flyers -> Post flyers -> Draft copy");
+            expect(store.getState().goal.plan!.dependenciesList).toEqual([]);
+        });
+    });
+
+    describe("move_task", () => {
+        it("should move a task into another task's plan and echo where it landed", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const moving = store.addTask(GOAL_ID, "Moving");
+
+            const result = parseResult(await callTool("move_task", { taskId: moving.id, newParentId: parent.id }));
+
+            expect(result).toEqual({
+                taskId: moving.id,
+                name: "Moving",
+                parentId: parent.id,
+                version: store.getVersion(),
+            });
+            expect(store.findTask(parent.id)!.plan!.tasksList.map((task) => task.id)).toEqual([moving.id]);
+        });
+
+        it("should return isError for a move into the task's own descendant", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+
+            const result = await callTool("move_task", { taskId: parent.id, newParentId: child.id });
+
+            expect(result.isError).toBe(true);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.id)).toEqual([parent.id]);
+        });
+    });
+
+    describe("name rules", () => {
+        it("should refuse a name too long to render on a node", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = await callTool("add_task", {
+                name: "Book a venue that seats eighty people within twenty minutes of the station",
+            });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("40 characters");
+            expect(result.content[0].text).toContain("description");
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should refuse a name containing a line break", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = await callTool("add_task", { name: "Book venue\nSeats 80" });
+
+            expect(result.isError).toBe(true);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should warn about a name that joins two actions, and still add it", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = parseResult(await callTool("add_task", { name: "Book venue and print flyers" }));
+
+            expect(result.warnings).toEqual([expect.stringContaining("two tasks")]);
+            expect(store.findTask(result.taskId)!.name).toBe("Book venue and print flyers");
+        });
+
+        it("should warn about a question and about a bare single word", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const question = parseResult(await callTool("add_task", { name: "Which venue?" }));
+            const bareNoun = parseResult(await callTool("add_task", { name: "Venue" }));
+
+            expect(question.warnings).toEqual([expect.stringContaining("question")]);
+            expect(bareNoun.warnings).toEqual([expect.stringContaining("single word")]);
+        });
+
+        it("should leave warnings out of a clean write", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = parseResult(await callTool("add_task", { name: "Book venue" }));
+
+            expect(result.warnings).toBeUndefined();
+        });
+
+        it("should apply the same rules to promoted ideas and batches", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const idea = store.addIdea("venue");
+
+            const promoted = parseResult(await callTool("promote_inbox_idea", { ideaId: idea.id, name: "Venue" }));
+            const batch = await callTool("add_tasks", {
+                tasks: [{ name: "Book venue" }, { name: "Book a venue that seats eighty people near the station" }],
+            });
+
+            expect(promoted.warnings).toEqual([expect.stringContaining("single word")]);
+            expect(batch.isError).toBe(true);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["Venue"]);
         });
     });
 

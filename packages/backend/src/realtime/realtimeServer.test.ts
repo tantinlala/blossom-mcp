@@ -118,7 +118,11 @@ describe("realtime server", () => {
 
         const broadcasts = received.filter((message) => message.type === "state");
         expect(broadcasts).toHaveLength(1);
-        expect((broadcasts[0] as any).state.inbox).toEqual(["three", "two", "one"]);
+        expect((broadcasts[0] as any).state.inbox.map((idea: { text: string }) => idea.text)).toEqual([
+            "three",
+            "two",
+            "one",
+        ]);
     });
 
     it("counts each connected browser", async () => {
@@ -183,7 +187,7 @@ describe("realtime server", () => {
 
         const error = firstOfType(received, "error");
         expect(error!.error.code).toBe("conflict");
-        expect(error!.state.inbox).toEqual(["theirs"]);
+        expect(error!.state.inbox.map((idea) => idea.text)).toEqual(["theirs"]);
     });
 
     it("refuses to let one person undo another's change", async () => {

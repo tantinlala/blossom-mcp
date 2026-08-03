@@ -2,11 +2,13 @@ import {
     Task,
     Plan,
     Dependency,
+    InboxIdea,
     ProjectState,
     Author,
     GOAL_ID,
     TaskState,
     TaskAndStateAndBlockers,
+    findCycle,
     hasCircularDependencies,
     updateTaskStates,
 } from "@blossom/common";
@@ -16,11 +18,32 @@ const MAX_UNDO_STACK_SIZE = 50;
 
 interface UndoSnapshot {
     goal: Task;
-    inbox: string[];
+    inbox: InboxIdea[];
     // Who made the change this snapshot precedes, so undo can refuse to
     // rewind somebody else's work. Null for changes made without an identity.
     author: Author | null;
 }
+
+/**
+ * How a caller names the inbox entry it means. An id addresses one entry for as
+ * long as that entry exists, whatever happens to the ideas around it; a bare
+ * number is a position in the current newest-first order, which every other
+ * write to the inbox renumbers.
+ */
+type IdeaRef = number | { ideaId?: string; index?: number };
+
+/** A task to add, as supplied to the batch form. */
+type TaskDraft = { parentId?: string; name: string; description?: string };
+
+/** An idea to promote, as supplied to the batch form. */
+type PromotionDraft = { ideaId?: string; index?: number; parentId?: string; name?: string; description?: string };
+
+/**
+ * A dependency as it was stored, with both ends named. Callers get this back so
+ * they can check the edge that landed is the edge they meant - the ids alone
+ * are opaque, and a target may have been resolved to the plan's goal.
+ */
+type ResolvedDependency = { sourceId: string; sourceName: string; targetId: string; targetName: string };
 
 class TaskNotFoundError extends Error {
     constructor(taskId: string) {
@@ -36,10 +59,34 @@ class InvalidDependencyError extends Error {
     }
 }
 
+/** A move would put a task inside itself, or had nowhere to put it. */
+class InvalidMoveError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "InvalidMoveError";
+    }
+}
+
 class InvalidIndexError extends Error {
     constructor(index: number) {
         super(`Invalid inbox index: ${index}`);
         this.name = "InvalidIndexError";
+    }
+}
+
+/** The inbox holds no entry under that id - it was removed, or promoted. */
+class IdeaNotFoundError extends Error {
+    constructor(ideaId: string) {
+        super(`Inbox idea not found: ${ideaId}`);
+        this.name = "IdeaNotFoundError";
+    }
+}
+
+/** One batch named the same thing twice, so what it asked for is ambiguous. */
+class InvalidBatchError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "InvalidBatchError";
     }
 }
 
@@ -75,7 +122,7 @@ class UndoBlockedError extends Error {
  */
 class ProjectStore {
     private _goal: Task;
-    private _inbox: string[];
+    private _inbox: InboxIdea[];
     private _activeProject: string | null;
     private _version: number;
     private _undoStack: UndoSnapshot[];
@@ -105,7 +152,7 @@ class ProjectStore {
     private _saveSnapshot() {
         this._undoStack.push({
             goal: this._deepClone(this._goal),
-            inbox: [...this._inbox],
+            inbox: this._inbox.map((idea) => ({ ...idea })),
             author: this._currentAuthor,
         });
         if (this._undoStack.length > MAX_UNDO_STACK_SIZE) {
@@ -169,12 +216,13 @@ class ProjectStore {
 
     // ------------------------------------------------------------------ reads
 
+    /** The inbox comes back newest first: a freshly added idea is element 0. */
     public getState(): ProjectState {
         return {
             version: this._version,
             activeProject: this._activeProject,
             goal: this._deepClone(this._goal),
-            inbox: [...this._inbox],
+            inbox: this._inbox.map((idea) => ({ ...idea })),
         };
     }
 
@@ -184,6 +232,25 @@ class ProjectStore {
 
     public get activeProject(): string | null {
         return this._activeProject;
+    }
+
+    public findIdea(ideaId: string): InboxIdea | null {
+        const idea = this._inbox.find((entry) => entry.id === ideaId);
+        return idea ? { ...idea } : null;
+    }
+
+    /** The first idea whose text matches, ignoring case and surrounding space. */
+    public findIdeaByText(text: string): InboxIdea | null {
+        const wanted = this._normalizeText(text);
+        if (wanted === "") {
+            return null;
+        }
+        const idea = this._inbox.find((entry) => this._normalizeText(entry.text) === wanted);
+        return idea ? { ...idea } : null;
+    }
+
+    private _normalizeText(text: string): string {
+        return text.trim().replace(/\s+/g, " ").toLowerCase();
     }
 
     public findTask(taskId: string): Task | null {
@@ -248,11 +315,11 @@ class ProjectStore {
         this._bump();
     }
 
-    public load(goal: Task, inbox: string[], activeProject: string | null) {
+    public load(goal: Task, inbox: InboxIdea[], activeProject: string | null) {
         this._goal = this._deepClone(goal);
         // Normalize legacy root ids ("" in old saved files) to the sentinel
         this._goal.id = GOAL_ID;
-        this._inbox = [...inbox];
+        this._inbox = inbox.map((idea) => ({ ...idea }));
         this._activeProject = activeProject;
         this._undoStack = [];
         this._bump();
@@ -318,14 +385,103 @@ class ProjectStore {
         if (!parent.plan) {
             parent.plan = { tasksList: [], dependenciesList: [] };
         }
+        const newTask = this._append(parent, name, description);
+        this._bump();
+        return this._deepClone(newTask);
+    }
+
+    /**
+     * Adds every task in one mutation, so a batch cannot land half-applied and
+     * one undo puts the plan back as it was. Every parent is checked before
+     * anything is written; the results come back in the order supplied.
+     */
+    public addTasks(drafts: TaskDraft[]): Task[] {
+        const parents = drafts.map((draft) => {
+            const parent = this.findTask(draft.parentId ?? GOAL_ID);
+            if (!parent) {
+                throw new TaskNotFoundError(draft.parentId ?? GOAL_ID);
+            }
+            return parent;
+        });
+
+        if (drafts.length === 0) {
+            return [];
+        }
+
+        this._saveSnapshot();
+        const added = drafts.map((draft, position) => this._append(parents[position], draft.name, draft.description));
+        this._bump();
+        return this._deepClone(added);
+    }
+
+    private _append(parent: Task, name: string, description?: string): Task {
+        if (!parent.plan) {
+            parent.plan = { tasksList: [], dependenciesList: [] };
+        }
         const newTask: Task = { name, id: uuidv4(), completionState: false, plan: null };
         if (description !== undefined) {
             newTask.description = description;
         }
         parent.plan.tasksList.push(newTask);
         parent.completionState = false; // New incomplete task was added
+        return newTask;
+    }
+
+    /**
+     * Moves a task, and whatever subplan it carries, into another task's plan.
+     *
+     * Dependencies in the plan it leaves are dropped: they describe an ordering
+     * among siblings it is no longer one of. A task cannot be moved inside
+     * itself or anything it contains, which would detach that whole branch from
+     * the tree.
+     */
+    public moveTask(taskId: string, newParentId: string): Task {
+        if (taskId === GOAL_ID) {
+            throw new InvalidMoveError("The root goal cannot be moved");
+        }
+
+        const task = this.findTask(taskId);
+        if (!task) {
+            throw new TaskNotFoundError(taskId);
+        }
+        const newParent = this.findTask(newParentId);
+        if (!newParent) {
+            throw new TaskNotFoundError(newParentId);
+        }
+        if (newParentId === taskId) {
+            throw new InvalidMoveError("A task cannot be moved inside itself");
+        }
+        if (this._contains(task, newParentId)) {
+            throw new InvalidMoveError(`"${newParent.name}" is inside "${task.name}", so it cannot become its parent`);
+        }
+
+        const container = this._findContainerOf(taskId)!;
+        if (container.id === newParentId) {
+            return this._deepClone(task);
+        }
+
+        this._saveSnapshot();
+        container.plan.tasksList = container.plan.tasksList.filter((sibling) => sibling.id !== taskId);
+        container.plan.dependenciesList = container.plan.dependenciesList.filter(
+            (dependency) => dependency.source !== taskId && dependency.target !== taskId,
+        );
+        container.completionState = container.plan.tasksList.every((sibling) => sibling.completionState);
+
+        if (!newParent.plan) {
+            newParent.plan = { tasksList: [], dependenciesList: [] };
+        }
+        newParent.plan.tasksList.push(task);
+        newParent.completionState = newParent.plan.tasksList.every((child) => child.completionState);
         this._bump();
-        return this._deepClone(newTask);
+        return this._deepClone(task);
+    }
+
+    /** Whether candidateId is the task itself or sits somewhere beneath it. */
+    private _contains(task: Task, candidateId: string): boolean {
+        if (task.id === candidateId) {
+            return true;
+        }
+        return (task.plan?.tasksList ?? []).some((child) => this._contains(child, candidateId));
     }
 
     public updateTask(taskId: string, updates: { name?: string; description?: string; baseVersion?: number }) {
@@ -409,7 +565,70 @@ class ProjectStore {
 
     // ------------------------------------------------------- dependencies
 
-    public addDependency(sourceId: string, targetId: string) {
+    public addDependency(sourceId: string, targetId: string): ResolvedDependency {
+        const [edge] = this.addDependencies([{ sourceId, targetId }]);
+        return edge;
+    }
+
+    /**
+     * Adds every dependency in one mutation, or none of them.
+     *
+     * The whole batch is checked against the plans it touches before anything is
+     * written, so a batch that would close a cycle is refused outright: a
+     * part-applied batch would leave the roadmap in a state the caller never
+     * asked for and cannot tell apart from the one it wanted.
+     */
+    public addDependencies(edges: { sourceId: string; targetId: string }[]): ResolvedDependency[] {
+        const resolved = edges.map((edge) => this._resolveEdge(edge.sourceId, edge.targetId));
+
+        // Cycles are a property of a plan, not of one edge, so the batch's own
+        // edges have to be in the graph before it is checked - two edges that
+        // are each fine alone can close a loop together.
+        const byContainer = new Map<Task, Dependency[]>();
+        for (const edge of resolved) {
+            const container = edge.container;
+            const pending = byContainer.get(container) ?? [...container.plan.dependenciesList];
+            pending.push({ source: edge.sourceId, target: edge.storedTarget });
+            byContainer.set(container, pending);
+
+            const cycle = findCycle(pending);
+            if (cycle) {
+                const path = cycle.map((id) => this._edgeEndName(container, id)).join(" -> ");
+                throw new InvalidDependencyError(
+                    `"${edge.sourceName}" -> "${edge.targetName}" would create a cycle: ${path}`,
+                );
+            }
+        }
+
+        if (edges.length === 0) {
+            return [];
+        }
+
+        this._saveSnapshot();
+        for (const edge of resolved) {
+            edge.container.plan.dependenciesList.push({ source: edge.sourceId, target: edge.storedTarget });
+        }
+        this._bump();
+        return resolved.map(({ sourceId, sourceName, storedTarget, targetName }) => ({
+            sourceId,
+            sourceName,
+            targetId: storedTarget,
+            targetName,
+        }));
+    }
+
+    /**
+     * Works out which plan an edge belongs in and what its target is stored as.
+     *
+     * A target naming the task that owns the plan means the same thing as the
+     * goal sentinel - both say "this feeds the plan's goal" - so both store as
+     * the sentinel, and the resolved end is reported back under the name of
+     * whatever it landed on.
+     */
+    private _resolveEdge(
+        sourceId: string,
+        targetId: string,
+    ): { container: Task; sourceId: string; sourceName: string; storedTarget: string; targetName: string } {
         if (sourceId === targetId) {
             throw new InvalidDependencyError("A task cannot depend on itself");
         }
@@ -419,33 +638,51 @@ class ProjectStore {
             throw new TaskNotFoundError(sourceId);
         }
 
-        const scope = container.plan;
-        const targetExists = targetId === GOAL_ID || scope.tasksList.some((task) => task.id === targetId);
-        if (!targetExists) {
-            throw new InvalidDependencyError(`Target must be the goal or a sibling of the source: ${targetId}`);
+        const source = container.plan.tasksList.find((task) => task.id === sourceId)!;
+        const feedsPlanGoal = targetId === GOAL_ID || targetId === container.id;
+        const target = feedsPlanGoal ? null : container.plan.tasksList.find((task) => task.id === targetId);
+        if (!feedsPlanGoal && !target) {
+            throw new InvalidDependencyError(
+                `Target must be a sibling of the source, this plan's own task id, or "${GOAL_ID}": ${targetId}`,
+            );
         }
 
-        const candidate = [...scope.dependenciesList, { source: sourceId, target: targetId }];
-        if (hasCircularDependencies(candidate)) {
-            throw new InvalidDependencyError("Dependency would create a cycle");
-        }
-
-        this._saveSnapshot();
-        scope.dependenciesList.push({ source: sourceId, target: targetId });
-        this._bump();
+        return {
+            container,
+            sourceId,
+            sourceName: source.name,
+            storedTarget: feedsPlanGoal ? GOAL_ID : targetId,
+            targetName: feedsPlanGoal ? container.name : target!.name,
+        };
     }
 
-    public removeDependency(sourceId: string, targetId: string) {
+    // What to call one end of an edge when reporting on it. The sentinel stands
+    // for whichever task owns the plan the edge lives in.
+    private _edgeEndName(container: Task, id: string): string {
+        if (id === GOAL_ID) {
+            return container.name;
+        }
+        return container.plan.tasksList.find((task) => task.id === id)?.name ?? id;
+    }
+
+    public removeDependency(sourceId: string, targetId: string): ResolvedDependency {
         const container = this._findContainerOf(sourceId);
         if (!container) {
             throw new TaskNotFoundError(sourceId);
         }
 
+        const storedTarget = targetId === container.id ? GOAL_ID : targetId;
         this._saveSnapshot();
         container.plan.dependenciesList = container.plan.dependenciesList.filter(
-            (dependency) => !(dependency.source === sourceId && dependency.target === targetId),
+            (dependency) => !(dependency.source === sourceId && dependency.target === storedTarget),
         );
         this._bump();
+        return {
+            sourceId,
+            sourceName: this._edgeEndName(container, sourceId),
+            targetId: storedTarget,
+            targetName: this._edgeEndName(container, storedTarget),
+        };
     }
 
     public updateDependency(oldSource: string, oldTarget: string, newSource: string, newTarget: string) {
@@ -522,30 +759,59 @@ class ProjectStore {
 
     // ------------------------------------------------------- inbox
 
-    public addIdea(text: string) {
+    /** Adds one idea at the front of the inbox and returns it, id and all. */
+    public addIdea(text: string): InboxIdea {
         this._saveSnapshot();
-        this._inbox.unshift(text);
+        const idea = { id: uuidv4(), text };
+        this._inbox.unshift(idea);
         this._bump();
+        return { ...idea };
     }
 
-    public updateIdea(index: number, text: string, expectedText?: string) {
-        this._assertIndex(index);
+    /**
+     * Adds every idea in one mutation. They end up in the order supplied, with
+     * the last one supplied nearest the front, and the results come back in
+     * that same order so a caller can pair each id with the text it sent.
+     */
+    public addIdeas(texts: string[]): InboxIdea[] {
+        if (texts.length === 0) {
+            return [];
+        }
+        this._saveSnapshot();
+        const added = texts.map((text) => {
+            const idea = { id: uuidv4(), text };
+            this._inbox.unshift(idea);
+            return idea;
+        });
+        this._bump();
+        return added.map((idea) => ({ ...idea }));
+    }
+
+    public updateIdea(ref: IdeaRef, text: string, expectedText?: string): InboxIdea {
+        const index = this._resolveIdeaIndex(ref);
         this._assertIdeaText(index, expectedText);
         this._saveSnapshot();
-        this._inbox[index] = text;
+        this._inbox[index] = { ...this._inbox[index], text };
         this._bump();
+        return { ...this._inbox[index] };
     }
 
-    public removeIdea(index: number, expectedText?: string) {
-        this._assertIndex(index);
+    public removeIdea(ref: IdeaRef, expectedText?: string): InboxIdea {
+        const index = this._resolveIdeaIndex(ref);
         this._assertIdeaText(index, expectedText);
         this._saveSnapshot();
-        this._inbox.splice(index, 1);
+        const [removed] = this._inbox.splice(index, 1);
         this._bump();
+        return removed;
     }
 
-    public promoteIdea(index: number, parentId: string = GOAL_ID, expectedText?: string): Task {
-        this._assertIndex(index);
+    public promoteIdea(
+        ref: IdeaRef,
+        parentId: string = GOAL_ID,
+        expectedText?: string,
+        overrides: { name?: string; description?: string } = {},
+    ): Task {
+        const index = this._resolveIdeaIndex(ref);
         this._assertIdeaText(index, expectedText);
         const parent = this.findTask(parentId);
         if (!parent) {
@@ -553,15 +819,48 @@ class ProjectStore {
         }
 
         this._saveSnapshot();
-        const newTask = this._promote(index, parent);
+        const newTask = this._promote(this._inbox[index].id, parent, overrides);
         this._bump();
         return this._deepClone(newTask);
     }
 
     /**
+     * Promotes several ideas in one mutation. Every reference is resolved to an
+     * id, and every parent checked, before anything moves, so the batch reads
+     * the inbox exactly as the caller saw it and either lands whole or not at
+     * all. Results come back in the order supplied.
+     */
+    public promoteIdeas(drafts: PromotionDraft[]): Task[] {
+        const seen = new Set<string>();
+        const planned = drafts.map((draft) => {
+            const index = this._resolveIdeaIndex({ ideaId: draft.ideaId, index: draft.index });
+            const ideaId = this._inbox[index].id;
+            if (seen.has(ideaId)) {
+                throw new InvalidBatchError(`The same inbox idea is promoted twice in one batch: ${ideaId}`);
+            }
+            seen.add(ideaId);
+
+            const parent = this.findTask(draft.parentId ?? GOAL_ID);
+            if (!parent) {
+                throw new TaskNotFoundError(draft.parentId ?? GOAL_ID);
+            }
+            return { ideaId, parent, overrides: { name: draft.name, description: draft.description } };
+        });
+
+        if (drafts.length === 0) {
+            return [];
+        }
+
+        this._saveSnapshot();
+        const promoted = planned.map((item) => this._promote(item.ideaId, item.parent, item.overrides));
+        this._bump();
+        return this._deepClone(promoted);
+    }
+
+    /**
      * Promotes every idea into the parent's plan in one mutation, so the inbox
      * cannot shift underneath a caller part-way through the way a sequence of
-     * single promotions can.
+     * single promotions can. The tasks land in inbox order, newest first.
      */
     public promoteAllIdeas(parentId: string = GOAL_ID): Task[] {
         const parent = this.findTask(parentId);
@@ -573,37 +872,46 @@ class ProjectStore {
         }
 
         this._saveSnapshot();
-        const promoted: Task[] = [];
-        // Always take the first idea: each promotion shifts the rest up.
-        while (this._inbox.length > 0) {
-            promoted.push(this._promote(0, parent));
-        }
+        const ids = this._inbox.map((idea) => idea.id);
+        const promoted = ids.map((ideaId) => this._promote(ideaId, parent));
         this._bump();
         return this._deepClone(promoted);
     }
 
-    private _promote(index: number, parent: Task): Task {
-        const [text] = this._inbox.splice(index, 1);
-        if (!parent.plan) {
-            parent.plan = { tasksList: [], dependenciesList: [] };
-        }
-        const newTask: Task = { name: text, id: uuidv4(), completionState: false, plan: null };
-        parent.plan.tasksList.push(newTask);
-        parent.completionState = false;
-        return newTask;
+    private _promote(ideaId: string, parent: Task, overrides: { name?: string; description?: string } = {}): Task {
+        const index = this._inbox.findIndex((idea) => idea.id === ideaId);
+        const [idea] = this._inbox.splice(index, 1);
+        const name = overrides.name !== undefined && overrides.name !== "" ? overrides.name : idea.text;
+        return this._append(parent, name, overrides.description);
     }
 
-    private _assertIndex(index: number) {
+    /**
+     * Turns however a caller named an inbox entry into a position in the current
+     * list. An id addresses the entry itself and fails loudly once that entry is
+     * gone; a position is only ever as good as the moment it was read. An id
+     * wins when both are given.
+     */
+    private _resolveIdeaIndex(ref: IdeaRef): number {
+        const ideaId = typeof ref === "number" ? undefined : ref.ideaId;
+        if (ideaId !== undefined) {
+            const index = this._inbox.findIndex((idea) => idea.id === ideaId);
+            if (index === -1) {
+                throw new IdeaNotFoundError(ideaId);
+            }
+            return index;
+        }
+
+        const index = typeof ref === "number" ? ref : (ref.index as number);
         if (!Number.isInteger(index) || index < 0 || index >= this._inbox.length) {
             throw new InvalidIndexError(index);
         }
+        return index;
     }
 
-    // Inbox rows are addressed by index, and adding an idea unshifts, so any
-    // concurrent write renumbers every row. Callers that know which text they
-    // were looking at pass it here rather than trusting the index alone.
+    // Callers that address a row by position pass the text they were looking at
+    // as well, since every other write to the inbox renumbers the rows.
     private _assertIdeaText(index: number, expectedText?: string) {
-        if (expectedText !== undefined && this._inbox[index] !== expectedText) {
+        if (expectedText !== undefined && this._inbox[index].text !== expectedText) {
             throw new VersionConflictError(
                 `Inbox item ${index} has changed since you last read it. Expected "${expectedText}".`,
             );
@@ -677,7 +985,11 @@ export {
     ProjectStore,
     TaskNotFoundError,
     InvalidDependencyError,
+    InvalidMoveError,
     InvalidIndexError,
+    InvalidBatchError,
+    IdeaNotFoundError,
     VersionConflictError,
     UndoBlockedError,
 };
+export type { IdeaRef, TaskDraft, PromotionDraft, ResolvedDependency };

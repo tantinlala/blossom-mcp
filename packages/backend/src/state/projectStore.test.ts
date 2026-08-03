@@ -1,12 +1,18 @@
 import {
     ProjectStore,
     TaskNotFoundError,
+    IdeaNotFoundError,
     InvalidDependencyError,
+    InvalidMoveError,
     InvalidIndexError,
+    InvalidBatchError,
     VersionConflictError,
     UndoBlockedError,
 } from "./projectStore";
-import { Author, GOAL_ID, Task } from "@blossom/common";
+import { Author, GOAL_ID, InboxIdea, Task } from "@blossom/common";
+
+// Ids are generated, so assertions about what the inbox holds are about text.
+const inboxTexts = (store: ProjectStore): string[] => store.getState().inbox.map((idea) => idea.text);
 
 describe("ProjectStore", () => {
     let store: ProjectStore;
@@ -514,11 +520,33 @@ describe("ProjectStore", () => {
     });
 
     describe("inbox", () => {
-        it("should prepend new ideas", () => {
-            store.addIdea("first");
+        it("should prepend new ideas and give each a distinct id", () => {
+            const first = store.addIdea("first");
+            const second = store.addIdea("second");
+
+            expect(inboxTexts(store)).toEqual(["second", "first"]);
+            expect(store.getState().inbox.map((idea) => idea.id)).toEqual([second.id, first.id]);
+            expect(first.id).not.toBe(second.id);
+        });
+
+        it("should keep an idea's id as the ideas around it change", () => {
+            const idea = store.addIdea("keep me");
+            const newer = store.addIdea("newer");
+            store.addIdea("newer still");
+
+            store.removeIdea({ ideaId: newer.id });
+
+            expect(store.findIdea(idea.id)).toEqual({ id: idea.id, text: "keep me" });
+        });
+
+        it("should update an idea addressed by id, wherever it now sits", () => {
+            const first = store.addIdea("first");
             store.addIdea("second");
 
-            expect(store.getState().inbox).toEqual(["second", "first"]);
+            const updated = store.updateIdea({ ideaId: first.id }, "updated");
+
+            expect(updated).toEqual({ id: first.id, text: "updated" });
+            expect(inboxTexts(store)).toEqual(["second", "updated"]);
         });
 
         it("should update an idea at an index", () => {
@@ -527,7 +555,17 @@ describe("ProjectStore", () => {
 
             store.updateIdea(1, "updated");
 
-            expect(store.getState().inbox).toEqual(["second", "updated"]);
+            expect(inboxTexts(store)).toEqual(["second", "updated"]);
+        });
+
+        it("should remove an idea addressed by id and return it", () => {
+            store.addIdea("first");
+            const second = store.addIdea("second");
+
+            const removed = store.removeIdea({ ideaId: second.id });
+
+            expect(removed).toEqual({ id: second.id, text: "second" });
+            expect(inboxTexts(store)).toEqual(["first"]);
         });
 
         it("should remove an idea at an index", () => {
@@ -536,7 +574,67 @@ describe("ProjectStore", () => {
 
             store.removeIdea(0);
 
-            expect(store.getState().inbox).toEqual(["first"]);
+            expect(inboxTexts(store)).toEqual(["first"]);
+        });
+
+        it("should prefer ideaId over index when both are given", () => {
+            const first = store.addIdea("first");
+            store.addIdea("second");
+
+            store.removeIdea({ ideaId: first.id, index: 0 });
+
+            expect(inboxTexts(store)).toEqual(["second"]);
+        });
+
+        it("should throw IdeaNotFoundError for an id the inbox no longer holds", () => {
+            const idea = store.addIdea("promote me");
+            store.setGoal("Goal");
+            store.promoteIdea({ ideaId: idea.id });
+
+            expect(() => store.promoteIdea({ ideaId: idea.id })).toThrow(IdeaNotFoundError);
+            expect(() => store.removeIdea({ ideaId: "never existed" })).toThrow(IdeaNotFoundError);
+        });
+
+        it("should build each task from the idea whose id was passed, whatever the order", () => {
+            store.setGoal("Goal");
+            const added = ["a", "b", "c", "d", "e"].map((text) => store.addIdea(text));
+            const shuffled = [added[3], added[0], added[4], added[1], added[2]];
+
+            const tasks = shuffled.map((idea) => store.promoteIdea({ ideaId: idea.id }));
+
+            expect(tasks.map((task) => task.name)).toEqual(shuffled.map((idea) => idea.text));
+            expect(inboxTexts(store)).toEqual([]);
+        });
+
+        it("should take the name and description passed over the idea's text", () => {
+            store.setGoal("Goal");
+            const idea = store.addIdea("we should probably sort out the venue at some point");
+
+            const task = store.promoteIdea({ ideaId: idea.id }, GOAL_ID, undefined, {
+                name: "Book venue",
+                description: "Seats 80, within 20 minutes of the station",
+            });
+
+            expect(task.name).toBe("Book venue");
+            expect(task.description).toBe("Seats 80, within 20 minutes of the station");
+        });
+
+        it("should add several ideas as one change", () => {
+            const versionBefore = store.getVersion();
+
+            const added = store.addIdeas(["a", "b", "c"]);
+
+            expect(added.map((idea) => idea.text)).toEqual(["a", "b", "c"]);
+            expect(inboxTexts(store)).toEqual(["c", "b", "a"]);
+            expect(store.getVersion()).toBe(versionBefore + 1);
+        });
+
+        it("should find an idea by text, ignoring case and surrounding space", () => {
+            const idea = store.addIdea("Book the venue");
+
+            expect(store.findIdeaByText("  book the   VENUE ")).toEqual({ id: idea.id, text: "Book the venue" });
+            expect(store.findIdeaByText("book a venue")).toBeNull();
+            expect(store.findIdeaByText("   ")).toBeNull();
         });
 
         it("should promote an idea to a task under the root goal by default", () => {
@@ -567,14 +665,14 @@ describe("ProjectStore", () => {
             expect(storedParent.plan!.tasksList).toHaveLength(2);
             expect(storedParent.plan!.tasksList[1].id).toBe(task.id);
             expect(storedParent.completionState).toBe(false);
-            expect(store.getState().inbox).toEqual([]);
+            expect(inboxTexts(store)).toEqual([]);
         });
 
         it("should throw TaskNotFoundError when promoting to an unknown parent", () => {
             store.addIdea("idea");
 
             expect(() => store.promoteIdea(0, "unknown")).toThrow(TaskNotFoundError);
-            expect(store.getState().inbox).toEqual(["idea"]);
+            expect(inboxTexts(store)).toEqual(["idea"]);
         });
 
         it("should throw InvalidIndexError for out-of-range or non-integer indices", () => {
@@ -624,12 +722,12 @@ describe("ProjectStore", () => {
             store.addIdea("idea");
 
             store.promoteIdea(0);
-            expect(store.getState().inbox).toEqual([]);
+            expect(inboxTexts(store)).toEqual([]);
             expect(store.getState().goal.plan!.tasksList).toHaveLength(1);
 
             store.undo();
 
-            expect(store.getState().inbox).toEqual(["idea"]);
+            expect(inboxTexts(store)).toEqual(["idea"]);
             expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
         });
 
@@ -668,7 +766,7 @@ describe("ProjectStore", () => {
 
             expect(undoCount).toBe(50);
             // Oldest 5 snapshots were dropped, so 5 ideas remain
-            expect(store.getState().inbox).toHaveLength(5);
+            expect(inboxTexts(store)).toHaveLength(5);
         });
     });
 
@@ -684,12 +782,12 @@ describe("ProjectStore", () => {
                 },
             };
 
-            store.load(goal, ["idea"], "myProject");
+            store.load(goal, [{ id: "idea-1", text: "idea" }], "myProject");
 
             const state = store.getState();
             expect(state.goal.name).toBe("Loaded Goal");
             expect(state.goal.plan!.tasksList).toHaveLength(1);
-            expect(state.inbox).toEqual(["idea"]);
+            expect(state.inbox).toEqual([{ id: "idea-1", text: "idea" }]);
             expect(state.activeProject).toBe("myProject");
             expect(store.activeProject).toBe("myProject");
         });
@@ -846,7 +944,7 @@ describe("ProjectStore", () => {
             const fresh = store.getState();
             expect(fresh.goal.name).toBe("Goal");
             expect(fresh.goal.plan!.tasksList).toHaveLength(1);
-            expect(fresh.inbox).toEqual(["idea"]);
+            expect(fresh.inbox.map((idea) => idea.text)).toEqual(["idea"]);
         });
     });
 
@@ -962,7 +1060,7 @@ describe("ProjectStore", () => {
             store.addIdea("theirs");
 
             expect(() => store.updateIdea(0, "mine", "something else")).toThrow(VersionConflictError);
-            expect(store.getState().inbox).toEqual(["theirs"]);
+            expect(inboxTexts(store)).toEqual(["theirs"]);
         });
 
         it("should reject a removal aimed at a row that has shifted underneath", () => {
@@ -971,14 +1069,14 @@ describe("ProjectStore", () => {
             store.addIdea("first");
 
             expect(() => store.removeIdea(0, "second")).toThrow(VersionConflictError);
-            expect(store.getState().inbox).toEqual(["first", "second"]);
+            expect(inboxTexts(store)).toEqual(["first", "second"]);
         });
 
         it("should allow an inbox write whose expected text still matches", () => {
             store.addIdea("mine");
 
             expect(() => store.updateIdea(0, "mine, edited", "mine")).not.toThrow();
-            expect(store.getState().inbox).toEqual(["mine, edited"]);
+            expect(inboxTexts(store)).toEqual(["mine, edited"]);
         });
 
         it("should ignore preconditions that were not supplied", () => {
@@ -1045,7 +1143,7 @@ describe("ProjectStore", () => {
             const promoted = store.promoteAllIdeas(GOAL_ID);
 
             expect(promoted.map((task) => task.name)).toEqual(["a", "b", "c"]);
-            expect(store.getState().inbox).toEqual([]);
+            expect(inboxTexts(store)).toEqual([]);
             expect(store.getState().goal.plan.tasksList).toHaveLength(3);
         });
 
@@ -1056,7 +1154,7 @@ describe("ProjectStore", () => {
             store.promoteAllIdeas(GOAL_ID);
             store.undo();
 
-            expect(store.getState().inbox).toEqual(["a", "b"]);
+            expect(inboxTexts(store)).toEqual(["a", "b"]);
         });
 
         it("should do nothing for an empty inbox", () => {
@@ -1070,6 +1168,212 @@ describe("ProjectStore", () => {
             store.addIdea("a");
 
             expect(() => store.promoteAllIdeas("nope")).toThrow(TaskNotFoundError);
+        });
+    });
+
+    describe("promoteIdeas", () => {
+        beforeEach(() => store.setGoal("Goal"));
+
+        it("should pair every task with the idea whose id was passed", () => {
+            const added = ["a", "b", "c", "d"].map((text) => store.addIdea(text));
+            const order = [added[2], added[0], added[3], added[1]];
+
+            const tasks = store.promoteIdeas(order.map((idea) => ({ ideaId: idea.id })));
+
+            expect(tasks.map((task) => task.name)).toEqual(["c", "a", "d", "b"]);
+            expect(inboxTexts(store)).toEqual([]);
+        });
+
+        it("should place each idea under its own parent, with its own name", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const first = store.addIdea("first");
+            const second = store.addIdea("second");
+
+            const tasks = store.promoteIdeas([
+                { ideaId: first.id, parentId: parent.id, name: "Do the first thing" },
+                { ideaId: second.id, description: "why it matters" },
+            ]);
+
+            expect(store.findTask(parent.id)!.plan!.tasksList.map((task) => task.id)).toEqual([tasks[0].id]);
+            expect(tasks[0].name).toBe("Do the first thing");
+            expect(tasks[1].name).toBe("second");
+            expect(tasks[1].description).toBe("why it matters");
+        });
+
+        it("should count as a single change, so one undo puts every idea back", () => {
+            const added = ["b", "a"].map((text) => store.addIdea(text));
+
+            store.promoteIdeas(added.map((idea) => ({ ideaId: idea.id })));
+            store.undo();
+
+            expect(inboxTexts(store)).toEqual(["a", "b"]);
+        });
+
+        it("should apply nothing when one promotion in the batch cannot be resolved", () => {
+            const idea = store.addIdea("a");
+
+            expect(() => store.promoteIdeas([{ ideaId: idea.id }, { ideaId: "gone" }])).toThrow(IdeaNotFoundError);
+            expect(inboxTexts(store)).toEqual(["a"]);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should refuse to promote the same idea twice in one batch", () => {
+            const idea = store.addIdea("a");
+
+            expect(() => store.promoteIdeas([{ ideaId: idea.id }, { ideaId: idea.id }])).toThrow(InvalidBatchError);
+            expect(inboxTexts(store)).toEqual(["a"]);
+        });
+    });
+
+    describe("addTasks", () => {
+        beforeEach(() => store.setGoal("Goal"));
+
+        it("should add every task as one change, in the order supplied", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const versionBefore = store.getVersion();
+
+            const added = store.addTasks([
+                { name: "One" },
+                { name: "Two", parentId: parent.id, description: "detail" },
+                { name: "Three" },
+            ]);
+
+            expect(added.map((task) => task.name)).toEqual(["One", "Two", "Three"]);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["Parent", "One", "Three"]);
+            expect(store.findTask(parent.id)!.plan!.tasksList[0].description).toBe("detail");
+            expect(store.getVersion()).toBe(versionBefore + 1);
+        });
+
+        it("should apply nothing when one parent is unknown", () => {
+            expect(() => store.addTasks([{ name: "One" }, { name: "Two", parentId: "nope" }])).toThrow(
+                TaskNotFoundError,
+            );
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+    });
+
+    describe("addDependencies", () => {
+        beforeEach(() => store.setGoal("Ship it"));
+
+        it("should add every edge as one change and name both ends", () => {
+            const first = store.addTask(GOAL_ID, "Draft copy");
+            const second = store.addTask(GOAL_ID, "Print flyers");
+            const versionBefore = store.getVersion();
+
+            const added = store.addDependencies([
+                { sourceId: first.id, targetId: second.id },
+                { sourceId: second.id, targetId: GOAL_ID },
+            ]);
+
+            expect(added).toEqual([
+                { sourceId: first.id, sourceName: "Draft copy", targetId: second.id, targetName: "Print flyers" },
+                { sourceId: second.id, sourceName: "Print flyers", targetId: GOAL_ID, targetName: "Ship it" },
+            ]);
+            expect(store.getVersion()).toBe(versionBefore + 1);
+        });
+
+        it("should reject the whole batch when its edges close a cycle between them", () => {
+            const first = store.addTask(GOAL_ID, "Draft copy");
+            const second = store.addTask(GOAL_ID, "Print flyers");
+
+            expect(() =>
+                store.addDependencies([
+                    { sourceId: first.id, targetId: second.id },
+                    { sourceId: second.id, targetId: first.id },
+                ]),
+            ).toThrow(/"Print flyers" -> "Draft copy" would create a cycle: .*Draft copy.*Print flyers.*Draft copy/);
+            expect(store.getState().goal.plan!.dependenciesList).toEqual([]);
+        });
+
+        it("should accept the containing task's own id as a target for the plan's goal", () => {
+            const parent = store.addTask(GOAL_ID, "Run the launch");
+            const child = store.addTask(parent.id, "Draft copy");
+
+            const [edge] = store.addDependencies([{ sourceId: child.id, targetId: parent.id }]);
+
+            expect(edge).toEqual({
+                sourceId: child.id,
+                sourceName: "Draft copy",
+                targetId: GOAL_ID,
+                targetName: "Run the launch",
+            });
+            expect(store.findTask(parent.id)!.plan!.dependenciesList).toEqual([{ source: child.id, target: GOAL_ID }]);
+        });
+
+        it("should apply nothing when one edge names an unknown source", () => {
+            const task = store.addTask(GOAL_ID, "Draft copy");
+
+            expect(() =>
+                store.addDependencies([
+                    { sourceId: task.id, targetId: GOAL_ID },
+                    { sourceId: "nope", targetId: GOAL_ID },
+                ]),
+            ).toThrow(TaskNotFoundError);
+            expect(store.getState().goal.plan!.dependenciesList).toEqual([]);
+        });
+    });
+
+    describe("moveTask", () => {
+        beforeEach(() => store.setGoal("Goal"));
+
+        it("should move a task, and its subplan, into another task's plan", () => {
+            const destination = store.addTask(GOAL_ID, "Destination");
+            const moving = store.addTask(GOAL_ID, "Moving");
+            const child = store.addTask(moving.id, "Child");
+
+            const moved = store.moveTask(moving.id, destination.id);
+
+            expect(moved.id).toBe(moving.id);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.id)).toEqual([destination.id]);
+            expect(store.findTask(destination.id)!.plan!.tasksList.map((task) => task.id)).toEqual([moving.id]);
+            expect(store.findTask(child.id)).not.toBeNull();
+        });
+
+        it("should drop dependencies in the plan it leaves", () => {
+            const destination = store.addTask(GOAL_ID, "Destination");
+            const staying = store.addTask(GOAL_ID, "Staying");
+            const moving = store.addTask(GOAL_ID, "Moving");
+            store.addDependency(moving.id, staying.id);
+            store.addDependency(staying.id, GOAL_ID);
+
+            store.moveTask(moving.id, destination.id);
+
+            expect(store.getState().goal.plan!.dependenciesList).toEqual([{ source: staying.id, target: GOAL_ID }]);
+        });
+
+        it("should move a task back up to the root goal", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+
+            store.moveTask(child.id, GOAL_ID);
+
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.id)).toEqual([parent.id, child.id]);
+            expect(store.findTask(parent.id)!.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should refuse to move a task inside itself or its own descendant", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+
+            expect(() => store.moveTask(parent.id, parent.id)).toThrow(InvalidMoveError);
+            expect(() => store.moveTask(parent.id, child.id)).toThrow(InvalidMoveError);
+            expect(() => store.moveTask(GOAL_ID, parent.id)).toThrow(InvalidMoveError);
+            expect(store.findTask(child.id)).not.toBeNull();
+        });
+
+        it("should throw for unknown tasks", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+
+            expect(() => store.moveTask("nope", GOAL_ID)).toThrow(TaskNotFoundError);
+            expect(() => store.moveTask(task.id, "nope")).toThrow(TaskNotFoundError);
+        });
+
+        it("should leave a task where it is when it already sits in that plan", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+            const versionBefore = store.getVersion();
+
+            expect(store.moveTask(task.id, GOAL_ID).id).toBe(task.id);
+            expect(store.getVersion()).toBe(versionBefore);
         });
     });
 });

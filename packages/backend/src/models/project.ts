@@ -1,4 +1,5 @@
-import { Task, StoredProjectV2 } from "@blossom/common";
+import { InboxIdea, StoredProjectV2, StoredProjectV3, Task } from "@blossom/common";
+import { v4 as uuidv4 } from "uuid";
 import { FileIO } from "../utils/fileIO";
 
 /** The named project has no file behind it. */
@@ -51,9 +52,9 @@ class Project {
         return `./projects/${filename}.txt`;
     };
 
-    public saveProject = async (filename: string, goal: Task, inbox: string[]) => {
-        const project: StoredProjectV2 = {
-            formatVersion: 2,
+    public saveProject = async (filename: string, goal: Task, inbox: InboxIdea[]) => {
+        const project: StoredProjectV3 = {
+            formatVersion: 3,
             goal,
             inbox,
         };
@@ -100,7 +101,7 @@ class Project {
         }
     };
 
-    public restoreProject = async (filename: string): Promise<{ goal: Task; inbox: string[] }> => {
+    public restoreProject = async (filename: string): Promise<{ goal: Task; inbox: InboxIdea[] }> => {
         const filepath = this.filepath(filename);
 
         if (!(await this.fileIO.exists(filepath))) {
@@ -113,14 +114,21 @@ class Project {
 
         const parsed = JSON.parse(data);
 
-        // Only v2 files (written by this version) are supported; anything else
-        // opens as an empty project.
-        if (parsed.formatVersion !== 2) {
-            return { goal: this.emptyGoal, inbox: [] };
+        // v3 files carry an id per inbox idea. A v2 file records only the text,
+        // so each idea is given an id as it is read: the ids identify entries
+        // for the length of a session, and are written back on the next save.
+        if (parsed.formatVersion === 3) {
+            const project = parsed as StoredProjectV3;
+            return { goal: project.goal, inbox: project.inbox ?? [] };
+        }
+        if (parsed.formatVersion === 2) {
+            const project = parsed as StoredProjectV2;
+            const inbox = (project.inbox ?? []).map((text) => ({ id: uuidv4(), text }));
+            return { goal: project.goal, inbox };
         }
 
-        const project = parsed as StoredProjectV2;
-        return { goal: project.goal, inbox: project.inbox ?? [] };
+        // Any other file opens as an empty project.
+        return { goal: this.emptyGoal, inbox: [] };
     };
 }
 

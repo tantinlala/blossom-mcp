@@ -2,36 +2,25 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { GOAL_ID, MCP_AUTHOR, Task } from "@blossom/common";
 import { ProjectStore, UndoBlockedError } from "../state/projectStore";
+import { checkName, checkNames, MAX_NAME_CHARS } from "./nameRules";
 
 const TREE_EXPLANATION =
     `The project is a recursive tree: the root goal has a plan containing tasks, and any task may itself ` +
     `contain a nested plan of subtasks. Tasks are addressed by their id. The special id "${GOAL_ID}" refers ` +
-    `to the root goal; dependencies inside a plan may use "${GOAL_ID}" as a target to indicate the edge feeds ` +
-    `directly into that plan's goal. A dependency {source, target} means the source task must finish before ` +
-    `the target can start.`;
+    `to the root goal; dependencies inside a plan may target "${GOAL_ID}" or the id of the task that owns ` +
+    `the plan to indicate the edge feeds directly into that plan's goal. A dependency {source, target} means ` +
+    `the source task must finish before the target can start.`;
 
 // How many top-level tasks a plan should hold before grouping into subgoals.
 const MAX_TOP_LEVEL_TASKS = 8;
 
-// Roughly what fits on one or two lines of a roadmap node before the box grows
-// and the graph becomes hard to read.
-const MAX_NAME_CHARS = 40;
-
-// Names are rendered inside fixed-width roadmap nodes, so long ones blow the
-// node up and swamp the graph. All the detail belongs in the description, which
-// the UI shows in the task details drawer instead.
+// The server refuses names it cannot render and warns about the rest, so this
+// says what a good name looks like and leaves the checking to the tools.
 const NAMING_GUIDANCE =
-    `**Naming:** Every goal and task name must start with a verb in the imperative and read as one ` +
-    `actionable item - "Sign software engineering offer", "Rewrite resume", "Book venue" - never a bare ` +
-    `noun phrase ("Resume", "Venue"), a status ("Resume done"), a question, or a full sentence. Names are ` +
-    `labels on a graph node: aim for at most ${MAX_NAME_CHARS} characters (about 3-6 words) and never let ` +
-    `one run past a single short line. If a name needs "and", it is two tasks. Put all the substance - the ` +
-    `specifics, measures, deadlines, constraints, acceptance criteria and rationale from the conversation - ` +
-    `in the description field instead, which can be as long as needed. For example, prefer the name ` +
-    `"Sign software engineering offer" with the description "At a mid-size, remote-friendly product company ` +
-    `within 4 months, with at least a 20% total-comp increase" over cramming all of that into the name. ` +
-    `When you promote an inbox idea whose text reads as a full sentence or a bare noun, follow up with ` +
-    `update_task to rewrite the name as a short imperative action and move the detail into the description.`;
+    `**Naming:** A name is a label on a roadmap node: one short imperative action of at most ` +
+    `${MAX_NAME_CHARS} characters - "Sign software engineering offer", "Book venue" - and longer ones are ` +
+    `refused. Everything else belongs in the description, which can be as long as needed: the specifics, ` +
+    `measures, deadlines, constraints, acceptance criteria and rationale from the conversation.`;
 
 // Sent as server instructions on connect, so any MCP client steers the LLM
 // through the same goal-clarification -> ideation -> planning flow. The user
@@ -52,18 +41,22 @@ const SERVER_INSTRUCTIONS =
     `**Phase 2: Task Identification.** After a few exchanges, transition to identifying tasks. Proactively ` +
     `suggest tasks comprehensively, including ones the user may not think of (preparation, obtaining ` +
     `materials or tools, prerequisite skills, cleanup). Explain WHY each task is necessary, especially ` +
-    `non-obvious ones. Exclude tasks about finding instructions or recipes. Record candidate tasks in the ` +
-    `inbox with add_inbox_idea so the user can review them, each phrased as a short imperative action ` +
-    `since an idea's text becomes the task name when it is promoted; do not re-add ideas already present ` +
-    `in the inbox or covered by existing tasks.\n\n` +
+    `non-obvious ones. Exclude tasks about finding instructions or recipes. Park candidates in the inbox ` +
+    `with add_inbox_idea or add_inbox_ideas when you want the user to review or prune them before they ` +
+    `reach the roadmap; go straight to add_task or add_tasks when the user has already agreed the scope, ` +
+    `or has handed you a specification to work from.\n\n` +
     `**Phase 3: Plan Structuring.** When the user is ready to organize (or asks for a plan), turn agreed ` +
     `ideas into tasks (promote_inbox_idea or add_task), each with a short imperative name and a ` +
-    `description that captures the specifics from the conversation. If a plan level grows beyond about ${MAX_TOP_LEVEL_TASKS} tasks, group related tasks ` +
-    `into subgoals: create a task per subgoal, give it a subplan (create_subplan), and add the related ` +
-    `tasks inside it via add_task with parentId. Then add dependencies with add_dependency - within each ` +
-    `subplan and at the top level - so the roadmap forms a directed acyclic graph; use "${GOAL_ID}" as the ` +
-    `target for tasks that feed the goal directly. Verify the result with get_roadmap and get_next_tasks.\n\n` +
+    `description that captures the specifics from the conversation. If a plan level grows beyond about ` +
+    `${MAX_TOP_LEVEL_TASKS} tasks, group related tasks into subgoals: create a task per subgoal, give it a ` +
+    `subplan (create_subplan), and add the related tasks inside it via add_task with parentId. Then add ` +
+    `dependencies with add_dependency or add_dependencies - within each subplan and at the top level - so ` +
+    `the roadmap forms a directed acyclic graph; use "${GOAL_ID}" as the target for tasks that feed the ` +
+    `goal directly. Verify the result with get_roadmap and get_next_tasks.\n\n` +
     `${NAMING_GUIDANCE}\n\n` +
+    `**Checking your work:** Every tool that changes something echoes back what it changed, names and all. ` +
+    `Read those echoes: they are how you catch a task built from the wrong text before the rest of the ` +
+    `roadmap is hung off it.\n\n` +
     `**Tone:** Non-conversational. Do not parrot the user. Ask exactly one question per turn while ` +
     `clarifying. Saving, opening, and creating projects is user-only in the web UI - never attempt it.`;
 
@@ -74,6 +67,41 @@ const textResult = (value: unknown) => {
 const errorResult = (error: unknown) => {
     return { content: [{ type: "text" as const, text: String(error) }], isError: true };
 };
+
+// Warnings ride along with a successful write. An empty list is left out so a
+// clean call reads as cleanly as it went.
+const withWarnings = <T extends object>(value: T, warnings: string[]) => {
+    return warnings.length > 0 ? { ...value, warnings } : value;
+};
+
+// How two idea texts are compared when deciding whether one repeats the other.
+const normalizeText = (text: string): string => text.trim().replace(/\s+/g, " ").toLowerCase();
+
+const NAME_PARAM = z
+    .string()
+    .describe(
+        `Short label - one imperative action of at most ${MAX_NAME_CHARS} characters on a single line, ` +
+            `not a noun phrase, a question or a sentence. Longer names are refused.`,
+    );
+
+const DESCRIPTION_PARAM = z
+    .string()
+    .optional()
+    .describe("Full detail: specifics, acceptance criteria, measures, deadlines and why it is necessary");
+
+const IDEA_ID_PARAM = z
+    .string()
+    .optional()
+    .describe("Id of the inbox idea, as returned by add_inbox_idea and get_project_state");
+
+const IDEA_INDEX_PARAM = z
+    .number()
+    .int()
+    .optional()
+    .describe(
+        "DEPRECATED - pass ideaId instead. Zero-based position in the newest-first inbox, which every " +
+            "other write to the inbox renumbers. Ignored when ideaId is given.",
+    );
 
 /**
  * Builds the MCP server through which external chat applications (e.g. Claude
@@ -127,8 +155,9 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                         text:
                             `Organize my project into a roadmap now. ${TREE_EXPLANATION}\n\n` +
                             `${NAMING_GUIDANCE}\n\n` +
-                            `Call get_project_state, then: (1) promote agreed inbox ideas into tasks, each ` +
-                            `with a short imperative name and a description capturing conversation specifics; (2) if a plan level has more than ` +
+                            `Call get_project_state, then: (1) turn agreed inbox ideas into tasks with ` +
+                            `promote_inbox_ideas, giving each its final name and a description capturing ` +
+                            `conversation specifics; (2) if a plan level has more than ` +
                             `about ${MAX_TOP_LEVEL_TASKS} tasks, group related tasks into subgoal tasks with ` +
                             `subplans; (3) add dependencies within each subplan and at the top level so the ` +
                             `roadmap forms a DAG, using "${GOAL_ID}" as the target for tasks feeding the goal ` +
@@ -146,7 +175,8 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         {
             description:
                 `Get the full current project state: version counter, active project name, the complete goal ` +
-                `tree and the inbox of raw ideas. ${TREE_EXPLANATION}`,
+                `tree and the inbox of raw ideas. Each inbox entry is {id, text}; address ideas by that id. ` +
+                `The inbox is ordered newest first. ${TREE_EXPLANATION}`,
         },
         async () => textResult(store.getState()),
     );
@@ -155,9 +185,9 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         "get_roadmap",
         {
             description:
-                `Get a single level of the plan: the tasks and dependencies directly inside one task's plan. ` +
-                `Defaults to the root goal. Tasks with hasSubplan=true contain a nested plan you can inspect by ` +
-                `calling this tool with their id. ${TREE_EXPLANATION}`,
+                `Get a single level of the plan: the tasks and dependencies directly inside one task's plan, ` +
+                `in the order they were added. Defaults to the root goal. Tasks with hasSubplan=true contain ` +
+                `a nested plan you can inspect by calling this tool with their id. ${TREE_EXPLANATION}`,
             inputSchema: {
                 taskId: z.string().optional().describe(`Task id whose plan to inspect (defaults to "${GOAL_ID}")`),
             },
@@ -200,25 +230,33 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         "set_goal",
         {
             description:
-                `Set the project goal's name and optionally its description. The name is a label on a ` +
-                `roadmap node: start it with an imperative verb, keep it under about ${MAX_NAME_CHARS} ` +
-                `characters, and put the measures, deadlines and constraints in the description.`,
+                `Set the project goal's name and optionally its description. Returns the goal as it now ` +
+                `stands. The name is a label on a roadmap node; the measures, deadlines and constraints go ` +
+                `in the description.`,
             inputSchema: {
-                name: z
-                    .string()
-                    .describe(
-                        `Short goal label - starts with an imperative verb and reads as one actionable ` +
-                            `item, at most about ${MAX_NAME_CHARS} characters, not a noun phrase or a sentence`,
-                    ),
-                description: z
-                    .string()
-                    .optional()
-                    .describe("Full goal detail: specifics, measures, deadlines, constraints and rationale"),
+                name: NAME_PARAM,
+                description: DESCRIPTION_PARAM,
             },
         },
         async ({ name, description }) => {
-            asMcp(() => store.setGoal(name, description));
-            return textResult({ version: store.getVersion() });
+            try {
+                const warnings = checkName(name);
+                asMcp(() => store.setGoal(name, description));
+                const goal = store.findTask(GOAL_ID)!;
+                return textResult(
+                    withWarnings(
+                        {
+                            taskId: GOAL_ID,
+                            name: goal.name,
+                            description: goal.description,
+                            version: store.getVersion(),
+                        },
+                        warnings,
+                    ),
+                );
+            } catch (error) {
+                return errorResult(error);
+            }
         },
     );
 
@@ -227,27 +265,71 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         {
             description:
                 `Add a new task. By default it is added to the root goal's plan; pass parentId to add it ` +
-                `inside another task's subplan. Returns the created task's id. The name is a label on a ` +
-                `roadmap node: start it with an imperative verb so it reads as one actionable item, keep ` +
-                `it under about ${MAX_NAME_CHARS} characters, and put the detail in the description.`,
+                `inside another task's subplan. Returns the created task, so you can check the name that ` +
+                `landed is the one you meant.`,
             inputSchema: {
-                name: z
-                    .string()
-                    .describe(
-                        `Short task label - starts with an imperative verb and reads as one actionable ` +
-                            `item, at most about ${MAX_NAME_CHARS} characters, not a noun phrase or a sentence`,
-                    ),
-                description: z
-                    .string()
-                    .optional()
-                    .describe("Full task detail: specifics, acceptance criteria and why it is necessary"),
+                name: NAME_PARAM,
+                description: DESCRIPTION_PARAM,
                 parentId: z.string().optional().describe(`Parent task id (defaults to "${GOAL_ID}")`),
             },
         },
         async ({ name, description, parentId }) => {
             try {
+                const warnings = checkName(name);
                 const task = asMcp(() => store.addTask(parentId ?? GOAL_ID, name, description));
-                return textResult({ taskId: task.id, version: store.getVersion() });
+                return textResult(
+                    withWarnings(
+                        {
+                            taskId: task.id,
+                            name: task.name,
+                            parentId: parentId ?? GOAL_ID,
+                            version: store.getVersion(),
+                        },
+                        warnings,
+                    ),
+                );
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "add_tasks",
+        {
+            description:
+                `Add several tasks in one call and one change. Every parent and every name is checked before ` +
+                `anything is written, so the batch lands whole or not at all. The returned tasks are in the ` +
+                `order supplied, so you can pair each id with the task you asked for.`,
+            inputSchema: {
+                tasks: z
+                    .array(
+                        z.object({
+                            name: NAME_PARAM,
+                            description: DESCRIPTION_PARAM,
+                            parentId: z.string().optional().describe(`Parent task id (defaults to "${GOAL_ID}")`),
+                        }),
+                    )
+                    .describe("Tasks to add, in the order they should appear in their plans"),
+            },
+        },
+        async ({ tasks }) => {
+            try {
+                const warnings = checkNames(tasks.map((draft) => draft.name));
+                const added = asMcp(() => store.addTasks(tasks));
+                return textResult(
+                    withWarnings(
+                        {
+                            tasks: added.map((task, position) => ({
+                                taskId: task.id,
+                                name: task.name,
+                                parentId: tasks[position].parentId ?? GOAL_ID,
+                            })),
+                            version: store.getVersion(),
+                        },
+                        warnings,
+                    ),
+                );
             } catch (error) {
                 return errorResult(error);
             }
@@ -257,29 +339,57 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     server.registerTool(
         "update_task",
         {
-            description:
-                `Update a task's name and/or description. Use this to rewrite a name as a short imperative ` +
-                `action - for example after promoting an inbox idea whose text reads as a full sentence or a ` +
-                `bare noun - moving the detail into the description.`,
+            description: "Update a task's name and/or description. Returns the task as it now stands.",
             inputSchema: {
                 taskId: z.string(),
-                name: z
-                    .string()
-                    .optional()
-                    .describe(
-                        `Short task label - starts with an imperative verb and reads as one actionable ` +
-                            `item, at most about ${MAX_NAME_CHARS} characters, not a noun phrase or a sentence`,
-                    ),
-                description: z
-                    .string()
-                    .optional()
-                    .describe("Full task detail: specifics, acceptance criteria and why it is necessary"),
+                name: NAME_PARAM.optional(),
+                description: DESCRIPTION_PARAM,
             },
         },
         async ({ taskId, name, description }) => {
             try {
+                const warnings = checkNames([name]);
                 asMcp(() => store.updateTask(taskId, { name, description }));
-                return textResult({ version: store.getVersion() });
+                const task = store.findTask(taskId)!;
+                return textResult(
+                    withWarnings(
+                        {
+                            taskId: task.id,
+                            name: task.name,
+                            description: task.description,
+                            version: store.getVersion(),
+                        },
+                        warnings,
+                    ),
+                );
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "move_task",
+        {
+            description:
+                `Move a task, and whatever subplan it carries, into another task's plan. Pass "${GOAL_ID}" ` +
+                `as newParentId to move it to the top level. Dependencies in the plan it leaves are dropped, ` +
+                `since they order it against tasks it is no longer a sibling of. A task cannot be moved ` +
+                `inside itself or anything it contains.`,
+            inputSchema: {
+                taskId: z.string(),
+                newParentId: z.string().describe(`Id of the task whose plan it moves into, or "${GOAL_ID}"`),
+            },
+        },
+        async ({ taskId, newParentId }) => {
+            try {
+                const task = asMcp(() => store.moveTask(taskId, newParentId));
+                return textResult({
+                    taskId: task.id,
+                    name: task.name,
+                    parentId: newParentId,
+                    version: store.getVersion(),
+                });
             } catch (error) {
                 return errorResult(error);
             }
@@ -300,7 +410,13 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         async ({ taskId, completed }) => {
             try {
                 asMcp(() => store.setTaskCompletion(taskId, completed));
-                return textResult({ version: store.getVersion() });
+                const task = store.findTask(taskId)!;
+                return textResult({
+                    taskId: task.id,
+                    name: task.name,
+                    completionState: task.completionState,
+                    version: store.getVersion(),
+                });
             } catch (error) {
                 return errorResult(error);
             }
@@ -310,13 +426,17 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     server.registerTool(
         "delete_task",
         {
-            description: "Delete a task (and its entire subplan) plus any dependencies referencing it.",
+            description:
+                "Delete a task (and its entire subplan) plus any dependencies referencing it. Returns the " +
+                "task that was deleted, so you can confirm it was the one you meant.",
             inputSchema: { taskId: z.string() },
         },
         async ({ taskId }) => {
             try {
+                const doomed = store.findTask(taskId);
+                const name = doomed?.name;
                 asMcp(() => store.removeTask(taskId));
-                return textResult({ version: store.getVersion() });
+                return textResult({ taskId, name, deleted: true, version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -332,7 +452,8 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         async ({ taskId }) => {
             try {
                 asMcp(() => store.createSubplan(taskId));
-                return textResult({ version: store.getVersion() });
+                const task = store.findTask(taskId)!;
+                return textResult({ taskId: task.id, name: task.name, version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -344,17 +465,53 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         {
             description:
                 `Add a dependency: the source task must finish before the target can start. Source and target ` +
-                `must be siblings in the same plan, or the target may be "${GOAL_ID}" to feed the plan's goal. ` +
-                `Cycles are rejected.`,
+                `must be siblings in the same plan; the target may instead be "${GOAL_ID}", or the id of the ` +
+                `task that owns the plan, to feed that plan's goal. Cycles are rejected. Returns both ends ` +
+                `named, so you can check the edge that landed is the edge you meant.`,
             inputSchema: {
                 sourceId: z.string(),
-                targetId: z.string(),
+                targetId: z
+                    .string()
+                    .describe(`Sibling task id, the containing task's id, or "${GOAL_ID}" for the root goal`),
             },
         },
         async ({ sourceId, targetId }) => {
             try {
-                asMcp(() => store.addDependency(sourceId, targetId));
-                return textResult({ version: store.getVersion() });
+                const edge = asMcp(() => store.addDependency(sourceId, targetId));
+                return textResult({ ...edge, version: store.getVersion() });
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "add_dependencies",
+        {
+            description:
+                `Add several dependencies in one call and one change. The whole batch is checked for cycles ` +
+                `together before anything is written: if one edge would close a loop, nothing is applied and ` +
+                `the error names that edge and the path it closes. The returned edges are in the order ` +
+                `supplied, both ends named.`,
+            inputSchema: {
+                dependencies: z
+                    .array(
+                        z.object({
+                            sourceId: z.string(),
+                            targetId: z
+                                .string()
+                                .describe(
+                                    `Sibling task id, the containing task's id, or "${GOAL_ID}" for the root goal`,
+                                ),
+                        }),
+                    )
+                    .describe("Dependencies to add, each {sourceId, targetId}"),
+            },
+        },
+        async ({ dependencies }) => {
+            try {
+                const added = asMcp(() => store.addDependencies(dependencies));
+                return textResult({ dependencies: added, version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -364,7 +521,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     server.registerTool(
         "remove_dependency",
         {
-            description: "Remove the dependency from sourceId to targetId.",
+            description: "Remove the dependency from sourceId to targetId. Returns the edge that was removed.",
             inputSchema: {
                 sourceId: z.string(),
                 targetId: z.string(),
@@ -372,8 +529,8 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ sourceId, targetId }) => {
             try {
-                asMcp(() => store.removeDependency(sourceId, targetId));
-                return textResult({ version: store.getVersion() });
+                const edge = asMcp(() => store.removeDependency(sourceId, targetId));
+                return textResult({ ...edge, removed: true, version: store.getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -384,26 +541,98 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         "add_inbox_idea",
         {
             description:
-                "Add a raw idea string to the project inbox. Ideas are unstructured candidate tasks that can " +
-                "later be promoted to real tasks.",
+                "Add a raw idea to the project inbox, where the user can review it before it reaches the " +
+                "roadmap. Returns the idea's id; address it by that id from then on. An idea whose text " +
+                "already sits in the inbox is not added twice - the existing id comes back with " +
+                "duplicate: true.",
             inputSchema: { text: z.string() },
         },
         async ({ text }) => {
-            asMcp(() => store.addIdea(text));
-            return textResult({ version: store.getVersion() });
+            const existing = store.findIdeaByText(text);
+            if (existing) {
+                return textResult({
+                    ideaId: existing.id,
+                    text: existing.text,
+                    duplicate: true,
+                    version: store.getVersion(),
+                });
+            }
+            const idea = asMcp(() => store.addIdea(text));
+            return textResult({ ideaId: idea.id, text: idea.text, duplicate: false, version: store.getVersion() });
+        },
+    );
+
+    server.registerTool(
+        "add_inbox_ideas",
+        {
+            description:
+                "Add several raw ideas to the inbox in one call and one change. Ideas whose text is already " +
+                "in the inbox come back with their existing id and duplicate: true. The returned ideas are " +
+                "in the order supplied, so you can pair each id with the text you sent.",
+            inputSchema: {
+                texts: z.array(z.string()).describe("Idea texts, in the order they were thought of"),
+            },
+        },
+        async ({ texts }) => {
+            // Duplicates are settled against the inbox and against the batch's
+            // own earlier entries, so sending the same text twice in one call
+            // yields one idea, exactly as sending it in two calls would.
+            const results = texts.map((text) => ({ ideaId: undefined as string | undefined, text, duplicate: false }));
+            const echoesPosition: (number | undefined)[] = texts.map((): number | undefined => undefined);
+            const freshPositions: number[] = [];
+            const claimed = new Map<string, number>();
+
+            texts.forEach((text, position) => {
+                const existing = store.findIdeaByText(text);
+                if (existing) {
+                    results[position] = { ideaId: existing.id, text: existing.text, duplicate: true };
+                    return;
+                }
+                const key = normalizeText(text);
+                const firstOccurrence = key === "" ? undefined : claimed.get(key);
+                if (firstOccurrence !== undefined) {
+                    results[position].duplicate = true;
+                    echoesPosition[position] = firstOccurrence;
+                    return;
+                }
+                if (key !== "") {
+                    claimed.set(key, position);
+                }
+                freshPositions.push(position);
+            });
+
+            const added = asMcp(() => store.addIdeas(freshPositions.map((position) => texts[position])));
+            added.forEach((idea, order) => {
+                results[freshPositions[order]].ideaId = idea.id;
+            });
+            echoesPosition.forEach((firstOccurrence, position) => {
+                if (firstOccurrence !== undefined) {
+                    results[position].ideaId = results[firstOccurrence].ideaId;
+                }
+            });
+
+            return textResult({ ideas: results, version: store.getVersion() });
         },
     );
 
     server.registerTool(
         "remove_inbox_idea",
         {
-            description: "Remove the inbox idea at the given zero-based index.",
-            inputSchema: { index: z.number().int() },
+            description: "Remove an inbox idea. Returns the idea that was removed, so you can confirm which it was.",
+            inputSchema: {
+                ideaId: IDEA_ID_PARAM,
+                index: IDEA_INDEX_PARAM,
+            },
         },
-        async ({ index }) => {
+        async ({ ideaId, index }) => {
             try {
-                asMcp(() => store.removeIdea(index));
-                return textResult({ version: store.getVersion() });
+                const removed = asMcp(() => store.removeIdea({ ideaId, index }));
+                return textResult({
+                    ideaId: removed.id,
+                    text: removed.text,
+                    removed: true,
+                    version: store.getVersion(),
+                });
             } catch (error) {
                 return errorResult(error);
             }
@@ -414,19 +643,82 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         "promote_inbox_idea",
         {
             description:
-                `Convert the inbox idea at the given zero-based index into a task (removing it from the inbox). ` +
-                `Pass parentId to place it inside a task's subplan; defaults to the root goal's plan. The idea ` +
-                `text becomes the task name, so unless it already reads as a short imperative action, follow ` +
-                `up with update_task to rewrite it and move the detail into the description.`,
+                `Convert an inbox idea into a task, removing it from the inbox. Pass parentId to place it ` +
+                `inside a task's subplan; defaults to the root goal's plan. Give the task its final name and ` +
+                `description here: name replaces the idea's text, which is used only when no name is given. ` +
+                `Returns the task that was created, so you can check it was built from the idea you meant.`,
             inputSchema: {
-                index: z.number().int(),
-                parentId: z.string().optional(),
+                ideaId: IDEA_ID_PARAM,
+                index: IDEA_INDEX_PARAM,
+                parentId: z.string().optional().describe(`Parent task id (defaults to "${GOAL_ID}")`),
+                name: NAME_PARAM.optional().describe(
+                    `Final task name. Defaults to the idea's text, which is often not a usable name. ` +
+                        `One imperative action of at most ${MAX_NAME_CHARS} characters.`,
+                ),
+                description: DESCRIPTION_PARAM,
             },
         },
-        async ({ index, parentId }) => {
+        async ({ ideaId, index, parentId, name, description }) => {
             try {
-                const task = asMcp(() => store.promoteIdea(index, parentId));
-                return textResult({ taskId: task.id, version: store.getVersion() });
+                const warnings = checkNames([name]);
+                const task = asMcp(() =>
+                    store.promoteIdea({ ideaId, index }, parentId ?? GOAL_ID, undefined, { name, description }),
+                );
+                return textResult(
+                    withWarnings(
+                        {
+                            taskId: task.id,
+                            name: task.name,
+                            parentId: parentId ?? GOAL_ID,
+                            version: store.getVersion(),
+                        },
+                        warnings,
+                    ),
+                );
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "promote_inbox_ideas",
+        {
+            description:
+                `Convert several inbox ideas into tasks in one call and one change. Every idea and parent is ` +
+                `resolved before anything moves, so the batch lands whole or not at all. The returned tasks ` +
+                `are in the order supplied, so you can pair each id with the idea you asked for.`,
+            inputSchema: {
+                promotions: z
+                    .array(
+                        z.object({
+                            ideaId: IDEA_ID_PARAM,
+                            index: IDEA_INDEX_PARAM,
+                            parentId: z.string().optional().describe(`Parent task id (defaults to "${GOAL_ID}")`),
+                            name: NAME_PARAM.optional().describe("Final task name; defaults to the idea's text"),
+                            description: DESCRIPTION_PARAM,
+                        }),
+                    )
+                    .describe("Ideas to promote, each naming one idea by ideaId"),
+            },
+        },
+        async ({ promotions }) => {
+            try {
+                const warnings = checkNames(promotions.map((promotion) => promotion.name));
+                const tasks = asMcp(() => store.promoteIdeas(promotions));
+                return textResult(
+                    withWarnings(
+                        {
+                            tasks: tasks.map((task, position) => ({
+                                taskId: task.id,
+                                name: task.name,
+                                parentId: promotions[position].parentId ?? GOAL_ID,
+                            })),
+                            version: store.getVersion(),
+                        },
+                        warnings,
+                    ),
+                );
             } catch (error) {
                 return errorResult(error);
             }

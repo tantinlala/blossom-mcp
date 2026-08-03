@@ -67,6 +67,25 @@ const requireString = (value: unknown, field: string): string => {
     return value;
 };
 
+// Which inbox entry a payload means. Callers may name it by `ideaId`, which
+// holds however the list shifts around it, or by `index` into the current
+// newest-first order; `ideaId` decides when both are sent.
+//
+// A payload that names neither is rejected here, where the reference is read.
+// Passing it on would have the store report an out-of-range position for a
+// position the caller never gave, which says nothing about what was wrong.
+const ideaRef = (payload: any): { ideaId?: string; index?: number } => {
+    if (typeof payload?.ideaId === "string" && payload.ideaId !== "") {
+        return { ideaId: payload.ideaId };
+    }
+    if (!Number.isInteger(payload?.index)) {
+        throw new InvalidCommandError(
+            "An inbox idea reference is required: pass ideaId, or index as an integer position",
+        );
+    }
+    return { index: payload.index };
+};
+
 // Guards the two commands that replace the project everyone is looking at.
 const assertSwitchConfirmed = (ctx: CommandContext, payload: any) => {
     if (payload?.confirmed === true) {
@@ -168,19 +187,19 @@ const COMMANDS: CommandTable = {
 
     "inbox/update": (ctx, payload): ProjectState =>
         ctx.run(() => {
-            ctx.store.updateIdea(payload?.index, payload?.text ?? "", payload?.expectedText);
+            ctx.store.updateIdea(ideaRef(payload), payload?.text ?? "", payload?.expectedText);
             return ctx.store.getState();
         }),
 
     "inbox/remove": (ctx, payload): ProjectState =>
         ctx.run(() => {
-            ctx.store.removeIdea(payload?.index, payload?.expectedText);
+            ctx.store.removeIdea(ideaRef(payload), payload?.expectedText);
             return ctx.store.getState();
         }),
 
     "inbox/promote": (ctx, payload): ProjectState =>
         ctx.run(() => {
-            ctx.store.promoteIdea(payload?.index, payload?.parentId, payload?.expectedText);
+            ctx.store.promoteIdea(ideaRef(payload), payload?.parentId, payload?.expectedText);
             return ctx.store.getState();
         }),
 

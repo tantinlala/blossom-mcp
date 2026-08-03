@@ -221,20 +221,20 @@ class APIClient {
         return await this.post("inbox/add", { text });
     }
 
-    public async updateIdea(index: number, text: string, expectedText?: string): Promise<ProjectState | undefined> {
-        return await this.post("inbox/update", { index, text, expectedText });
+    public async updateIdea(ideaId: string, text: string, expectedText?: string): Promise<ProjectState | undefined> {
+        return await this.post("inbox/update", { ideaId, text, expectedText });
     }
 
-    public async removeIdea(index: number, expectedText?: string): Promise<ProjectState | undefined> {
-        return await this.post("inbox/remove", { index, expectedText });
+    public async removeIdea(ideaId: string, expectedText?: string): Promise<ProjectState | undefined> {
+        return await this.post("inbox/remove", { ideaId, expectedText });
     }
 
     public async promoteIdea(
-        index: number,
+        ideaId: string,
         parentId?: string,
         expectedText?: string,
     ): Promise<ProjectState | undefined> {
-        return await this.post("inbox/promote", { index, parentId, expectedText });
+        return await this.post("inbox/promote", { ideaId, parentId, expectedText });
     }
 
     public async promoteAllIdeas(parentId?: string): Promise<ProjectState | undefined> {
