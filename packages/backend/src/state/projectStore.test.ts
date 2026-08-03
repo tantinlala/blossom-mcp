@@ -1,5 +1,6 @@
 import {
     ProjectStore,
+    MAX_UNDO_STACK_SIZE,
     TaskNotFoundError,
     IdeaNotFoundError,
     InvalidDependencyError,
@@ -1547,6 +1548,22 @@ describe("ProjectStore", () => {
             store.moveTasks([{ taskId: task.id, newParentId: GOAL_ID }]);
 
             expect(store.getVersion()).toBe(versionBefore);
+        });
+
+        it("should spend no undo step on a no-op or failed batch, even with the stack full", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+            for (let position = 0; position < MAX_UNDO_STACK_SIZE + 5; position++) {
+                store.addIdea(`idea ${position}`);
+            }
+
+            store.moveTasks([{ taskId: task.id, newParentId: GOAL_ID }]);
+            expect(() => store.moveTasks([{ taskId: task.id, newParentId: "nope" }])).toThrow(TaskNotFoundError);
+
+            let undone = 0;
+            while (store.undo()) {
+                undone++;
+            }
+            expect(undone).toBe(MAX_UNDO_STACK_SIZE);
         });
     });
 

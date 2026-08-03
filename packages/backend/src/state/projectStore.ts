@@ -152,15 +152,23 @@ class ProjectStore {
         return JSON.parse(JSON.stringify(value));
     }
 
-    private _saveSnapshot() {
-        this._undoStack.push({
+    private _takeSnapshot(): UndoSnapshot {
+        return {
             goal: this._deepClone(this._goal),
             inbox: this._inbox.map((idea) => ({ ...idea })),
             author: this._currentAuthor,
-        });
+        };
+    }
+
+    private _pushSnapshot(snapshot: UndoSnapshot) {
+        this._undoStack.push(snapshot);
         if (this._undoStack.length > MAX_UNDO_STACK_SIZE) {
             this._undoStack.shift();
         }
+    }
+
+    private _saveSnapshot() {
+        this._pushSnapshot(this._takeSnapshot());
     }
 
     private _bump() {
@@ -461,7 +469,11 @@ class ProjectStore {
             return [];
         }
 
-        this._saveSnapshot();
+        // The snapshot is held aside and joins the undo stack only once a move
+        // has actually changed something, so a no-op batch and a failed batch
+        // both leave the undo history exactly as they found it, however full
+        // the stack is.
+        const before = this._takeSnapshot();
         let changed = false;
         try {
             const moved = moves.map(({ taskId, newParentId }) => {
@@ -470,13 +482,12 @@ class ProjectStore {
                 return result.task;
             });
             if (!changed) {
-                this._undoStack.pop();
                 return this._deepClone(moved);
             }
+            this._pushSnapshot(before);
             this._bump();
             return this._deepClone(moved);
         } catch (error) {
-            const before = this._undoStack.pop()!;
             this._goal = before.goal;
             this._inbox = before.inbox;
             throw error;
@@ -1129,6 +1140,7 @@ class ProjectStore {
 
 export {
     ProjectStore,
+    MAX_UNDO_STACK_SIZE,
     TaskNotFoundError,
     InvalidDependencyError,
     InvalidMoveError,
