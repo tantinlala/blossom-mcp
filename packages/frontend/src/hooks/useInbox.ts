@@ -77,6 +77,11 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
      *
      * Both of those turn on the idea's id, so ideas added or removed elsewhere
      * in the list leave an edit exactly where it was.
+     *
+     * An idea that already reads exactly as the edit would leave it has nothing
+     * left to apply, so the edit is dropped in silence. That is the state every
+     * commit lands in, since the reply it applies carries the text it just
+     * wrote; there is no divergence to report.
      */
     const applyRemoteInbox = useCallback(
         (entries: InboxIdea[]) => {
@@ -85,6 +90,7 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
 
             let rebased = false;
             let removed = false;
+            let landed = false;
             updatePendingEdits((pending) => {
                 if (pending.size === 0) {
                     return pending;
@@ -101,10 +107,15 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
                         removed = true;
                         return;
                     }
+                    if (text === edit.text) {
+                        next.delete(ideaId);
+                        landed = true;
+                        return;
+                    }
                     next.set(ideaId, { ...edit, original: text });
                     rebased = true;
                 });
-                return rebased || removed ? next : pending;
+                return rebased || removed || landed ? next : pending;
             });
 
             if (rebased) {

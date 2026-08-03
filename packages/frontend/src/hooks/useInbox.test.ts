@@ -241,6 +241,42 @@ describe("useInbox", () => {
         );
     });
 
+    it("says nothing about a commit of its own coming back from the server", async () => {
+        // The real applyState feeds the server's reply straight back through
+        // applyRemoteInbox, so a commit always sees its own text arrive. The
+        // other tests stub applyState out, which is why this went unnoticed.
+        const { result } = render();
+        mockApplyState.mockImplementation((state: ProjectState) => {
+            act(() => result.current.applyRemoteInbox(state.inbox));
+        });
+        mockedAPIClient.updateIdea.mockResolvedValue(makeState(3, ["mine, edited"]));
+
+        act(() => result.current.applyRemoteInbox(ideas("mine")));
+        act(() => result.current.changeIdea(0, "mine, edited"));
+
+        await act(async () => {
+            await result.current.commitIdea(0);
+        });
+
+        expect(mockNotify).not.toHaveBeenCalled();
+        expect(result.current.ideaList).toEqual(["mine, edited"]);
+    });
+
+    it("still warns when somebody else's change arrives while an edit is pending", async () => {
+        const { result } = render();
+        mockApplyState.mockImplementation((state: ProjectState) => {
+            act(() => result.current.applyRemoteInbox(state.inbox));
+        });
+
+        act(() => result.current.applyRemoteInbox(ideas("mine")));
+        act(() => result.current.changeIdea(0, "mine, edited"));
+        act(() => result.current.applyRemoteInbox(ideas("theirs, not mine")));
+
+        expect(mockNotify).toHaveBeenCalledWith(
+            "Someone else changed an idea you are editing. Your version will replace theirs.",
+        );
+    });
+
     it("gives up an edit whose row was deleted by somebody else", () => {
         const { result } = render();
 
