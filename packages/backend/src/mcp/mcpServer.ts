@@ -19,7 +19,8 @@ const MAX_TOP_LEVEL_TASKS = 8;
 const TOOLS_SUMMARY =
     `**Tools:** Read with get_project_state (the whole tree and inbox in one call), get_roadmap (one ` +
     `plan level), and get_next_tasks (what is currently actionable). Write with set_goal; add_task, ` +
-    `add_tasks, update_task, move_task, set_task_completion, delete_task, create_subplan; ` +
+    `add_tasks, update_task, move_task, move_tasks, set_task_completion, delete_task, delete_tasks, ` +
+    `create_subplan; ` +
     `add_dependency, add_dependencies, remove_dependency; add_inbox_idea, add_inbox_ideas, ` +
     `remove_inbox_idea, remove_inbox_ideas, promote_inbox_idea, promote_inbox_ideas; undo_last_change.`;
 
@@ -460,6 +461,45 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     );
 
     server.registerTool(
+        "move_tasks",
+        {
+            description:
+                `Move several tasks in one call and one change - the tool for restructuring. Moves apply in ` +
+                `the order supplied, and a moved task joins the end of its destination plan, so the order of ` +
+                `the batch is the order the tasks will read in. A failure part-way rolls the whole batch ` +
+                `back. Dependencies in each plan a task leaves are dropped, as with move_task. The returned ` +
+                `tasks are in the order supplied.`,
+            inputSchema: {
+                moves: z
+                    .array(
+                        z.object({
+                            taskId: z.string(),
+                            newParentId: z
+                                .string()
+                                .describe(`Id of the task whose plan it moves into, or "${GOAL_ID}"`),
+                        }),
+                    )
+                    .describe("Moves to apply, in the order the tasks should appear in their destination plans"),
+            },
+        },
+        async ({ moves }) => {
+            try {
+                const tasks = asMcp(() => store.moveTasks(moves));
+                return textResult({
+                    tasks: tasks.map((task, position) => ({
+                        taskId: task.id,
+                        name: task.name,
+                        parentId: moves[position].newParentId,
+                    })),
+                    version: store.getVersion(),
+                });
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
         "set_task_completion",
         {
             description:
@@ -500,6 +540,29 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                 const name = doomed?.name;
                 asMcp(() => store.removeTask(taskId));
                 return textResult({ taskId, name, deleted: true, version: store.getVersion() });
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "delete_tasks",
+        {
+            description:
+                `Delete several tasks in one call and one change. Every id is resolved before anything is ` +
+                `removed, so the batch lands whole or not at all. Deleting a task deletes its entire ` +
+                `subplan, so a batch may name both a task and one of its descendants. The returned tasks ` +
+                `are in the order supplied, so you can confirm each was the one you meant.`,
+            inputSchema: { taskIds: z.array(z.string()) },
+        },
+        async ({ taskIds }) => {
+            try {
+                const deleted = asMcp(() => store.removeTasks(taskIds));
+                return textResult({
+                    tasks: deleted.map((task) => ({ taskId: task.id, name: task.name, deleted: true })),
+                    version: store.getVersion(),
+                });
             } catch (error) {
                 return errorResult(error);
             }

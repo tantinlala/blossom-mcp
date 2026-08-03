@@ -78,8 +78,10 @@ External chat applications connect over Streamable HTTP. Tools mirror the REST s
 | `add_tasks`           | `tasks[]`                                         | `{ tasks: [{ taskId, name, parentId, hasSubplan }] }` |
 | `update_task`         | `taskId, name?, description?`                     | `{ taskId, name, description }`                       |
 | `move_task`           | `taskId, newParentId`                             | `{ taskId, name, parentId }`                          |
+| `move_tasks`          | `moves[]`                                         | `{ tasks: [{ taskId, name, parentId }] }`             |
 | `set_task_completion` | `taskId, completed`                               | `{ taskId, name, completionState }`                   |
 | `delete_task`         | `taskId`                                          | `{ taskId, name, deleted }`                           |
+| `delete_tasks`        | `taskIds[]`                                       | `{ tasks: [{ taskId, name, deleted }] }`              |
 | `create_subplan`      | `taskId`                                          | `{ taskId, name }`                                    |
 | `add_dependency`      | `sourceId, targetId`                              | `{ sourceId, sourceName, targetId, targetName }`      |
 | `add_dependencies`    | `dependencies[]`                                  | `{ dependencies: [ …the same, one per edge ] }`       |
@@ -102,9 +104,11 @@ Project management — listing, saving, opening, creating, and deleting projects
 
 ### Batches
 
-`add_tasks`, `add_dependencies`, `add_inbox_ideas`, `remove_inbox_ideas` and `promote_inbox_ideas` each apply as **one** change: one store mutation, one broadcast, one undo step. Every reference is resolved and every name checked before anything is written, so a batch either lands whole or not at all, and the result array is in the order supplied.
+`add_tasks`, `move_tasks`, `delete_tasks`, `add_dependencies`, `add_inbox_ideas`, `remove_inbox_ideas` and `promote_inbox_ideas` each apply as **one** change: one store mutation, one broadcast, one undo step. A batch either lands whole or not at all, and the result array is in the order supplied.
 
 `add_dependencies` validates cycles across the whole batch at once, since two edges that are each fine alone can close a loop together. A rejected batch names the offending edge and the path it closes — `"Post flyers" -> "Draft copy" would create a cycle: Draft copy -> Print flyers -> Post flyers -> Draft copy` — and applies none of it.
+
+`move_tasks` applies its moves in the order supplied, and a moved task joins the end of its destination plan — so the order of the batch is the order the tasks read in afterwards, and one call restructures a plan and sets its final reading order at once. Each move is validated against the tree as the moves before it have left it (two moves that are each fine alone can put a branch inside itself together), and a failure part-way rolls the whole batch back. `delete_tasks` resolves every id before removing anything; deleting a task deletes its subplan, so a batch may name both a task and one of its descendants.
 
 ### Dependency targets
 

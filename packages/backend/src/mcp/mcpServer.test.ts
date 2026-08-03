@@ -14,8 +14,10 @@ const EXPECTED_TOOLS = [
     "add_tasks",
     "update_task",
     "move_task",
+    "move_tasks",
     "set_task_completion",
     "delete_task",
+    "delete_tasks",
     "create_subplan",
     "add_dependency",
     "add_dependencies",
@@ -661,6 +663,7 @@ describe("mcpServer", () => {
             store.setGoal("Ship it");
             const first = store.addTask(GOAL_ID, "Draft copy");
             const second = store.addTask(GOAL_ID, "Print flyers");
+            const third = store.addTask(GOAL_ID, "Fold flyers");
             const parent = store.addTask(GOAL_ID, "Run the launch");
             store.createSubplan(parent.id);
             store.addDependency(first.id, second.id);
@@ -672,8 +675,10 @@ describe("mcpServer", () => {
                 add_tasks: { tasks: [{ name: "Sort the printing" }] },
                 update_task: { taskId: first.id, name: "Draft the copy" },
                 move_task: { taskId: first.id, newParentId: parent.id },
+                move_tasks: { moves: [{ taskId: first.id, newParentId: GOAL_ID }] },
                 set_task_completion: { taskId: second.id, completed: true },
                 delete_task: { taskId: second.id },
+                delete_tasks: { taskIds: [third.id] },
                 create_subplan: { taskId: parent.id },
                 add_dependency: { sourceId: parent.id, targetId: GOAL_ID },
                 add_dependencies: { dependencies: [{ sourceId: parent.id, targetId: GOAL_ID }] },
@@ -842,6 +847,74 @@ describe("mcpServer", () => {
 
             expect(result.isError).toBe(true);
             expect(store.getState().goal.plan!.tasksList.map((task) => task.id)).toEqual([parent.id]);
+        });
+    });
+
+    describe("move_tasks and delete_tasks", () => {
+        it("should move several tasks in one call, landing them in batch order", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const stage = store.addTask(GOAL_ID, "Stage A", undefined, true);
+            const added = ["a", "b", "c"].map((name) => store.addTask(GOAL_ID, name));
+
+            const result = parseResult(
+                await callTool("move_tasks", {
+                    moves: [
+                        { taskId: added[2].id, newParentId: stage.id },
+                        { taskId: added[0].id, newParentId: stage.id },
+                    ],
+                }),
+            );
+
+            expect(result.tasks).toEqual([
+                { taskId: added[2].id, name: "c", parentId: stage.id },
+                { taskId: added[0].id, name: "a", parentId: stage.id },
+            ]);
+            expect(store.findTask(stage.id)!.plan!.tasksList.map((task) => task.name)).toEqual(["c", "a"]);
+        });
+
+        it("should move no task at all when one move in the batch fails", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const stage = store.addTask(GOAL_ID, "Stage A", undefined, true);
+            const moving = store.addTask(GOAL_ID, "Moving");
+
+            const result = await callTool("move_tasks", {
+                moves: [
+                    { taskId: moving.id, newParentId: stage.id },
+                    { taskId: "nope", newParentId: stage.id },
+                ],
+            });
+
+            expect(result.isError).toBe(true);
+            expect(store.findTask(stage.id)!.plan!.tasksList).toHaveLength(0);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["Stage A", "Moving"]);
+        });
+
+        it("should delete several tasks in one call, saying which each was", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const added = ["a", "b", "c"].map((name) => store.addTask(GOAL_ID, name));
+
+            const result = parseResult(await callTool("delete_tasks", { taskIds: [added[2].id, added[0].id] }));
+
+            expect(result.tasks).toEqual([
+                { taskId: added[2].id, name: "c", deleted: true },
+                { taskId: added[0].id, name: "a", deleted: true },
+            ]);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["b"]);
+        });
+
+        it("should delete no task at all when one id in the batch is unknown", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const task = store.addTask(GOAL_ID, "Task");
+
+            const result = await callTool("delete_tasks", { taskIds: [task.id, "nope"] });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("nope");
+            expect(store.findTask(task.id)).not.toBeNull();
         });
     });
 

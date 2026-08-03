@@ -1454,4 +1454,161 @@ describe("ProjectStore", () => {
             expect(store.getVersion()).toBe(versionBefore);
         });
     });
+
+    describe("moveTasks", () => {
+        beforeEach(() => store.setGoal("Goal"));
+
+        it("should apply every move as one change, in the order supplied", () => {
+            const destination = store.addTask(GOAL_ID, "Destination");
+            const first = store.addTask(GOAL_ID, "First");
+            const second = store.addTask(GOAL_ID, "Second");
+            const versionBefore = store.getVersion();
+
+            const moved = store.moveTasks([
+                { taskId: second.id, newParentId: destination.id },
+                { taskId: first.id, newParentId: destination.id },
+            ]);
+
+            expect(moved.map((task) => task.name)).toEqual(["Second", "First"]);
+            expect(store.findTask(destination.id)!.plan!.tasksList.map((task) => task.name)).toEqual([
+                "Second",
+                "First",
+            ]);
+            expect(store.getVersion()).toBe(versionBefore + 1);
+        });
+
+        it("should land tasks in the destination in batch order, whatever their old order", () => {
+            const destination = store.addTask(GOAL_ID, "Destination");
+            const added = ["a", "b", "c"].map((name) => store.addTask(GOAL_ID, name));
+
+            store.moveTasks([
+                { taskId: added[2].id, newParentId: destination.id },
+                { taskId: added[0].id, newParentId: destination.id },
+                { taskId: added[1].id, newParentId: destination.id },
+            ]);
+
+            expect(store.findTask(destination.id)!.plan!.tasksList.map((task) => task.name)).toEqual(["c", "a", "b"]);
+        });
+
+        it("should count as a single change, so one undo puts every task back", () => {
+            const destination = store.addTask(GOAL_ID, "Destination");
+            const first = store.addTask(GOAL_ID, "First");
+            const second = store.addTask(GOAL_ID, "Second");
+
+            store.moveTasks([
+                { taskId: first.id, newParentId: destination.id },
+                { taskId: second.id, newParentId: destination.id },
+            ]);
+            store.undo();
+
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual([
+                "Destination",
+                "First",
+                "Second",
+            ]);
+        });
+
+        it("should roll the whole batch back when a later move fails", () => {
+            const destination = store.addTask(GOAL_ID, "Destination");
+            const moving = store.addTask(GOAL_ID, "Moving");
+            const versionBefore = store.getVersion();
+
+            expect(() =>
+                store.moveTasks([
+                    { taskId: moving.id, newParentId: destination.id },
+                    { taskId: "nope", newParentId: destination.id },
+                ]),
+            ).toThrow(TaskNotFoundError);
+
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["Destination", "Moving"]);
+            expect(store.findTask(destination.id)!.plan).toBeNull();
+            expect(store.getVersion()).toBe(versionBefore);
+        });
+
+        it("should judge each move against the tree the moves before it produced", () => {
+            const first = store.addTask(GOAL_ID, "First");
+            const second = store.addTask(GOAL_ID, "Second");
+
+            // The second move would put the branch inside itself, which only
+            // becomes true once the first move has happened.
+            expect(() =>
+                store.moveTasks([
+                    { taskId: first.id, newParentId: second.id },
+                    { taskId: second.id, newParentId: first.id },
+                ]),
+            ).toThrow(InvalidMoveError);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["First", "Second"]);
+        });
+
+        it("should leave the version alone when every move is already satisfied", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+            const versionBefore = store.getVersion();
+
+            store.moveTasks([{ taskId: task.id, newParentId: GOAL_ID }]);
+
+            expect(store.getVersion()).toBe(versionBefore);
+        });
+    });
+
+    describe("removeTasks", () => {
+        beforeEach(() => store.setGoal("Goal"));
+
+        it("should delete every task as one change, naming them in the order supplied", () => {
+            const added = ["a", "b", "c"].map((name) => store.addTask(GOAL_ID, name));
+            const versionBefore = store.getVersion();
+
+            const deleted = store.removeTasks([added[2].id, added[0].id]);
+
+            expect(deleted).toEqual([
+                { id: added[2].id, name: "c" },
+                { id: added[0].id, name: "a" },
+            ]);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["b"]);
+            expect(store.getVersion()).toBe(versionBefore + 1);
+        });
+
+        it("should count as a single change, so one undo puts every task back", () => {
+            const added = ["a", "b"].map((name) => store.addTask(GOAL_ID, name));
+
+            store.removeTasks(added.map((task) => task.id));
+            store.undo();
+
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["a", "b"]);
+        });
+
+        it("should delete a descendant along with its ancestor when the batch names both", () => {
+            const parent = store.addTask(GOAL_ID, "Parent");
+            const child = store.addTask(parent.id, "Child");
+
+            const deleted = store.removeTasks([parent.id, child.id]);
+
+            expect(deleted.map((task) => task.name)).toEqual(["Parent", "Child"]);
+            expect(store.getState().goal.plan!.tasksList).toHaveLength(0);
+        });
+
+        it("should drop dependencies referencing a deleted task", () => {
+            const doomed = store.addTask(GOAL_ID, "Doomed");
+            const staying = store.addTask(GOAL_ID, "Staying");
+            store.addDependency(doomed.id, staying.id);
+            store.addDependency(staying.id, GOAL_ID);
+
+            store.removeTasks([doomed.id]);
+
+            expect(store.getState().goal.plan!.dependenciesList).toEqual([{ source: staying.id, target: GOAL_ID }]);
+        });
+
+        it("should apply nothing when one id in the batch is unknown", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+
+            expect(() => store.removeTasks([task.id, "nope"])).toThrow(TaskNotFoundError);
+            expect(store.findTask(task.id)).not.toBeNull();
+        });
+
+        it("should refuse to delete the same task twice in one batch", () => {
+            const task = store.addTask(GOAL_ID, "Task");
+
+            expect(() => store.removeTasks([task.id, task.id])).toThrow(InvalidBatchError);
+            expect(store.findTask(task.id)).not.toBeNull();
+        });
+    });
 });

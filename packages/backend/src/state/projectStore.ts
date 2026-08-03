@@ -442,6 +442,51 @@ class ProjectStore {
      * the tree.
      */
     public moveTask(taskId: string, newParentId: string): Task {
+        const [task] = this.moveTasks([{ taskId, newParentId }]);
+        return task;
+    }
+
+    /**
+     * Moves several tasks in one mutation, or none of them.
+     *
+     * Moves apply in the order supplied, and a moved task joins the end of its
+     * destination plan, so the order of the batch is the order the tasks read
+     * in afterwards. Each move is checked against the tree as the moves before
+     * it have left it - two moves that are each fine alone can put a branch
+     * inside itself together - and a batch that fails part-way is rolled back
+     * whole, so the plan is left exactly as the caller saw it.
+     */
+    public moveTasks(moves: { taskId: string; newParentId: string }[]): Task[] {
+        if (moves.length === 0) {
+            return [];
+        }
+
+        this._saveSnapshot();
+        let changed = false;
+        try {
+            const moved = moves.map(({ taskId, newParentId }) => {
+                const result = this._applyMove(taskId, newParentId);
+                changed = changed || result.changed;
+                return result.task;
+            });
+            if (!changed) {
+                this._undoStack.pop();
+                return this._deepClone(moved);
+            }
+            this._bump();
+            return this._deepClone(moved);
+        } catch (error) {
+            const before = this._undoStack.pop()!;
+            this._goal = before.goal;
+            this._inbox = before.inbox;
+            throw error;
+        }
+    }
+
+    // Validates and applies one move against the tree as it currently stands.
+    // Reports whether anything moved: a task sent to the plan it is already in
+    // counts as satisfied without a write.
+    private _applyMove(taskId: string, newParentId: string): { task: Task; changed: boolean } {
         if (taskId === GOAL_ID) {
             throw new InvalidMoveError("The root goal cannot be moved");
         }
@@ -463,10 +508,9 @@ class ProjectStore {
 
         const container = this._findContainerOf(taskId)!;
         if (container.id === newParentId) {
-            return this._deepClone(task);
+            return { task, changed: false };
         }
 
-        this._saveSnapshot();
         container.plan.tasksList = container.plan.tasksList.filter((sibling) => sibling.id !== taskId);
         container.plan.dependenciesList = container.plan.dependenciesList.filter(
             (dependency) => dependency.source !== taskId && dependency.target !== taskId,
@@ -478,8 +522,7 @@ class ProjectStore {
         }
         newParent.plan.tasksList.push(task);
         newParent.completionState = newParent.plan.tasksList.every((child) => child.completionState);
-        this._bump();
-        return this._deepClone(task);
+        return { task, changed: true };
     }
 
     /** Whether candidateId is the task itself or sits somewhere beneath it. */
@@ -542,18 +585,51 @@ class ProjectStore {
     }
 
     public removeTask(taskId: string) {
-        const container = this._findContainerOf(taskId);
-        if (!container) {
-            throw new TaskNotFoundError(taskId);
+        this.removeTasks([taskId]);
+    }
+
+    /**
+     * Deletes several tasks in one mutation. Every id is resolved before
+     * anything is removed, so the batch lands whole or not at all, and the
+     * names come back in the order supplied. Deleting a task deletes its whole
+     * subplan, so a batch may name both a task and one of its descendants: the
+     * descendant goes with its ancestor.
+     */
+    public removeTasks(taskIds: string[]): { id: string; name: string }[] {
+        const seen = new Set<string>();
+        const doomed = taskIds.map((taskId) => {
+            const container = this._findContainerOf(taskId);
+            if (!container) {
+                throw new TaskNotFoundError(taskId);
+            }
+            if (seen.has(taskId)) {
+                throw new InvalidBatchError(`The same task is deleted twice in one batch: ${taskId}`);
+            }
+            seen.add(taskId);
+            const task = container.plan.tasksList.find((sibling) => sibling.id === taskId)!;
+            return { id: taskId, name: task.name };
+        });
+
+        if (taskIds.length === 0) {
+            return [];
         }
 
         this._saveSnapshot();
-        container.plan.tasksList = container.plan.tasksList.filter((task) => task.id !== taskId);
-        container.plan.dependenciesList = container.plan.dependenciesList.filter(
-            (dependency) => dependency.source !== taskId && dependency.target !== taskId,
-        );
-        container.completionState = container.plan.tasksList.every((task) => task.completionState);
+        for (const { id } of doomed) {
+            const container = this._findContainerOf(id);
+            if (!container) {
+                // Already deleted along with an ancestor named earlier in the
+                // batch, so there is nothing left to do for it.
+                continue;
+            }
+            container.plan.tasksList = container.plan.tasksList.filter((task) => task.id !== id);
+            container.plan.dependenciesList = container.plan.dependenciesList.filter(
+                (dependency) => dependency.source !== id && dependency.target !== id,
+            );
+            container.completionState = container.plan.tasksList.every((task) => task.completionState);
+        }
         this._bump();
+        return doomed;
     }
 
     public createSubplan(taskId: string) {
