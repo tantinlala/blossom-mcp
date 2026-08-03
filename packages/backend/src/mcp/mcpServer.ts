@@ -24,22 +24,25 @@ const TOOLS_SUMMARY =
     `add_dependency, add_dependencies, remove_dependency; add_inbox_idea, add_inbox_ideas, ` +
     `remove_inbox_idea, remove_inbox_ideas, promote_inbox_idea, promote_inbox_ideas; undo_last_change.`;
 
-// Two rules with the same root: an edge lives inside exactly one plan. The
-// containment rule says when a group of tasks is a subplan at all (single
-// entry, single exit), and the inheritance rule says what an edge between two
-// subgoals costs - which is where over-constrained roadmaps come from, so both
-// are spelled out.
+// One two-sided test decides nesting: plan size triggers the search for
+// structure, the entry/exit gate decides what qualifies, extraction rescues a
+// group that nearly qualifies, and a large plan with no qualifying group stays
+// flat. The inheritance rule then says what an edge between two subgoals
+// costs - which is where over-constrained roadmaps come from.
 const DEPENDENCY_GUIDANCE =
     `**Dependencies and subplans:** A dependency connects two siblings in the same plan, or feeds that ` +
-    `plan's goal. Default to a flat plan. Create a subplan only when a group has a single entry point ` +
-    `and a single exit point relative to the rest of the plan - when nothing outside it depends on ` +
-    `anything in its middle. If tasks outside need to reach inside, it isn't a subplan, it's a theme: ` +
-    `keep those tasks as siblings. An edge between two subgoal tasks asserts that every task inside ` +
-    `the target waits for every task inside the source, so before adding one, check each child of the ` +
-    `target: if any child could genuinely start earlier, the edge belongs on the specific children ` +
-    `that need it - or that child belongs at a different level. Prefer leaf-to-leaf edges over ` +
-    `subgoal-to-subgoal edges whenever only some of the target's children actually depend on the ` +
-    `source.`;
+    `plan's goal. Keep a plan flat until a level outgrows about ${MAX_TOP_LEVEL_TASKS} tasks - only ` +
+    `then look for groups to fold into subplans. A group qualifies only when it has a single entry ` +
+    `point and a single exit point relative to the rest of the plan: nothing outside it depends on ` +
+    `anything in its middle. When just one or two outside edges reach into a group's middle, move ` +
+    `those tasks out of the group and fold the rest - the self-contained core is the subplan. A group ` +
+    `with no such core is a theme, and themes stay flat, even in a large plan: a busy flat plan that ` +
+    `tells the truth about dependencies beats a tidy tree that hides them. An edge between two subgoal ` +
+    `tasks asserts that every task inside the target waits for every task inside the source, so before ` +
+    `adding one, check each child of the target: if any child could genuinely start earlier, the edge ` +
+    `belongs on the specific children that need it - or that child belongs at a different level. ` +
+    `Prefer leaf-to-leaf edges over subgoal-to-subgoal edges whenever only some of the target's ` +
+    `children actually depend on the source.`;
 
 // Framed as a falsifiable test: a get_next_tasks result only reveals an
 // over-constrained plan to a reader who predicted what should be in it.
@@ -84,11 +87,12 @@ const SERVER_INSTRUCTIONS =
     `**Phase 3: Plan Structuring.** When the user is ready to organize (or asks for a plan), turn agreed ` +
     `ideas into tasks (promote_inbox_idea or add_task), each with a short imperative name and a ` +
     `description that captures the specifics from the conversation. If a plan level grows beyond about ` +
-    `${MAX_TOP_LEVEL_TASKS} tasks, group related tasks into subgoals: create a task per subgoal with a ` +
-    `subplan (add_task with withSubplan: true), and add the related tasks inside it via add_task with ` +
-    `parentId. Then add dependencies with add_dependency or add_dependencies - within each subplan and ` +
-    `at the top level - so the roadmap forms a directed acyclic graph; use "${GOAL_ID}" as the target ` +
-    `for tasks that feed the goal directly.\n\n` +
+    `${MAX_TOP_LEVEL_TASKS} tasks, look for self-contained chains - single entry, single exit - and ` +
+    `fold each into a subgoal task with a subplan (add_task with withSubplan: true), adding the related ` +
+    `tasks inside it via add_task with parentId; groups that fail that test stay flat. Then add ` +
+    `dependencies with add_dependency or add_dependencies - within each subplan and at the top level - ` +
+    `so the roadmap forms a directed acyclic graph; use "${GOAL_ID}" as the target for tasks that feed ` +
+    `the goal directly.\n\n` +
     `${DEPENDENCY_GUIDANCE}\n\n` +
     `${VERIFICATION_GUIDANCE}\n\n` +
     `${NAMING_GUIDANCE}\n\n` +
@@ -200,8 +204,9 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                             `agreed inbox ideas into tasks with promote_inbox_ideas, giving each its final ` +
                             `name - one imperative action of at most ${MAX_NAME_CHARS} characters - and a ` +
                             `description capturing conversation specifics; (2) if a plan level has more than ` +
-                            `about ${MAX_TOP_LEVEL_TASKS} tasks, group related tasks into subgoal tasks with ` +
-                            `subplans (add_task with withSubplan: true); (3) add dependencies within each ` +
+                            `about ${MAX_TOP_LEVEL_TASKS} tasks, fold self-contained chains (single entry, ` +
+                            `single exit) into subgoal tasks with subplans (add_task with withSubplan: true), ` +
+                            `leaving groups that fail that test flat; (3) add dependencies within each ` +
                             `subplan and at the top level so the roadmap forms a DAG, using "${GOAL_ID}" as ` +
                             `the target for tasks feeding the goal directly and putting edges on the specific ` +
                             `children that need them when only some of a subgoal's children depend on a ` +

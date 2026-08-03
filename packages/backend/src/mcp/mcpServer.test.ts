@@ -131,15 +131,16 @@ describe("mcpServer", () => {
         expect(instructions).toContain("leaf-to-leaf");
     });
 
-    it("should say when a group of tasks is a subplan at all, and to default to flat", async () => {
+    it("should gate subplans on the entry/exit test and size-trigger the search", async () => {
         await connect();
 
         const instructions = client.getInstructions();
 
         expect(instructions).toContain("connects two siblings in the same plan");
-        expect(instructions).toContain("Default to a flat plan");
+        expect(instructions).toContain("outgrows about 8 tasks");
         expect(instructions).toContain("single entry point and a single exit point");
-        expect(instructions).toContain("it isn't a subplan, it's a theme");
+        expect(instructions).toContain("move those tasks out of the group");
+        expect(instructions).toContain("themes stay flat");
     });
 
     it("should frame verification as predicting get_next_tasks over the whole tree", async () => {
