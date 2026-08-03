@@ -87,6 +87,7 @@ External chat applications connect over Streamable HTTP. Tools mirror the REST s
 | `add_inbox_idea`      | `text`                                            | `{ ideaId, text, duplicate }`                         |
 | `add_inbox_ideas`     | `texts[]`                                         | `{ ideas: [{ ideaId, text, duplicate }] }`            |
 | `remove_inbox_idea`   | `ideaId?, index?`                                 | `{ ideaId, text, removed }`                           |
+| `remove_inbox_ideas`  | `ideaIds[]`                                       | `{ ideas: [{ ideaId, text, removed }] }`              |
 | `promote_inbox_idea`  | `ideaId?, index?, parentId?, name?, description?` | `{ taskId, name, parentId }`                          |
 | `promote_inbox_ideas` | `promotions[]`                                    | `{ tasks: [{ taskId, name, parentId }] }`             |
 | `undo_last_change`    | —                                                 | `{ undone, reason? }`                                 |
@@ -101,13 +102,15 @@ Project management — listing, saving, opening, creating, and deleting projects
 
 ### Batches
 
-`add_tasks`, `add_dependencies`, `add_inbox_ideas` and `promote_inbox_ideas` each apply as **one** change: one store mutation, one broadcast, one undo step. Every reference is resolved and every name checked before anything is written, so a batch either lands whole or not at all, and the result array is in the order supplied.
+`add_tasks`, `add_dependencies`, `add_inbox_ideas`, `remove_inbox_ideas` and `promote_inbox_ideas` each apply as **one** change: one store mutation, one broadcast, one undo step. Every reference is resolved and every name checked before anything is written, so a batch either lands whole or not at all, and the result array is in the order supplied.
 
 `add_dependencies` validates cycles across the whole batch at once, since two edges that are each fine alone can close a loop together. A rejected batch names the offending edge and the path it closes — `"Post flyers" -> "Draft copy" would create a cycle: Draft copy -> Print flyers -> Post flyers -> Draft copy` — and applies none of it.
 
 ### Dependency targets
 
 A dependency's target is a sibling of the source, `"Goal"`, or the id of the task that owns the plan the edge lives in. The last two mean the same thing — this edge feeds the plan's goal — and both store as the `"Goal"` sentinel. The response echoes `targetId` exactly as the caller addressed it, with `targetName` naming the task that end resolved to, so a caller can both match the echo against the call it made and tell which goal a goal-feeding edge reached.
+
+An edge lives inside exactly one plan: a subplan is a chain of work that is complete in itself, and ordering against anything outside it belongs on the subgoal task that holds it. An edge whose ends sit in different plans is refused with **both ends named and located** — `"Check restaurant dress codes" -> "Pack from the itinerary" crosses plans: the source is in the subplan of "Stage C" and the target is in the subplan of "Stage D"` — and the refusal says where the edge belongs: between the tasks whose subplans hold the ends, or between siblings after restructuring. A target id matching no task at all is a separate error that names the source and quotes the unknown id, so in a large batch the message alone identifies the offending edge.
 
 ### Name rules
 
@@ -124,7 +127,7 @@ The server sends **instructions** in the MCP initialize response (clients like C
 
 The inbox is offered as a review step: park candidates there when the user should look them over first, and go straight to `add_task` when the user has already agreed the scope or handed over a specification.
 
-A **dependencies-between-subgoals** paragraph spells out edge inheritance — an edge between two subgoal tasks makes every task inside the target wait for every task inside the source — and steers coarse edges onto the specific children that need them, preferring leaf-to-leaf edges when only some children depend on the source. A **verification** paragraph frames the final check as a falsifiable test: review the whole tree with one `get_project_state` call, predict which tasks the user could genuinely start today, and treat anything missing from `get_next_tasks` as an over-constrained edge to find and narrow.
+A **dependencies-and-subplans** paragraph states the containment rule — default to a flat plan, and create a subplan only when a group has a single entry point and a single exit point relative to the rest of the plan; if tasks outside need to reach inside, it isn't a subplan, it's a theme — and spells out edge inheritance: an edge between two subgoal tasks makes every task inside the target wait for every task inside the source. It steers coarse edges onto the specific children that need them, preferring leaf-to-leaf edges when only some children depend on the source. A **verification** paragraph frames the final check as a falsifiable test: review the whole tree with one `get_project_state` call, predict which tasks the user could genuinely start today, and treat anything missing from `get_next_tasks` as an over-constrained edge to find and narrow.
 
 A short **naming** paragraph says what a good name looks like — one short imperative action of at most 40 characters, with the specifics, measures, deadlines and rationale in the `description` field the UI shows in the details drawer. The mechanically checkable part of that lives in the tools (see above), so the paragraph stays brief. The same guidance appears in the `generate-plan` prompt and in the `name` parameter descriptions.
 

@@ -23,6 +23,7 @@ const EXPECTED_TOOLS = [
     "add_inbox_idea",
     "add_inbox_ideas",
     "remove_inbox_idea",
+    "remove_inbox_ideas",
     "promote_inbox_idea",
     "promote_inbox_ideas",
     "undo_last_change",
@@ -123,9 +124,20 @@ describe("mcpServer", () => {
 
         const instructions = client.getInstructions();
 
-        expect(instructions).toContain("**Dependencies between subgoals:**");
+        expect(instructions).toContain("**Dependencies and subplans:**");
         expect(instructions).toContain("every task inside the target waits for every task inside the source");
         expect(instructions).toContain("leaf-to-leaf");
+    });
+
+    it("should say when a group of tasks is a subplan at all, and to default to flat", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("connects two siblings in the same plan");
+        expect(instructions).toContain("Default to a flat plan");
+        expect(instructions).toContain("single entry point and a single exit point");
+        expect(instructions).toContain("it isn't a subplan, it's a theme");
     });
 
     it("should frame verification as predicting get_next_tasks over the whole tree", async () => {
@@ -400,6 +412,25 @@ describe("mcpServer", () => {
 
             expect(result.isError).toBe(true);
         });
+
+        it("should name both ends and their plans when an edge crosses plans", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const stageC = store.addTask(GOAL_ID, "Stage C", undefined, true);
+            const stageD = store.addTask(GOAL_ID, "Stage D", undefined, true);
+            const dressCodes = store.addTask(stageC.id, "Check restaurant dress codes");
+            const pack = store.addTask(stageD.id, "Pack from the itinerary");
+
+            const result = await callTool("add_dependency", { sourceId: dressCodes.id, targetId: pack.id });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain(
+                '"Check restaurant dress codes" -> "Pack from the itinerary" crosses plans',
+            );
+            expect(result.content[0].text).toContain('the source is in the subplan of "Stage C"');
+            expect(result.content[0].text).toContain('the target is in the subplan of "Stage D"');
+            expect(result.content[0].text).toContain("add the edge between the tasks whose subplans hold them");
+        });
     });
 
     describe("inbox tools", () => {
@@ -465,6 +496,30 @@ describe("mcpServer", () => {
 
             expect(result.text).toBe("first");
             expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["second"]);
+        });
+
+        it("should remove several ideas at once, saying which each was", async () => {
+            await connect();
+            const added = ["a", "b", "c"].map((text) => store.addIdea(text));
+
+            const result = parseResult(await callTool("remove_inbox_ideas", { ideaIds: [added[2].id, added[0].id] }));
+
+            expect(result.ideas).toEqual([
+                { ideaId: added[2].id, text: "c", removed: true },
+                { ideaId: added[0].id, text: "a", removed: true },
+            ]);
+            expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["b"]);
+        });
+
+        it("should remove no idea at all when one id in the batch is unknown", async () => {
+            await connect();
+            const idea = store.addIdea("keep me");
+
+            const result = await callTool("remove_inbox_ideas", { ideaIds: [idea.id, "gone"] });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("gone");
+            expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["keep me"]);
         });
 
         it("should add several ideas at once, keeping the order supplied", async () => {
@@ -609,7 +664,7 @@ describe("mcpServer", () => {
             const parent = store.addTask(GOAL_ID, "Run the launch");
             store.createSubplan(parent.id);
             store.addDependency(first.id, second.id);
-            const ideas = ["a", "b", "c"].map((text) => store.addIdea(text));
+            const ideas = ["a", "b", "c", "d"].map((text) => store.addIdea(text));
 
             const args: Record<string, Record<string, unknown>> = {
                 set_goal: { name: "Ship it" },
@@ -626,6 +681,7 @@ describe("mcpServer", () => {
                 add_inbox_idea: { text: "something new" },
                 add_inbox_ideas: { texts: ["something else new"] },
                 remove_inbox_idea: { ideaId: ideas[0].id },
+                remove_inbox_ideas: { ideaIds: [ideas[3].id] },
                 promote_inbox_idea: { ideaId: ideas[1].id },
                 promote_inbox_ideas: { promotions: [{ ideaId: ideas[2].id }] },
                 undo_last_change: {},

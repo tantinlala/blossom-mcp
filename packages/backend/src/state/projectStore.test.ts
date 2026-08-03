@@ -476,6 +476,33 @@ describe("ProjectStore", () => {
                 expect(() => store.addDependency(task2.id, "unknown")).toThrow(InvalidDependencyError);
             });
 
+            it("should name both ends and their plans when an edge crosses plans", () => {
+                const child = store.addTask(task1.id, "Child");
+
+                expect(() => store.addDependency(task2.id, child.id)).toThrow(
+                    '"Task 2" -> "Child" crosses plans: the source is in the top-level plan and the ' +
+                        'target is in the subplan of "Task 1"',
+                );
+                expect(() => store.addDependency(child.id, task2.id)).toThrow(
+                    '"Child" -> "Task 2" crosses plans: the source is in the subplan of "Task 1" and the ' +
+                        "target is in the top-level plan",
+                );
+            });
+
+            it("should say a crossing edge belongs between the tasks whose subplans hold the ends", () => {
+                const child = store.addTask(task1.id, "Child");
+
+                expect(() => store.addDependency(task2.id, child.id)).toThrow(
+                    /add the edge between the tasks whose subplans hold them/,
+                );
+            });
+
+            it("should name the source when the target id matches no task at all", () => {
+                expect(() => store.addDependency(task1.id, "unknown")).toThrow(
+                    /Target of "Task 1" \(.*\).*no task has the id unknown/,
+                );
+            });
+
             it("should throw InvalidDependencyError when the dependency would create a cycle", () => {
                 store.addDependency(task1.id, task2.id);
                 store.addDependency(task2.id, task3.id);
@@ -1228,6 +1255,42 @@ describe("ProjectStore", () => {
             const idea = store.addIdea("a");
 
             expect(() => store.promoteIdeas([{ ideaId: idea.id }, { ideaId: idea.id }])).toThrow(InvalidBatchError);
+            expect(inboxTexts(store)).toEqual(["a"]);
+        });
+    });
+
+    describe("removeIdeas", () => {
+        it("should remove every idea as one change, returning them in the order supplied", () => {
+            const added = ["a", "b", "c"].map((text) => store.addIdea(text));
+            const versionBefore = store.getVersion();
+
+            const removed = store.removeIdeas([added[2].id, added[0].id]);
+
+            expect(removed.map((idea) => idea.text)).toEqual(["c", "a"]);
+            expect(inboxTexts(store)).toEqual(["b"]);
+            expect(store.getVersion()).toBe(versionBefore + 1);
+        });
+
+        it("should count as a single change, so one undo puts every idea back", () => {
+            const added = ["b", "a"].map((text) => store.addIdea(text));
+
+            store.removeIdeas(added.map((idea) => idea.id));
+            store.undo();
+
+            expect(inboxTexts(store)).toEqual(["a", "b"]);
+        });
+
+        it("should apply nothing when one id in the batch is unknown", () => {
+            const idea = store.addIdea("a");
+
+            expect(() => store.removeIdeas([idea.id, "gone"])).toThrow(IdeaNotFoundError);
+            expect(inboxTexts(store)).toEqual(["a"]);
+        });
+
+        it("should refuse to remove the same idea twice in one batch", () => {
+            const idea = store.addIdea("a");
+
+            expect(() => store.removeIdeas([idea.id, idea.id])).toThrow(InvalidBatchError);
             expect(inboxTexts(store)).toEqual(["a"]);
         });
     });

@@ -655,8 +655,23 @@ class ProjectStore {
         const feedsPlanGoal = targetId === GOAL_ID || targetId === container.id;
         const target = feedsPlanGoal ? null : container.plan.tasksList.find((task) => task.id === targetId);
         if (!feedsPlanGoal && !target) {
+            // The refusal names both ends and where each lives - a bare id
+            // appears in several edges of a batch, so an id alone does not say
+            // which edge is the bad one, or what to do about it.
+            const targetContainer = this._findContainerOf(targetId);
+            if (targetContainer) {
+                const stranger = targetContainer.plan.tasksList.find((task) => task.id === targetId)!;
+                throw new InvalidDependencyError(
+                    `"${source.name}" -> "${stranger.name}" crosses plans: the source is in ` +
+                        `${this._planLabel(container)} and the target is in ${this._planLabel(targetContainer)}. ` +
+                        `A dependency connects siblings in one plan, and a subplan holds a chain of work that ` +
+                        `is complete in itself - so either add the edge between the tasks whose subplans hold ` +
+                        `them, or move a task so both ends are siblings.`,
+                );
+            }
             throw new InvalidDependencyError(
-                `Target must be a sibling of the source, this plan's own task id, or "${GOAL_ID}": ${targetId}`,
+                `Target of "${source.name}" (${sourceId}) must be one of its siblings, the plan's own task ` +
+                    `id, or "${GOAL_ID}": no task has the id ${targetId}`,
             );
         }
 
@@ -668,6 +683,15 @@ class ProjectStore {
             storedTarget: feedsPlanGoal ? GOAL_ID : targetId,
             targetName: feedsPlanGoal ? container.name : target!.name,
         };
+    }
+
+    // How a plan is referred to in an error message: by the task that owns it,
+    // or as the top level when that task is the root goal.
+    private _planLabel(container: Task): string {
+        if (container.id === GOAL_ID) {
+            return "the top-level plan";
+        }
+        return `the subplan of "${container.name}"`;
     }
 
     // What to call one end of an edge when reporting on it. The sentinel stands
@@ -815,6 +839,38 @@ class ProjectStore {
         this._assertIdeaText(index, expectedText);
         this._saveSnapshot();
         const [removed] = this._inbox.splice(index, 1);
+        this._bump();
+        return removed;
+    }
+
+    /**
+     * Removes several ideas in one mutation. Every id is resolved before
+     * anything is removed, so the batch reads the inbox exactly as the caller
+     * saw it and either lands whole or not at all. Results come back in the
+     * order supplied.
+     */
+    public removeIdeas(ideaIds: string[]): InboxIdea[] {
+        const seen = new Set<string>();
+        for (const ideaId of ideaIds) {
+            if (!this._inbox.some((idea) => idea.id === ideaId)) {
+                throw new IdeaNotFoundError(ideaId);
+            }
+            if (seen.has(ideaId)) {
+                throw new InvalidBatchError(`The same inbox idea is removed twice in one batch: ${ideaId}`);
+            }
+            seen.add(ideaId);
+        }
+
+        if (ideaIds.length === 0) {
+            return [];
+        }
+
+        this._saveSnapshot();
+        const removed = ideaIds.map((ideaId) => {
+            const index = this._inbox.findIndex((idea) => idea.id === ideaId);
+            const [idea] = this._inbox.splice(index, 1);
+            return idea;
+        });
         this._bump();
         return removed;
     }

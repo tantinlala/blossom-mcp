@@ -21,17 +21,24 @@ const TOOLS_SUMMARY =
     `plan level), and get_next_tasks (what is currently actionable). Write with set_goal; add_task, ` +
     `add_tasks, update_task, move_task, set_task_completion, delete_task, create_subplan; ` +
     `add_dependency, add_dependencies, remove_dependency; add_inbox_idea, add_inbox_ideas, ` +
-    `remove_inbox_idea, promote_inbox_idea, promote_inbox_ideas; undo_last_change.`;
+    `remove_inbox_idea, remove_inbox_ideas, promote_inbox_idea, promote_inbox_ideas; undo_last_change.`;
 
-// A dependency on a subgoal constrains everything inside it, which is where
-// over-constrained roadmaps come from, so the inheritance is spelled out.
+// Two rules with the same root: an edge lives inside exactly one plan. The
+// containment rule says when a group of tasks is a subplan at all (single
+// entry, single exit), and the inheritance rule says what an edge between two
+// subgoals costs - which is where over-constrained roadmaps come from, so both
+// are spelled out.
 const DEPENDENCY_GUIDANCE =
-    `**Dependencies between subgoals:** A dependency between two subgoal tasks asserts that every task ` +
-    `inside the target waits for every task inside the source. Before adding an edge between two ` +
-    `subgoals, check each child of the target: if any child could genuinely start earlier, the edge ` +
-    `belongs on the specific children that need it - or that child belongs at a different level. Prefer ` +
-    `leaf-to-leaf edges over subgoal-to-subgoal edges whenever only some of the target's children ` +
-    `actually depend on the source.`;
+    `**Dependencies and subplans:** A dependency connects two siblings in the same plan, or feeds that ` +
+    `plan's goal. Default to a flat plan. Create a subplan only when a group has a single entry point ` +
+    `and a single exit point relative to the rest of the plan - when nothing outside it depends on ` +
+    `anything in its middle. If tasks outside need to reach inside, it isn't a subplan, it's a theme: ` +
+    `keep those tasks as siblings. An edge between two subgoal tasks asserts that every task inside ` +
+    `the target waits for every task inside the source, so before adding one, check each child of the ` +
+    `target: if any child could genuinely start earlier, the edge belongs on the specific children ` +
+    `that need it - or that child belongs at a different level. Prefer leaf-to-leaf edges over ` +
+    `subgoal-to-subgoal edges whenever only some of the target's children actually depend on the ` +
+    `source.`;
 
 // Framed as a falsifiable test: a get_next_tasks result only reveals an
 // over-constrained plan to a reader who predicted what should be in it.
@@ -525,9 +532,11 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             description:
                 `Add a dependency: the source task must finish before the target can start. Source and target ` +
                 `must be siblings in the same plan; the target may instead be "${GOAL_ID}", or the id of the ` +
-                `task that owns the plan, to feed that plan's goal. Cycles are rejected. Returns the ids as ` +
-                `you addressed them with both ends named, so you can check the edge that landed is the edge ` +
-                `you meant; targetName names the task a goal-feeding edge resolved to.`,
+                `task that owns the plan, to feed that plan's goal. An edge whose ends sit in different plans ` +
+                `is refused with both ends named - the edge belongs between the subgoal tasks whose subplans ` +
+                `hold them. Cycles are rejected. Returns the ids as you addressed them with both ends named, ` +
+                `so you can check the edge that landed is the edge you meant; targetName names the task a ` +
+                `goal-feeding edge resolved to.`,
             inputSchema: {
                 sourceId: z.string(),
                 targetId: z
@@ -691,6 +700,32 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                     ideaId: removed.id,
                     text: removed.text,
                     removed: true,
+                    version: store.getVersion(),
+                });
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "remove_inbox_ideas",
+        {
+            description:
+                "Remove several inbox ideas in one call and one change. Every id is resolved before " +
+                "anything is removed, so the batch lands whole or not at all. The returned ideas are in " +
+                "the order supplied, so you can confirm each removal was the idea you meant.",
+            inputSchema: {
+                ideaIds: z
+                    .array(z.string())
+                    .describe("Ids of the ideas to remove, as returned by add_inbox_idea and get_project_state"),
+            },
+        },
+        async ({ ideaIds }) => {
+            try {
+                const removed = asMcp(() => store.removeIdeas(ideaIds));
+                return textResult({
+                    ideas: removed.map((idea) => ({ ideaId: idea.id, text: idea.text, removed: true })),
                     version: store.getVersion(),
                 });
             } catch (error) {
