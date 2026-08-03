@@ -107,6 +107,37 @@ describe("mcpServer", () => {
         expect(instructions).toContain("echoes back what it changed");
     });
 
+    it("should list every tool in the instructions", async () => {
+        await connect();
+
+        const instructions = client.getInstructions()!;
+
+        expect(instructions).toContain("**Tools:**");
+        for (const toolName of EXPECTED_TOOLS) {
+            expect(instructions).toContain(toolName);
+        }
+    });
+
+    it("should explain that a dependency between subgoals constrains everything inside them", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("**Dependencies between subgoals:**");
+        expect(instructions).toContain("every task inside the target waits for every task inside the source");
+        expect(instructions).toContain("leaf-to-leaf");
+    });
+
+    it("should frame verification as predicting get_next_tasks over the whole tree", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("**Verifying the plan:**");
+        expect(instructions).toContain("single get_project_state call");
+        expect(instructions).toContain("missing from the result is over-constrained");
+    });
+
     it("should describe the name/description split on the mutating tools", async () => {
         await connect();
 
@@ -143,13 +174,27 @@ describe("mcpServer", () => {
         expect(promptNames).toEqual(["generate-plan", "plan-project"]);
 
         const planProject = await client.getPrompt({ name: "plan-project" });
-        expect((planProject.messages[0].content as any).text).toContain("Phase 1: Goal Clarification");
-
-        expect((planProject.messages[0].content as any).text).toContain("**Naming:**");
+        const planProjectText = (planProject.messages[0].content as any).text;
+        expect(planProjectText).toContain("get_project_state");
+        expect(planProjectText).toContain("clarifying question");
 
         const generatePlan = await client.getPrompt({ name: "generate-plan" });
-        expect((generatePlan.messages[0].content as any).text).toContain("get_roadmap");
-        expect((generatePlan.messages[0].content as any).text).toContain("**Naming:**");
+        const generatePlanText = (generatePlan.messages[0].content as any).text;
+        expect(generatePlanText).toContain("get_project_state");
+        expect(generatePlanText).toContain("get_next_tasks");
+        expect(generatePlanText).toContain("withSubplan");
+    });
+
+    it("should keep each prompt to a condensed statement of the workflow", async () => {
+        await connect();
+
+        const planProject = await client.getPrompt({ name: "plan-project" });
+        const generatePlan = await client.getPrompt({ name: "generate-plan" });
+
+        // The full workflow rides in on the server instructions; a prompt is a
+        // kickoff message, so each stays within a few sentences.
+        expect((planProject.messages[0].content as any).text.length).toBeLessThan(700);
+        expect((generatePlan.messages[0].content as any).text.length).toBeLessThan(1100);
     });
 
     describe("get_project_state", () => {
@@ -257,6 +302,34 @@ describe("mcpServer", () => {
             const result = await callTool("add_task", { name: "Task", parentId: "unknown" });
 
             expect(result.isError).toBe(true);
+        });
+
+        it("should create a subgoal task and its subplan in one call", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = parseResult(await callTool("add_task", { name: "Run the launch", withSubplan: true }));
+
+            expect(result.hasSubplan).toBe(true);
+            expect(store.findTask(result.taskId)!.plan).toEqual({ tasksList: [], dependenciesList: [] });
+
+            const child = parseResult(await callTool("add_task", { name: "Draft copy", parentId: result.taskId }));
+            expect(child.hasSubplan).toBe(false);
+            expect(store.findTask(result.taskId)!.plan!.tasksList.map((task: Task) => task.id)).toEqual([child.taskId]);
+        });
+
+        it("should create subplans for the drafts marked withSubplan in a batch", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = parseResult(
+                await callTool("add_tasks", {
+                    tasks: [{ name: "Run the launch", withSubplan: true }, { name: "Draft copy" }],
+                }),
+            );
+
+            expect(result.tasks.map((task: any) => task.hasSubplan)).toEqual([true, false]);
+            expect(store.findTask(result.tasks[0].taskId)!.plan).toEqual({ tasksList: [], dependenciesList: [] });
         });
     });
 
@@ -586,7 +659,7 @@ describe("mcpServer", () => {
             expect(goalward.targetName).toBe("Ship it");
         });
 
-        it("should resolve a subplan's own task id to that plan's goal and say so", async () => {
+        it("should echo the target id as addressed when it names the plan's own task", async () => {
             await connect();
             store.setGoal("Ship it");
             const parent = store.addTask(GOAL_ID, "Run the launch");
@@ -597,10 +670,12 @@ describe("mcpServer", () => {
             expect(result).toEqual({
                 sourceId: child.id,
                 sourceName: "Draft copy",
-                targetId: GOAL_ID,
+                targetId: parent.id,
                 targetName: "Run the launch",
                 version: expect.any(Number),
             });
+            // The edge itself stores as the plan's goal sentinel.
+            expect(store.findTask(parent.id)!.plan!.dependenciesList).toEqual([{ source: child.id, target: GOAL_ID }]);
         });
     });
 
@@ -621,9 +696,9 @@ describe("mcpServer", () => {
             );
 
             expect(result.tasks).toEqual([
-                { taskId: expect.any(String), name: "Draft copy", parentId: GOAL_ID },
-                { taskId: expect.any(String), name: "Print flyers", parentId: parent.id },
-                { taskId: expect.any(String), name: "Post flyers", parentId: GOAL_ID },
+                { taskId: expect.any(String), name: "Draft copy", parentId: GOAL_ID, hasSubplan: false },
+                { taskId: expect.any(String), name: "Print flyers", parentId: parent.id, hasSubplan: false },
+                { taskId: expect.any(String), name: "Post flyers", parentId: GOAL_ID, hasSubplan: false },
             ]);
             expect(store.findTask(result.tasks[1].taskId)!.description).toBe("150gsm");
         });
@@ -747,6 +822,51 @@ describe("mcpServer", () => {
 
             expect(result.warnings).toEqual([expect.stringContaining("two tasks")]);
             expect(store.findTask(result.taskId)!.name).toBe("Book venue and print flyers");
+        });
+
+        it("should let a subgoal's name span several things without a warning", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const container = parseResult(
+                await callTool("add_task", { name: "Lock dates and budget", withSubplan: true }),
+            );
+            const batch = parseResult(
+                await callTool("add_tasks", {
+                    tasks: [
+                        { name: "Cover home and work", withSubplan: true },
+                        { name: "Book venue and print flyers" },
+                    ],
+                }),
+            );
+
+            expect(container.warnings).toBeUndefined();
+            expect(batch.warnings).toEqual([expect.stringContaining("two tasks")]);
+        });
+
+        it("should let the goal's name span several things without a warning", async () => {
+            await connect();
+
+            const result = parseResult(await callTool("set_goal", { name: "Lock dates and budget" }));
+
+            expect(result.warnings).toBeUndefined();
+        });
+
+        it("should read an updated name against whether the task holds a subplan", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const subgoal = store.addTask(GOAL_ID, "Container", undefined, true);
+            const leaf = store.addTask(GOAL_ID, "Leaf task");
+
+            const subgoalResult = parseResult(
+                await callTool("update_task", { taskId: subgoal.id, name: "Cover home and work" }),
+            );
+            const leafResult = parseResult(
+                await callTool("update_task", { taskId: leaf.id, name: "Book venue and print flyers" }),
+            );
+
+            expect(subgoalResult.warnings).toBeUndefined();
+            expect(leafResult.warnings).toEqual([expect.stringContaining("two tasks")]);
         });
 
         it("should warn about a question and about a bare single word", async () => {

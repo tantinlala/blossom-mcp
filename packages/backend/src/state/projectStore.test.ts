@@ -142,6 +142,13 @@ describe("ProjectStore", () => {
             expect(store.findTask(parent.id)!.completionState).toBe(false);
         });
 
+        it("should create the task with an empty subplan when asked to", () => {
+            const task = store.addTask(GOAL_ID, "Run the launch", undefined, true);
+
+            expect(task.plan).toEqual({ tasksList: [], dependenciesList: [] });
+            expect(store.findTask(task.id)!.plan).toEqual({ tasksList: [], dependenciesList: [] });
+        });
+
         it("should throw TaskNotFoundError for an unknown parent", () => {
             expect(() => store.addTask("unknown", "Task")).toThrow(TaskNotFoundError);
         });
@@ -1244,6 +1251,14 @@ describe("ProjectStore", () => {
             expect(store.getVersion()).toBe(versionBefore + 1);
         });
 
+        it("should give each task marked withSubplan an empty subplan", () => {
+            const added = store.addTasks([{ name: "Run the launch", withSubplan: true }, { name: "Draft copy" }]);
+
+            expect(added[0].plan).toEqual({ tasksList: [], dependenciesList: [] });
+            expect(added[1].plan).toBeNull();
+            expect(store.findTask(added[0].id)!.plan).toEqual({ tasksList: [], dependenciesList: [] });
+        });
+
         it("should apply nothing when one parent is unknown", () => {
             expect(() => store.addTasks([{ name: "One" }, { name: "Two", parentId: "nope" }])).toThrow(
                 TaskNotFoundError,
@@ -1294,7 +1309,7 @@ describe("ProjectStore", () => {
             expect(edge).toEqual({
                 sourceId: child.id,
                 sourceName: "Draft copy",
-                targetId: GOAL_ID,
+                targetId: parent.id,
                 targetName: "Run the launch",
             });
             expect(store.findTask(parent.id)!.plan!.dependenciesList).toEqual([{ source: child.id, target: GOAL_ID }]);

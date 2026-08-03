@@ -33,15 +33,18 @@ interface UndoSnapshot {
 type IdeaRef = number | { ideaId?: string; index?: number };
 
 /** A task to add, as supplied to the batch form. */
-type TaskDraft = { parentId?: string; name: string; description?: string };
+type TaskDraft = { parentId?: string; name: string; description?: string; withSubplan?: boolean };
 
 /** An idea to promote, as supplied to the batch form. */
 type PromotionDraft = { ideaId?: string; index?: number; parentId?: string; name?: string; description?: string };
 
 /**
- * A dependency as it was stored, with both ends named. Callers get this back so
- * they can check the edge that landed is the edge they meant - the ids alone
- * are opaque, and a target may have been resolved to the plan's goal.
+ * A dependency with both ends named. Callers get this back so they can check
+ * the edge that landed is the edge they meant - the ids alone are opaque.
+ * `targetId` is the target exactly as the caller addressed it; `targetName`
+ * names the task that end resolved to, so a target addressed as the plan's own
+ * task or as the goal sentinel comes back under the name of the task whose
+ * goal the edge feeds.
  */
 type ResolvedDependency = { sourceId: string; sourceName: string; targetId: string; targetName: string };
 
@@ -375,7 +378,7 @@ class ProjectStore {
         this._bump();
     }
 
-    public addTask(parentId: string, name: string, description?: string): Task {
+    public addTask(parentId: string, name: string, description?: string, withSubplan?: boolean): Task {
         const parent = this.findTask(parentId);
         if (!parent) {
             throw new TaskNotFoundError(parentId);
@@ -385,7 +388,7 @@ class ProjectStore {
         if (!parent.plan) {
             parent.plan = { tasksList: [], dependenciesList: [] };
         }
-        const newTask = this._append(parent, name, description);
+        const newTask = this._append(parent, name, description, withSubplan);
         this._bump();
         return this._deepClone(newTask);
     }
@@ -409,16 +412,19 @@ class ProjectStore {
         }
 
         this._saveSnapshot();
-        const added = drafts.map((draft, position) => this._append(parents[position], draft.name, draft.description));
+        const added = drafts.map((draft, position) =>
+            this._append(parents[position], draft.name, draft.description, draft.withSubplan),
+        );
         this._bump();
         return this._deepClone(added);
     }
 
-    private _append(parent: Task, name: string, description?: string): Task {
+    private _append(parent: Task, name: string, description?: string, withSubplan?: boolean): Task {
         if (!parent.plan) {
             parent.plan = { tasksList: [], dependenciesList: [] };
         }
-        const newTask: Task = { name, id: uuidv4(), completionState: false, plan: null };
+        const plan: Plan | null = withSubplan ? { tasksList: [], dependenciesList: [] } : null;
+        const newTask: Task = { name, id: uuidv4(), completionState: false, plan };
         if (description !== undefined) {
             newTask.description = description;
         }
@@ -609,10 +615,10 @@ class ProjectStore {
             edge.container.plan.dependenciesList.push({ source: edge.sourceId, target: edge.storedTarget });
         }
         this._bump();
-        return resolved.map(({ sourceId, sourceName, storedTarget, targetName }) => ({
+        return resolved.map(({ sourceId, sourceName, targetId, targetName }) => ({
             sourceId,
             sourceName,
-            targetId: storedTarget,
+            targetId,
             targetName,
         }));
     }
@@ -622,13 +628,20 @@ class ProjectStore {
      *
      * A target naming the task that owns the plan means the same thing as the
      * goal sentinel - both say "this feeds the plan's goal" - so both store as
-     * the sentinel, and the resolved end is reported back under the name of
-     * whatever it landed on.
+     * the sentinel. The reported edge keeps the target id the caller passed,
+     * named after the task whose goal it feeds.
      */
     private _resolveEdge(
         sourceId: string,
         targetId: string,
-    ): { container: Task; sourceId: string; sourceName: string; storedTarget: string; targetName: string } {
+    ): {
+        container: Task;
+        sourceId: string;
+        sourceName: string;
+        targetId: string;
+        storedTarget: string;
+        targetName: string;
+    } {
         if (sourceId === targetId) {
             throw new InvalidDependencyError("A task cannot depend on itself");
         }
@@ -651,6 +664,7 @@ class ProjectStore {
             container,
             sourceId,
             sourceName: source.name,
+            targetId,
             storedTarget: feedsPlanGoal ? GOAL_ID : targetId,
             targetName: feedsPlanGoal ? container.name : target!.name,
         };
@@ -680,7 +694,7 @@ class ProjectStore {
         return {
             sourceId,
             sourceName: this._edgeEndName(container, sourceId),
-            targetId: storedTarget,
+            targetId,
             targetName: this._edgeEndName(container, storedTarget),
         };
     }
