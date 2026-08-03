@@ -14,8 +14,10 @@ const EXPECTED_TOOLS = [
     "add_tasks",
     "update_task",
     "move_task",
+    "move_tasks",
     "set_task_completion",
     "delete_task",
+    "delete_tasks",
     "create_subplan",
     "add_dependency",
     "add_dependencies",
@@ -23,6 +25,7 @@ const EXPECTED_TOOLS = [
     "add_inbox_idea",
     "add_inbox_ideas",
     "remove_inbox_idea",
+    "remove_inbox_ideas",
     "promote_inbox_idea",
     "promote_inbox_ideas",
     "undo_last_change",
@@ -107,6 +110,49 @@ describe("mcpServer", () => {
         expect(instructions).toContain("echoes back what it changed");
     });
 
+    it("should list every tool in the instructions", async () => {
+        await connect();
+
+        const instructions = client.getInstructions()!;
+
+        expect(instructions).toContain("**Tools:**");
+        for (const toolName of EXPECTED_TOOLS) {
+            expect(instructions).toContain(toolName);
+        }
+    });
+
+    it("should explain that a dependency between subgoals constrains everything inside them", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("**Dependencies and subplans:**");
+        expect(instructions).toContain("every task inside the target waits for every task inside the source");
+        expect(instructions).toContain("leaf-to-leaf");
+    });
+
+    it("should gate subplans on the entry/exit test and size-trigger the search", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("connects two siblings in the same plan");
+        expect(instructions).toContain("outgrows about 8 tasks");
+        expect(instructions).toContain("single entry point and a single exit point");
+        expect(instructions).toContain("move those tasks out of the group");
+        expect(instructions).toContain("themes stay flat");
+    });
+
+    it("should frame verification as predicting get_next_tasks over the whole tree", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("**Verifying the plan:**");
+        expect(instructions).toContain("single get_project_state call");
+        expect(instructions).toContain("missing from the result is over-constrained");
+    });
+
     it("should describe the name/description split on the mutating tools", async () => {
         await connect();
 
@@ -143,13 +189,27 @@ describe("mcpServer", () => {
         expect(promptNames).toEqual(["generate-plan", "plan-project"]);
 
         const planProject = await client.getPrompt({ name: "plan-project" });
-        expect((planProject.messages[0].content as any).text).toContain("Phase 1: Goal Clarification");
-
-        expect((planProject.messages[0].content as any).text).toContain("**Naming:**");
+        const planProjectText = (planProject.messages[0].content as any).text;
+        expect(planProjectText).toContain("get_project_state");
+        expect(planProjectText).toContain("clarifying question");
 
         const generatePlan = await client.getPrompt({ name: "generate-plan" });
-        expect((generatePlan.messages[0].content as any).text).toContain("get_roadmap");
-        expect((generatePlan.messages[0].content as any).text).toContain("**Naming:**");
+        const generatePlanText = (generatePlan.messages[0].content as any).text;
+        expect(generatePlanText).toContain("get_project_state");
+        expect(generatePlanText).toContain("get_next_tasks");
+        expect(generatePlanText).toContain("withSubplan");
+    });
+
+    it("should keep each prompt to a condensed statement of the workflow", async () => {
+        await connect();
+
+        const planProject = await client.getPrompt({ name: "plan-project" });
+        const generatePlan = await client.getPrompt({ name: "generate-plan" });
+
+        // The full workflow rides in on the server instructions; a prompt is a
+        // kickoff message, so each stays within a few sentences.
+        expect((planProject.messages[0].content as any).text.length).toBeLessThan(700);
+        expect((generatePlan.messages[0].content as any).text.length).toBeLessThan(1100);
     });
 
     describe("get_project_state", () => {
@@ -258,6 +318,34 @@ describe("mcpServer", () => {
 
             expect(result.isError).toBe(true);
         });
+
+        it("should create a subgoal task and its subplan in one call", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = parseResult(await callTool("add_task", { name: "Run the launch", withSubplan: true }));
+
+            expect(result.hasSubplan).toBe(true);
+            expect(store.findTask(result.taskId)!.plan).toEqual({ tasksList: [], dependenciesList: [] });
+
+            const child = parseResult(await callTool("add_task", { name: "Draft copy", parentId: result.taskId }));
+            expect(child.hasSubplan).toBe(false);
+            expect(store.findTask(result.taskId)!.plan!.tasksList.map((task: Task) => task.id)).toEqual([child.taskId]);
+        });
+
+        it("should create subplans for the drafts marked withSubplan in a batch", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const result = parseResult(
+                await callTool("add_tasks", {
+                    tasks: [{ name: "Run the launch", withSubplan: true }, { name: "Draft copy" }],
+                }),
+            );
+
+            expect(result.tasks.map((task: any) => task.hasSubplan)).toEqual([true, false]);
+            expect(store.findTask(result.tasks[0].taskId)!.plan).toEqual({ tasksList: [], dependenciesList: [] });
+        });
     });
 
     describe("set_task_completion and delete_task", () => {
@@ -327,6 +415,25 @@ describe("mcpServer", () => {
 
             expect(result.isError).toBe(true);
         });
+
+        it("should name both ends and their plans when an edge crosses plans", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const stageC = store.addTask(GOAL_ID, "Stage C", undefined, true);
+            const stageD = store.addTask(GOAL_ID, "Stage D", undefined, true);
+            const dressCodes = store.addTask(stageC.id, "Check restaurant dress codes");
+            const pack = store.addTask(stageD.id, "Pack from the itinerary");
+
+            const result = await callTool("add_dependency", { sourceId: dressCodes.id, targetId: pack.id });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain(
+                '"Check restaurant dress codes" -> "Pack from the itinerary" crosses plans',
+            );
+            expect(result.content[0].text).toContain('the source is in the subplan of "Stage C"');
+            expect(result.content[0].text).toContain('the target is in the subplan of "Stage D"');
+            expect(result.content[0].text).toContain("add the edge between the tasks whose subplans hold them");
+        });
     });
 
     describe("inbox tools", () => {
@@ -392,6 +499,30 @@ describe("mcpServer", () => {
 
             expect(result.text).toBe("first");
             expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["second"]);
+        });
+
+        it("should remove several ideas at once, saying which each was", async () => {
+            await connect();
+            const added = ["a", "b", "c"].map((text) => store.addIdea(text));
+
+            const result = parseResult(await callTool("remove_inbox_ideas", { ideaIds: [added[2].id, added[0].id] }));
+
+            expect(result.ideas).toEqual([
+                { ideaId: added[2].id, text: "c", removed: true },
+                { ideaId: added[0].id, text: "a", removed: true },
+            ]);
+            expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["b"]);
+        });
+
+        it("should remove no idea at all when one id in the batch is unknown", async () => {
+            await connect();
+            const idea = store.addIdea("keep me");
+
+            const result = await callTool("remove_inbox_ideas", { ideaIds: [idea.id, "gone"] });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("gone");
+            expect(store.getState().inbox.map((idea) => idea.text)).toEqual(["keep me"]);
         });
 
         it("should add several ideas at once, keeping the order supplied", async () => {
@@ -533,10 +664,11 @@ describe("mcpServer", () => {
             store.setGoal("Ship it");
             const first = store.addTask(GOAL_ID, "Draft copy");
             const second = store.addTask(GOAL_ID, "Print flyers");
+            const third = store.addTask(GOAL_ID, "Fold flyers");
             const parent = store.addTask(GOAL_ID, "Run the launch");
             store.createSubplan(parent.id);
             store.addDependency(first.id, second.id);
-            const ideas = ["a", "b", "c"].map((text) => store.addIdea(text));
+            const ideas = ["a", "b", "c", "d"].map((text) => store.addIdea(text));
 
             const args: Record<string, Record<string, unknown>> = {
                 set_goal: { name: "Ship it" },
@@ -544,8 +676,10 @@ describe("mcpServer", () => {
                 add_tasks: { tasks: [{ name: "Sort the printing" }] },
                 update_task: { taskId: first.id, name: "Draft the copy" },
                 move_task: { taskId: first.id, newParentId: parent.id },
+                move_tasks: { moves: [{ taskId: first.id, newParentId: GOAL_ID }] },
                 set_task_completion: { taskId: second.id, completed: true },
                 delete_task: { taskId: second.id },
+                delete_tasks: { taskIds: [third.id] },
                 create_subplan: { taskId: parent.id },
                 add_dependency: { sourceId: parent.id, targetId: GOAL_ID },
                 add_dependencies: { dependencies: [{ sourceId: parent.id, targetId: GOAL_ID }] },
@@ -553,6 +687,7 @@ describe("mcpServer", () => {
                 add_inbox_idea: { text: "something new" },
                 add_inbox_ideas: { texts: ["something else new"] },
                 remove_inbox_idea: { ideaId: ideas[0].id },
+                remove_inbox_ideas: { ideaIds: [ideas[3].id] },
                 promote_inbox_idea: { ideaId: ideas[1].id },
                 promote_inbox_ideas: { promotions: [{ ideaId: ideas[2].id }] },
                 undo_last_change: {},
@@ -586,7 +721,7 @@ describe("mcpServer", () => {
             expect(goalward.targetName).toBe("Ship it");
         });
 
-        it("should resolve a subplan's own task id to that plan's goal and say so", async () => {
+        it("should echo the target id as addressed when it names the plan's own task", async () => {
             await connect();
             store.setGoal("Ship it");
             const parent = store.addTask(GOAL_ID, "Run the launch");
@@ -597,10 +732,12 @@ describe("mcpServer", () => {
             expect(result).toEqual({
                 sourceId: child.id,
                 sourceName: "Draft copy",
-                targetId: GOAL_ID,
+                targetId: parent.id,
                 targetName: "Run the launch",
                 version: expect.any(Number),
             });
+            // The edge itself stores as the plan's goal sentinel.
+            expect(store.findTask(parent.id)!.plan!.dependenciesList).toEqual([{ source: child.id, target: GOAL_ID }]);
         });
     });
 
@@ -621,9 +758,9 @@ describe("mcpServer", () => {
             );
 
             expect(result.tasks).toEqual([
-                { taskId: expect.any(String), name: "Draft copy", parentId: GOAL_ID },
-                { taskId: expect.any(String), name: "Print flyers", parentId: parent.id },
-                { taskId: expect.any(String), name: "Post flyers", parentId: GOAL_ID },
+                { taskId: expect.any(String), name: "Draft copy", parentId: GOAL_ID, hasSubplan: false },
+                { taskId: expect.any(String), name: "Print flyers", parentId: parent.id, hasSubplan: false },
+                { taskId: expect.any(String), name: "Post flyers", parentId: GOAL_ID, hasSubplan: false },
             ]);
             expect(store.findTask(result.tasks[1].taskId)!.description).toBe("150gsm");
         });
@@ -714,6 +851,74 @@ describe("mcpServer", () => {
         });
     });
 
+    describe("move_tasks and delete_tasks", () => {
+        it("should move several tasks in one call, landing them in batch order", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const stage = store.addTask(GOAL_ID, "Stage A", undefined, true);
+            const added = ["a", "b", "c"].map((name) => store.addTask(GOAL_ID, name));
+
+            const result = parseResult(
+                await callTool("move_tasks", {
+                    moves: [
+                        { taskId: added[2].id, newParentId: stage.id },
+                        { taskId: added[0].id, newParentId: stage.id },
+                    ],
+                }),
+            );
+
+            expect(result.tasks).toEqual([
+                { taskId: added[2].id, name: "c", parentId: stage.id },
+                { taskId: added[0].id, name: "a", parentId: stage.id },
+            ]);
+            expect(store.findTask(stage.id)!.plan!.tasksList.map((task) => task.name)).toEqual(["c", "a"]);
+        });
+
+        it("should move no task at all when one move in the batch fails", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const stage = store.addTask(GOAL_ID, "Stage A", undefined, true);
+            const moving = store.addTask(GOAL_ID, "Moving");
+
+            const result = await callTool("move_tasks", {
+                moves: [
+                    { taskId: moving.id, newParentId: stage.id },
+                    { taskId: "nope", newParentId: stage.id },
+                ],
+            });
+
+            expect(result.isError).toBe(true);
+            expect(store.findTask(stage.id)!.plan!.tasksList).toHaveLength(0);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["Stage A", "Moving"]);
+        });
+
+        it("should delete several tasks in one call, saying which each was", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const added = ["a", "b", "c"].map((name) => store.addTask(GOAL_ID, name));
+
+            const result = parseResult(await callTool("delete_tasks", { taskIds: [added[2].id, added[0].id] }));
+
+            expect(result.tasks).toEqual([
+                { taskId: added[2].id, name: "c", deleted: true },
+                { taskId: added[0].id, name: "a", deleted: true },
+            ]);
+            expect(store.getState().goal.plan!.tasksList.map((task) => task.name)).toEqual(["b"]);
+        });
+
+        it("should delete no task at all when one id in the batch is unknown", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const task = store.addTask(GOAL_ID, "Task");
+
+            const result = await callTool("delete_tasks", { taskIds: [task.id, "nope"] });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("nope");
+            expect(store.findTask(task.id)).not.toBeNull();
+        });
+    });
+
     describe("name rules", () => {
         it("should refuse a name too long to render on a node", async () => {
             await connect();
@@ -747,6 +952,51 @@ describe("mcpServer", () => {
 
             expect(result.warnings).toEqual([expect.stringContaining("two tasks")]);
             expect(store.findTask(result.taskId)!.name).toBe("Book venue and print flyers");
+        });
+
+        it("should let a subgoal's name span several things without a warning", async () => {
+            await connect();
+            store.setGoal("Goal");
+
+            const container = parseResult(
+                await callTool("add_task", { name: "Lock dates and budget", withSubplan: true }),
+            );
+            const batch = parseResult(
+                await callTool("add_tasks", {
+                    tasks: [
+                        { name: "Cover home and work", withSubplan: true },
+                        { name: "Book venue and print flyers" },
+                    ],
+                }),
+            );
+
+            expect(container.warnings).toBeUndefined();
+            expect(batch.warnings).toEqual([expect.stringContaining("two tasks")]);
+        });
+
+        it("should let the goal's name span several things without a warning", async () => {
+            await connect();
+
+            const result = parseResult(await callTool("set_goal", { name: "Lock dates and budget" }));
+
+            expect(result.warnings).toBeUndefined();
+        });
+
+        it("should read an updated name against whether the task holds a subplan", async () => {
+            await connect();
+            store.setGoal("Goal");
+            const subgoal = store.addTask(GOAL_ID, "Container", undefined, true);
+            const leaf = store.addTask(GOAL_ID, "Leaf task");
+
+            const subgoalResult = parseResult(
+                await callTool("update_task", { taskId: subgoal.id, name: "Cover home and work" }),
+            );
+            const leafResult = parseResult(
+                await callTool("update_task", { taskId: leaf.id, name: "Book venue and print flyers" }),
+            );
+
+            expect(subgoalResult.warnings).toBeUndefined();
+            expect(leafResult.warnings).toEqual([expect.stringContaining("two tasks")]);
         });
 
         it("should warn about a question and about a bare single word", async () => {

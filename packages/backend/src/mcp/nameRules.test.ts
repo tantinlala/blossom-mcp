@@ -31,6 +31,19 @@ describe("checkName", () => {
             expect(checkName("Book venue and print flyers")).toEqual([expect.stringContaining("two tasks")]);
         });
 
+        it("should let a subgoal name join several things", () => {
+            expect(checkName("Lock dates and budget", { subgoal: true })).toEqual([]);
+            expect(checkName("Cover home and work", { subgoal: true })).toEqual([]);
+        });
+
+        it("should still refuse and warn a subgoal name on everything but the join", () => {
+            expect(() => checkName("a".repeat(MAX_NAME_CHARS + 1), { subgoal: true })).toThrow(InvalidNameError);
+            expect(checkName("Venue?", { subgoal: true })).toEqual([
+                expect.stringContaining("question"),
+                expect.stringContaining("single word"),
+            ]);
+        });
+
         it("should not read a word merely containing 'and' as a join", () => {
             expect(checkName("Sand the floor")).toEqual([]);
             expect(checkName("Brand the packaging")).toEqual([]);

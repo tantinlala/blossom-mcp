@@ -23,8 +23,12 @@ class InvalidNameError extends Error {
 /**
  * Refuses a name the roadmap cannot render, and returns whatever is worth
  * saying about the one it accepts. An empty array means nothing to report.
+ *
+ * Pass `subgoal: true` for a name that labels a task holding a subplan (or the
+ * goal itself): such a name spans the several tasks inside it, so joining two
+ * things with "and" is its job and earns no warning.
  */
-const checkName = (name: string): string[] => {
+const checkName = (name: string, { subgoal = false }: { subgoal?: boolean } = {}): string[] => {
     if (/[\r\n]/.test(name)) {
         throw new InvalidNameError(
             "A name is a single-line label on a roadmap node and cannot contain a line break. " +
@@ -42,7 +46,9 @@ const checkName = (name: string): string[] => {
     const warnings: string[] = [];
     const trimmed = name.trim();
 
-    if (/\sand\s/i.test(trimmed)) {
+    // For a leaf task, "and" usually means the name holds two tasks; a subgoal
+    // covers everything inside it, so its name gets to span several things.
+    if (!subgoal && /\sand\s/i.test(trimmed)) {
         warnings.push(`"${trimmed}" joins two actions with "and", which usually means it is two tasks.`);
     }
     if (trimmed.endsWith("?")) {

@@ -33,15 +33,18 @@ interface UndoSnapshot {
 type IdeaRef = number | { ideaId?: string; index?: number };
 
 /** A task to add, as supplied to the batch form. */
-type TaskDraft = { parentId?: string; name: string; description?: string };
+type TaskDraft = { parentId?: string; name: string; description?: string; withSubplan?: boolean };
 
 /** An idea to promote, as supplied to the batch form. */
 type PromotionDraft = { ideaId?: string; index?: number; parentId?: string; name?: string; description?: string };
 
 /**
- * A dependency as it was stored, with both ends named. Callers get this back so
- * they can check the edge that landed is the edge they meant - the ids alone
- * are opaque, and a target may have been resolved to the plan's goal.
+ * A dependency with both ends named. Callers get this back so they can check
+ * the edge that landed is the edge they meant - the ids alone are opaque.
+ * `targetId` is the target exactly as the caller addressed it; `targetName`
+ * names the task that end resolved to, so a target addressed as the plan's own
+ * task or as the goal sentinel comes back under the name of the task whose
+ * goal the edge feeds.
  */
 type ResolvedDependency = { sourceId: string; sourceName: string; targetId: string; targetName: string };
 
@@ -149,15 +152,23 @@ class ProjectStore {
         return JSON.parse(JSON.stringify(value));
     }
 
-    private _saveSnapshot() {
-        this._undoStack.push({
+    private _takeSnapshot(): UndoSnapshot {
+        return {
             goal: this._deepClone(this._goal),
             inbox: this._inbox.map((idea) => ({ ...idea })),
             author: this._currentAuthor,
-        });
+        };
+    }
+
+    private _pushSnapshot(snapshot: UndoSnapshot) {
+        this._undoStack.push(snapshot);
         if (this._undoStack.length > MAX_UNDO_STACK_SIZE) {
             this._undoStack.shift();
         }
+    }
+
+    private _saveSnapshot() {
+        this._pushSnapshot(this._takeSnapshot());
     }
 
     private _bump() {
@@ -375,7 +386,7 @@ class ProjectStore {
         this._bump();
     }
 
-    public addTask(parentId: string, name: string, description?: string): Task {
+    public addTask(parentId: string, name: string, description?: string, withSubplan?: boolean): Task {
         const parent = this.findTask(parentId);
         if (!parent) {
             throw new TaskNotFoundError(parentId);
@@ -385,7 +396,7 @@ class ProjectStore {
         if (!parent.plan) {
             parent.plan = { tasksList: [], dependenciesList: [] };
         }
-        const newTask = this._append(parent, name, description);
+        const newTask = this._append(parent, name, description, withSubplan);
         this._bump();
         return this._deepClone(newTask);
     }
@@ -409,16 +420,19 @@ class ProjectStore {
         }
 
         this._saveSnapshot();
-        const added = drafts.map((draft, position) => this._append(parents[position], draft.name, draft.description));
+        const added = drafts.map((draft, position) =>
+            this._append(parents[position], draft.name, draft.description, draft.withSubplan),
+        );
         this._bump();
         return this._deepClone(added);
     }
 
-    private _append(parent: Task, name: string, description?: string): Task {
+    private _append(parent: Task, name: string, description?: string, withSubplan?: boolean): Task {
         if (!parent.plan) {
             parent.plan = { tasksList: [], dependenciesList: [] };
         }
-        const newTask: Task = { name, id: uuidv4(), completionState: false, plan: null };
+        const plan: Plan | null = withSubplan ? { tasksList: [], dependenciesList: [] } : null;
+        const newTask: Task = { name, id: uuidv4(), completionState: false, plan };
         if (description !== undefined) {
             newTask.description = description;
         }
@@ -436,6 +450,54 @@ class ProjectStore {
      * the tree.
      */
     public moveTask(taskId: string, newParentId: string): Task {
+        const [task] = this.moveTasks([{ taskId, newParentId }]);
+        return task;
+    }
+
+    /**
+     * Moves several tasks in one mutation, or none of them.
+     *
+     * Moves apply in the order supplied, and a moved task joins the end of its
+     * destination plan, so the order of the batch is the order the tasks read
+     * in afterwards. Each move is checked against the tree as the moves before
+     * it have left it - two moves that are each fine alone can put a branch
+     * inside itself together - and a batch that fails part-way is rolled back
+     * whole, so the plan is left exactly as the caller saw it.
+     */
+    public moveTasks(moves: { taskId: string; newParentId: string }[]): Task[] {
+        if (moves.length === 0) {
+            return [];
+        }
+
+        // The snapshot is held aside and joins the undo stack only once a move
+        // has actually changed something, so a no-op batch and a failed batch
+        // both leave the undo history exactly as they found it, however full
+        // the stack is.
+        const before = this._takeSnapshot();
+        let changed = false;
+        try {
+            const moved = moves.map(({ taskId, newParentId }) => {
+                const result = this._applyMove(taskId, newParentId);
+                changed = changed || result.changed;
+                return result.task;
+            });
+            if (!changed) {
+                return this._deepClone(moved);
+            }
+            this._pushSnapshot(before);
+            this._bump();
+            return this._deepClone(moved);
+        } catch (error) {
+            this._goal = before.goal;
+            this._inbox = before.inbox;
+            throw error;
+        }
+    }
+
+    // Validates and applies one move against the tree as it currently stands.
+    // Reports whether anything moved: a task sent to the plan it is already in
+    // counts as satisfied without a write.
+    private _applyMove(taskId: string, newParentId: string): { task: Task; changed: boolean } {
         if (taskId === GOAL_ID) {
             throw new InvalidMoveError("The root goal cannot be moved");
         }
@@ -457,10 +519,9 @@ class ProjectStore {
 
         const container = this._findContainerOf(taskId)!;
         if (container.id === newParentId) {
-            return this._deepClone(task);
+            return { task, changed: false };
         }
 
-        this._saveSnapshot();
         container.plan.tasksList = container.plan.tasksList.filter((sibling) => sibling.id !== taskId);
         container.plan.dependenciesList = container.plan.dependenciesList.filter(
             (dependency) => dependency.source !== taskId && dependency.target !== taskId,
@@ -472,8 +533,7 @@ class ProjectStore {
         }
         newParent.plan.tasksList.push(task);
         newParent.completionState = newParent.plan.tasksList.every((child) => child.completionState);
-        this._bump();
-        return this._deepClone(task);
+        return { task, changed: true };
     }
 
     /** Whether candidateId is the task itself or sits somewhere beneath it. */
@@ -536,18 +596,51 @@ class ProjectStore {
     }
 
     public removeTask(taskId: string) {
-        const container = this._findContainerOf(taskId);
-        if (!container) {
-            throw new TaskNotFoundError(taskId);
+        this.removeTasks([taskId]);
+    }
+
+    /**
+     * Deletes several tasks in one mutation. Every id is resolved before
+     * anything is removed, so the batch lands whole or not at all, and the
+     * names come back in the order supplied. Deleting a task deletes its whole
+     * subplan, so a batch may name both a task and one of its descendants: the
+     * descendant goes with its ancestor.
+     */
+    public removeTasks(taskIds: string[]): { id: string; name: string }[] {
+        const seen = new Set<string>();
+        const doomed = taskIds.map((taskId) => {
+            const container = this._findContainerOf(taskId);
+            if (!container) {
+                throw new TaskNotFoundError(taskId);
+            }
+            if (seen.has(taskId)) {
+                throw new InvalidBatchError(`The same task is deleted twice in one batch: ${taskId}`);
+            }
+            seen.add(taskId);
+            const task = container.plan.tasksList.find((sibling) => sibling.id === taskId)!;
+            return { id: taskId, name: task.name };
+        });
+
+        if (taskIds.length === 0) {
+            return [];
         }
 
         this._saveSnapshot();
-        container.plan.tasksList = container.plan.tasksList.filter((task) => task.id !== taskId);
-        container.plan.dependenciesList = container.plan.dependenciesList.filter(
-            (dependency) => dependency.source !== taskId && dependency.target !== taskId,
-        );
-        container.completionState = container.plan.tasksList.every((task) => task.completionState);
+        for (const { id } of doomed) {
+            const container = this._findContainerOf(id);
+            if (!container) {
+                // Already deleted along with an ancestor named earlier in the
+                // batch, so there is nothing left to do for it.
+                continue;
+            }
+            container.plan.tasksList = container.plan.tasksList.filter((task) => task.id !== id);
+            container.plan.dependenciesList = container.plan.dependenciesList.filter(
+                (dependency) => dependency.source !== id && dependency.target !== id,
+            );
+            container.completionState = container.plan.tasksList.every((task) => task.completionState);
+        }
         this._bump();
+        return doomed;
     }
 
     public createSubplan(taskId: string) {
@@ -609,10 +702,10 @@ class ProjectStore {
             edge.container.plan.dependenciesList.push({ source: edge.sourceId, target: edge.storedTarget });
         }
         this._bump();
-        return resolved.map(({ sourceId, sourceName, storedTarget, targetName }) => ({
+        return resolved.map(({ sourceId, sourceName, targetId, targetName }) => ({
             sourceId,
             sourceName,
-            targetId: storedTarget,
+            targetId,
             targetName,
         }));
     }
@@ -622,13 +715,20 @@ class ProjectStore {
      *
      * A target naming the task that owns the plan means the same thing as the
      * goal sentinel - both say "this feeds the plan's goal" - so both store as
-     * the sentinel, and the resolved end is reported back under the name of
-     * whatever it landed on.
+     * the sentinel. The reported edge keeps the target id the caller passed,
+     * named after the task whose goal it feeds.
      */
     private _resolveEdge(
         sourceId: string,
         targetId: string,
-    ): { container: Task; sourceId: string; sourceName: string; storedTarget: string; targetName: string } {
+    ): {
+        container: Task;
+        sourceId: string;
+        sourceName: string;
+        targetId: string;
+        storedTarget: string;
+        targetName: string;
+    } {
         if (sourceId === targetId) {
             throw new InvalidDependencyError("A task cannot depend on itself");
         }
@@ -642,8 +742,23 @@ class ProjectStore {
         const feedsPlanGoal = targetId === GOAL_ID || targetId === container.id;
         const target = feedsPlanGoal ? null : container.plan.tasksList.find((task) => task.id === targetId);
         if (!feedsPlanGoal && !target) {
+            // The refusal names both ends and where each lives - a bare id
+            // appears in several edges of a batch, so an id alone does not say
+            // which edge is the bad one, or what to do about it.
+            const targetContainer = this._findContainerOf(targetId);
+            if (targetContainer) {
+                const stranger = targetContainer.plan.tasksList.find((task) => task.id === targetId)!;
+                throw new InvalidDependencyError(
+                    `"${source.name}" -> "${stranger.name}" crosses plans: the source is in ` +
+                        `${this._planLabel(container)} and the target is in ${this._planLabel(targetContainer)}. ` +
+                        `A dependency connects siblings in one plan, and a subplan holds a chain of work that ` +
+                        `is complete in itself - so either add the edge between the tasks whose subplans hold ` +
+                        `them, or move a task so both ends are siblings.`,
+                );
+            }
             throw new InvalidDependencyError(
-                `Target must be a sibling of the source, this plan's own task id, or "${GOAL_ID}": ${targetId}`,
+                `Target of "${source.name}" (${sourceId}) must be one of its siblings, the plan's own task ` +
+                    `id, or "${GOAL_ID}": no task has the id ${targetId}`,
             );
         }
 
@@ -651,9 +766,19 @@ class ProjectStore {
             container,
             sourceId,
             sourceName: source.name,
+            targetId,
             storedTarget: feedsPlanGoal ? GOAL_ID : targetId,
             targetName: feedsPlanGoal ? container.name : target!.name,
         };
+    }
+
+    // How a plan is referred to in an error message: by the task that owns it,
+    // or as the top level when that task is the root goal.
+    private _planLabel(container: Task): string {
+        if (container.id === GOAL_ID) {
+            return "the top-level plan";
+        }
+        return `the subplan of "${container.name}"`;
     }
 
     // What to call one end of an edge when reporting on it. The sentinel stands
@@ -680,7 +805,7 @@ class ProjectStore {
         return {
             sourceId,
             sourceName: this._edgeEndName(container, sourceId),
-            targetId: storedTarget,
+            targetId,
             targetName: this._edgeEndName(container, storedTarget),
         };
     }
@@ -801,6 +926,38 @@ class ProjectStore {
         this._assertIdeaText(index, expectedText);
         this._saveSnapshot();
         const [removed] = this._inbox.splice(index, 1);
+        this._bump();
+        return removed;
+    }
+
+    /**
+     * Removes several ideas in one mutation. Every id is resolved before
+     * anything is removed, so the batch reads the inbox exactly as the caller
+     * saw it and either lands whole or not at all. Results come back in the
+     * order supplied.
+     */
+    public removeIdeas(ideaIds: string[]): InboxIdea[] {
+        const seen = new Set<string>();
+        for (const ideaId of ideaIds) {
+            if (!this._inbox.some((idea) => idea.id === ideaId)) {
+                throw new IdeaNotFoundError(ideaId);
+            }
+            if (seen.has(ideaId)) {
+                throw new InvalidBatchError(`The same inbox idea is removed twice in one batch: ${ideaId}`);
+            }
+            seen.add(ideaId);
+        }
+
+        if (ideaIds.length === 0) {
+            return [];
+        }
+
+        this._saveSnapshot();
+        const removed = ideaIds.map((ideaId) => {
+            const index = this._inbox.findIndex((idea) => idea.id === ideaId);
+            const [idea] = this._inbox.splice(index, 1);
+            return idea;
+        });
         this._bump();
         return removed;
     }
@@ -983,6 +1140,7 @@ class ProjectStore {
 
 export {
     ProjectStore,
+    MAX_UNDO_STACK_SIZE,
     TaskNotFoundError,
     InvalidDependencyError,
     InvalidMoveError,

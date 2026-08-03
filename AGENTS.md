@@ -17,7 +17,7 @@ After implementing new functionality, do the following in order:
 3. If no unit test files exist, create new unit test file(s) for what you've implemented.
 4. After updating / creating unit tests, run the tests and fix any test failures. You can run tests by running `yarn workspace @blossom/<name of package> test --watchAll=false` from the root directory of the repository.
 5. When significant changes to the application architecture are made, update relevant documentation inside the [docs](../docs) folder after having confirmed that the implemented functionality works as intended. Do not document minor changes e.g. style changes.
-6. Summarize what you have done in a changelog.md file in the root of the repository. Newest changes should be at the top of the file.
+6. Summarize what you have done in a changelog.md file in the root of the repository. The file holds only a summary of the latest changes: replace its contents with your summary, so a reader opening it sees just what changed most recently.
 
 ## Describe Only What Exists
 
@@ -64,7 +64,7 @@ Types, props, helpers, constants, CSS, and test utilities that existed only to s
 
 ### Scope
 
-The changelog is the one exception: it is a historical record, so it says what changed and what was removed.
+The changelog is the one exception: it records the latest changes, so it says what changed and what was removed.
 
 When you remove anything, sweep the whole repository for references to it before you call the work done — not just the files you edited, and not just source: docs, comments, test names and test setup all count. Grep for the feature's name, for the names of anything it was built out of, and for the banned connectives above. Search for the bare word, not a phrase: "ported from" misses "they port".
 

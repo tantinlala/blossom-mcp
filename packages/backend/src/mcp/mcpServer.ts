@@ -14,6 +14,44 @@ const TREE_EXPLANATION =
 // How many top-level tasks a plan should hold before grouping into subgoals.
 const MAX_TOP_LEVEL_TASKS = 8;
 
+// One line naming every tool, so a client can see the whole surface without a
+// discovery round-trip per tool.
+const TOOLS_SUMMARY =
+    `**Tools:** Read with get_project_state (the whole tree and inbox in one call), get_roadmap (one ` +
+    `plan level), and get_next_tasks (what is currently actionable). Write with set_goal; add_task, ` +
+    `add_tasks, update_task, move_task, move_tasks, set_task_completion, delete_task, delete_tasks, ` +
+    `create_subplan; ` +
+    `add_dependency, add_dependencies, remove_dependency; add_inbox_idea, add_inbox_ideas, ` +
+    `remove_inbox_idea, remove_inbox_ideas, promote_inbox_idea, promote_inbox_ideas; undo_last_change.`;
+
+// One two-sided test decides nesting: plan size triggers the search for
+// structure, the entry/exit gate decides what qualifies, extraction rescues a
+// group that nearly qualifies, and a large plan with no qualifying group stays
+// flat. The inheritance rule then says what an edge between two subgoals
+// costs - which is where over-constrained roadmaps come from.
+const DEPENDENCY_GUIDANCE =
+    `**Dependencies and subplans:** A dependency connects two siblings in the same plan, or feeds that ` +
+    `plan's goal. Keep a plan flat until a level outgrows about ${MAX_TOP_LEVEL_TASKS} tasks - only ` +
+    `then look for groups to fold into subplans. A group qualifies only when it has a single entry ` +
+    `point and a single exit point relative to the rest of the plan: nothing outside it depends on ` +
+    `anything in its middle. When just one or two outside edges reach into a group's middle, move ` +
+    `those tasks out of the group and fold the rest - the self-contained core is the subplan. A group ` +
+    `with no such core is a theme, and themes stay flat, even in a large plan: a busy flat plan that ` +
+    `tells the truth about dependencies beats a tidy tree that hides them. An edge between two subgoal ` +
+    `tasks asserts that every task inside the target waits for every task inside the source, so before ` +
+    `adding one, check each child of the target: if any child could genuinely start earlier, the edge ` +
+    `belongs on the specific children that need it - or that child belongs at a different level. ` +
+    `Prefer leaf-to-leaf edges over subgoal-to-subgoal edges whenever only some of the target's ` +
+    `children actually depend on the source.`;
+
+// Framed as a falsifiable test: a get_next_tasks result only reveals an
+// over-constrained plan to a reader who predicted what should be in it.
+const VERIFICATION_GUIDANCE =
+    `**Verifying the plan:** Review the whole tree with a single get_project_state call. Then test the ` +
+    `dependencies: list the tasks you would expect the user could genuinely start today, and call ` +
+    `get_next_tasks. Anything on your list that is missing from the result is over-constrained - find ` +
+    `the too-coarse edge blocking it and move that edge onto the specific children that need it.`;
+
 // The server refuses names it cannot render and warns about the rest, so this
 // says what a good name looks like and leaves the checking to the tools.
 const NAMING_GUIDANCE =
@@ -31,6 +69,7 @@ const SERVER_INSTRUCTIONS =
     `Assume the user may lack experience and needs suggestions and guidance. The user is watching the ` +
     `roadmap and inbox update live in a web UI, so apply changes with tools as you go.\n\n` +
     `${TREE_EXPLANATION}\n\n` +
+    `${TOOLS_SUMMARY}\n\n` +
     `Follow this workflow:\n\n` +
     `**Phase 1: Goal Clarification.** Call get_project_state first to see where things stand. If the goal ` +
     `is empty or vague, refine it to be specific, measurable, achievable, and relevant by asking clarifying ` +
@@ -48,11 +87,14 @@ const SERVER_INSTRUCTIONS =
     `**Phase 3: Plan Structuring.** When the user is ready to organize (or asks for a plan), turn agreed ` +
     `ideas into tasks (promote_inbox_idea or add_task), each with a short imperative name and a ` +
     `description that captures the specifics from the conversation. If a plan level grows beyond about ` +
-    `${MAX_TOP_LEVEL_TASKS} tasks, group related tasks into subgoals: create a task per subgoal, give it a ` +
-    `subplan (create_subplan), and add the related tasks inside it via add_task with parentId. Then add ` +
-    `dependencies with add_dependency or add_dependencies - within each subplan and at the top level - so ` +
-    `the roadmap forms a directed acyclic graph; use "${GOAL_ID}" as the target for tasks that feed the ` +
-    `goal directly. Verify the result with get_roadmap and get_next_tasks.\n\n` +
+    `${MAX_TOP_LEVEL_TASKS} tasks, look for self-contained chains - single entry, single exit - and ` +
+    `fold each into a subgoal task with a subplan (add_task with withSubplan: true), adding the related ` +
+    `tasks inside it via add_task with parentId; groups that fail that test stay flat. Then add ` +
+    `dependencies with add_dependency or add_dependencies - within each subplan and at the top level - ` +
+    `so the roadmap forms a directed acyclic graph; use "${GOAL_ID}" as the target for tasks that feed ` +
+    `the goal directly.\n\n` +
+    `${DEPENDENCY_GUIDANCE}\n\n` +
+    `${VERIFICATION_GUIDANCE}\n\n` +
     `${NAMING_GUIDANCE}\n\n` +
     `**Checking your work:** Every tool that changes something echoes back what it changed, names and all. ` +
     `Read those echoes: they are how you catch a task built from the wrong text before the rest of the ` +
@@ -116,8 +158,10 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     // here apart from whatever people are doing in the web UI.
     const asMcp = <T>(fn: () => T): T => store.runAs(MCP_AUTHOR, fn);
 
-    // Invocable prompts for clients that surface them (e.g. Claude Desktop);
-    // they restate the workflow for users whose client ignores instructions.
+    // Invocable prompts for clients that surface them (e.g. Claude Desktop).
+    // Each carries a condensed statement of the workflow, sized so a client
+    // that also applies the server instructions pays for the workflow text
+    // once, while one that does not still gets the shape of the flow.
     server.registerPrompt(
         "plan-project",
         {
@@ -131,9 +175,12 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                     content: {
                         type: "text" as const,
                         text:
-                            `Help me plan my project. ${SERVER_INSTRUCTIONS}\n\n` +
-                            `Begin by calling get_project_state and either asking your first clarifying ` +
-                            `question or, if the goal is already clear, continuing with task identification.`,
+                            `Help me plan my project. Clarify the goal first, asking one question per turn ` +
+                            `about WHAT and WHY and keeping it current with set_goal; then suggest tasks ` +
+                            `comprehensively, parking candidates in the inbox for my review; then structure ` +
+                            `them into a dependency-ordered roadmap. Begin by calling get_project_state and ` +
+                            `either asking your first clarifying question or, if the goal is already clear, ` +
+                            `continuing with task identification.`,
                     },
                 },
             ],
@@ -153,15 +200,19 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                     content: {
                         type: "text" as const,
                         text:
-                            `Organize my project into a roadmap now. ${TREE_EXPLANATION}\n\n` +
-                            `${NAMING_GUIDANCE}\n\n` +
-                            `Call get_project_state, then: (1) turn agreed inbox ideas into tasks with ` +
-                            `promote_inbox_ideas, giving each its final name and a description capturing ` +
-                            `conversation specifics; (2) if a plan level has more than ` +
-                            `about ${MAX_TOP_LEVEL_TASKS} tasks, group related tasks into subgoal tasks with ` +
-                            `subplans; (3) add dependencies within each subplan and at the top level so the ` +
-                            `roadmap forms a DAG, using "${GOAL_ID}" as the target for tasks feeding the goal ` +
-                            `directly; (4) verify with get_roadmap and get_next_tasks and summarize the result.`,
+                            `Organize my project into a roadmap now. Call get_project_state, then: (1) turn ` +
+                            `agreed inbox ideas into tasks with promote_inbox_ideas, giving each its final ` +
+                            `name - one imperative action of at most ${MAX_NAME_CHARS} characters - and a ` +
+                            `description capturing conversation specifics; (2) if a plan level has more than ` +
+                            `about ${MAX_TOP_LEVEL_TASKS} tasks, fold self-contained chains (single entry, ` +
+                            `single exit) into subgoal tasks with subplans (add_task with withSubplan: true), ` +
+                            `leaving groups that fail that test flat; (3) add dependencies within each ` +
+                            `subplan and at the top level so the roadmap forms a DAG, using "${GOAL_ID}" as ` +
+                            `the target for tasks feeding the goal directly and putting edges on the specific ` +
+                            `children that need them when only some of a subgoal's children depend on a ` +
+                            `source; (4) verify: list the tasks I could genuinely start today, call ` +
+                            `get_next_tasks, reconcile the two, then summarize the roadmap from ` +
+                            `get_project_state.`,
                     },
                 },
             ],
@@ -240,7 +291,9 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ name, description }) => {
             try {
-                const warnings = checkName(name);
+                // The goal names the whole project, so spanning several
+                // outcomes is its job and earns no "and" warning.
+                const warnings = checkName(name, { subgoal: true });
                 asMcp(() => store.setGoal(name, description));
                 const goal = store.findTask(GOAL_ID)!;
                 return textResult(
@@ -265,24 +318,30 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         {
             description:
                 `Add a new task. By default it is added to the root goal's plan; pass parentId to add it ` +
-                `inside another task's subplan. Returns the created task, so you can check the name that ` +
-                `landed is the one you meant.`,
+                `inside another task's subplan, and withSubplan: true to create the task with an empty ` +
+                `subplan of its own, ready for children. Returns the created task, so you can check the ` +
+                `name that landed is the one you meant.`,
             inputSchema: {
                 name: NAME_PARAM,
                 description: DESCRIPTION_PARAM,
                 parentId: z.string().optional().describe(`Parent task id (defaults to "${GOAL_ID}")`),
+                withSubplan: z
+                    .boolean()
+                    .optional()
+                    .describe("Create the task with an empty subplan, making it a subgoal container"),
             },
         },
-        async ({ name, description, parentId }) => {
+        async ({ name, description, parentId, withSubplan }) => {
             try {
-                const warnings = checkName(name);
-                const task = asMcp(() => store.addTask(parentId ?? GOAL_ID, name, description));
+                const warnings = checkName(name, { subgoal: withSubplan ?? false });
+                const task = asMcp(() => store.addTask(parentId ?? GOAL_ID, name, description, withSubplan));
                 return textResult(
                     withWarnings(
                         {
                             taskId: task.id,
                             name: task.name,
                             parentId: parentId ?? GOAL_ID,
+                            hasSubplan: task.plan !== null,
                             version: store.getVersion(),
                         },
                         warnings,
@@ -308,6 +367,10 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                             name: NAME_PARAM,
                             description: DESCRIPTION_PARAM,
                             parentId: z.string().optional().describe(`Parent task id (defaults to "${GOAL_ID}")`),
+                            withSubplan: z
+                                .boolean()
+                                .optional()
+                                .describe("Create the task with an empty subplan, making it a subgoal container"),
                         }),
                     )
                     .describe("Tasks to add, in the order they should appear in their plans"),
@@ -315,7 +378,9 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ tasks }) => {
             try {
-                const warnings = checkNames(tasks.map((draft) => draft.name));
+                const warnings = tasks.flatMap((draft) =>
+                    checkName(draft.name, { subgoal: draft.withSubplan ?? false }),
+                );
                 const added = asMcp(() => store.addTasks(tasks));
                 return textResult(
                     withWarnings(
@@ -324,6 +389,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                                 taskId: task.id,
                                 name: task.name,
                                 parentId: tasks[position].parentId ?? GOAL_ID,
+                                hasSubplan: task.plan !== null,
                             })),
                             version: store.getVersion(),
                         },
@@ -348,7 +414,10 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId, name, description }) => {
             try {
-                const warnings = checkNames([name]);
+                // A task that holds a subplan is a subgoal, so its name gets
+                // the subgoal reading when the "and" heuristic is applied.
+                const subgoal = (store.findTask(taskId)?.plan ?? null) !== null;
+                const warnings = name === undefined ? [] : checkName(name, { subgoal });
                 asMcp(() => store.updateTask(taskId, { name, description }));
                 const task = store.findTask(taskId)!;
                 return textResult(
@@ -388,6 +457,45 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                     taskId: task.id,
                     name: task.name,
                     parentId: newParentId,
+                    version: store.getVersion(),
+                });
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "move_tasks",
+        {
+            description:
+                `Move several tasks in one call and one change - the tool for restructuring. Moves apply in ` +
+                `the order supplied, and a moved task joins the end of its destination plan, so the order of ` +
+                `the batch is the order the tasks will read in. A failure part-way rolls the whole batch ` +
+                `back. Dependencies in each plan a task leaves are dropped, as with move_task. The returned ` +
+                `tasks are in the order supplied.`,
+            inputSchema: {
+                moves: z
+                    .array(
+                        z.object({
+                            taskId: z.string(),
+                            newParentId: z
+                                .string()
+                                .describe(`Id of the task whose plan it moves into, or "${GOAL_ID}"`),
+                        }),
+                    )
+                    .describe("Moves to apply, in the order the tasks should appear in their destination plans"),
+            },
+        },
+        async ({ moves }) => {
+            try {
+                const tasks = asMcp(() => store.moveTasks(moves));
+                return textResult({
+                    tasks: tasks.map((task, position) => ({
+                        taskId: task.id,
+                        name: task.name,
+                        parentId: moves[position].newParentId,
+                    })),
                     version: store.getVersion(),
                 });
             } catch (error) {
@@ -444,9 +552,35 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     );
 
     server.registerTool(
+        "delete_tasks",
+        {
+            description:
+                `Delete several tasks in one call and one change. Every id is resolved before anything is ` +
+                `removed, so the batch lands whole or not at all. Deleting a task deletes its entire ` +
+                `subplan, so a batch may name both a task and one of its descendants. The returned tasks ` +
+                `are in the order supplied, so you can confirm each was the one you meant.`,
+            inputSchema: { taskIds: z.array(z.string()) },
+        },
+        async ({ taskIds }) => {
+            try {
+                const deleted = asMcp(() => store.removeTasks(taskIds));
+                return textResult({
+                    tasks: deleted.map((task) => ({ taskId: task.id, name: task.name, deleted: true })),
+                    version: store.getVersion(),
+                });
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
         "create_subplan",
         {
-            description: "Give a task an empty subplan so subtasks can be added inside it with add_task(parentId).",
+            description:
+                `Give an existing task an empty subplan so subtasks can be added inside it with ` +
+                `add_task(parentId). A task and its subplan can also be created in one step: pass ` +
+                `withSubplan: true to add_task or add_tasks.`,
             inputSchema: { taskId: z.string() },
         },
         async ({ taskId }) => {
@@ -466,8 +600,11 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             description:
                 `Add a dependency: the source task must finish before the target can start. Source and target ` +
                 `must be siblings in the same plan; the target may instead be "${GOAL_ID}", or the id of the ` +
-                `task that owns the plan, to feed that plan's goal. Cycles are rejected. Returns both ends ` +
-                `named, so you can check the edge that landed is the edge you meant.`,
+                `task that owns the plan, to feed that plan's goal. An edge whose ends sit in different plans ` +
+                `is refused with both ends named - the edge belongs between the subgoal tasks whose subplans ` +
+                `hold them. Cycles are rejected. Returns the ids as you addressed them with both ends named, ` +
+                `so you can check the edge that landed is the edge you meant; targetName names the task a ` +
+                `goal-feeding edge resolved to.`,
             inputSchema: {
                 sourceId: z.string(),
                 targetId: z
@@ -492,7 +629,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                 `Add several dependencies in one call and one change. The whole batch is checked for cycles ` +
                 `together before anything is written: if one edge would close a loop, nothing is applied and ` +
                 `the error names that edge and the path it closes. The returned edges are in the order ` +
-                `supplied, both ends named.`,
+                `supplied, ids as you addressed them, both ends named.`,
             inputSchema: {
                 dependencies: z
                     .array(
@@ -631,6 +768,32 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                     ideaId: removed.id,
                     text: removed.text,
                     removed: true,
+                    version: store.getVersion(),
+                });
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "remove_inbox_ideas",
+        {
+            description:
+                "Remove several inbox ideas in one call and one change. Every id is resolved before " +
+                "anything is removed, so the batch lands whole or not at all. The returned ideas are in " +
+                "the order supplied, so you can confirm each removal was the idea you meant.",
+            inputSchema: {
+                ideaIds: z
+                    .array(z.string())
+                    .describe("Ids of the ideas to remove, as returned by add_inbox_idea and get_project_state"),
+            },
+        },
+        async ({ ideaIds }) => {
+            try {
+                const removed = asMcp(() => store.removeIdeas(ideaIds));
+                return textResult({
+                    ideas: removed.map((idea) => ({ ideaId: idea.id, text: idea.text, removed: true })),
                     version: store.getVersion(),
                 });
             } catch (error) {
