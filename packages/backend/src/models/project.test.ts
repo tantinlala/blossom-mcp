@@ -1,6 +1,6 @@
 import { InvalidProjectNameError, Project, ProjectNotFoundError } from "./project";
 import { FileIO } from "../utils/fileIO";
-import { Task, StoredProjectV2 } from "@blossom/common";
+import { Task, StoredProjectV2, StoredProjectV3 } from "@blossom/common";
 
 jest.mock("../utils/fileIO");
 
@@ -27,18 +27,22 @@ describe("Project", () => {
         project = new Project(fileIO);
     });
 
-    it("should save a project in v2 format", async () => {
+    it("should save a project in v3 format", async () => {
         fileIO.exists.mockResolvedValue(true);
+        const inbox = [
+            { id: "idea-1", text: "idea 1" },
+            { id: "idea-2", text: "idea 2" },
+        ];
 
-        await project.saveProject("testProject", goal, ["idea 1", "idea 2"]);
+        await project.saveProject("testProject", goal, inbox);
 
         expect(fileIO.mkdir).not.toHaveBeenCalled();
         expect(fileIO.writeFile).toHaveBeenCalledWith(
             "./projects/testProject.txt",
             JSON.stringify({
-                formatVersion: 2,
+                formatVersion: 3,
                 goal,
-                inbox: ["idea 1", "idea 2"],
+                inbox,
             }),
         );
     });
@@ -79,21 +83,37 @@ describe("Project", () => {
         expect(fileIO.readdir).not.toHaveBeenCalled();
     });
 
-    it("should restore a v2 project", async () => {
-        const projectData: StoredProjectV2 = {
-            formatVersion: 2,
+    it("should restore a v3 project", async () => {
+        const projectData: StoredProjectV3 = {
+            formatVersion: 3,
             goal,
-            inbox: ["idea 1"],
+            inbox: [{ id: "idea-1", text: "idea 1" }],
         };
         fileIO.exists.mockResolvedValue(true);
         fileIO.readFile.mockResolvedValue(JSON.stringify(projectData));
 
         const result = await project.restoreProject("testProject");
 
-        expect(result).toEqual({ goal, inbox: ["idea 1"] });
+        expect(result).toEqual({ goal, inbox: [{ id: "idea-1", text: "idea 1" }] });
     });
 
-    it("should return an empty project for a non-v2 (legacy) file", async () => {
+    it("should give each idea in a v2 project an id as it is read", async () => {
+        const projectData: StoredProjectV2 = {
+            formatVersion: 2,
+            goal,
+            inbox: ["idea 1", "idea 2"],
+        };
+        fileIO.exists.mockResolvedValue(true);
+        fileIO.readFile.mockResolvedValue(JSON.stringify(projectData));
+
+        const result = await project.restoreProject("testProject");
+
+        expect(result.goal).toEqual(goal);
+        expect(result.inbox.map((idea) => idea.text)).toEqual(["idea 1", "idea 2"]);
+        expect(new Set(result.inbox.map((idea) => idea.id)).size).toBe(2);
+    });
+
+    it("should return an empty project for a file in no known format", async () => {
         const legacyData = {
             messages: [{ message: { sender: "user", message: "hello" }, userFacing: true }],
             goal,

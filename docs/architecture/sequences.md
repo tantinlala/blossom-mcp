@@ -61,7 +61,7 @@ sequenceDiagram
     F->>R: POST /api/projects/save { filename }
     R->>S: getState()
     R->>P: saveProject(filename, goal, inbox)
-    Note over P: Writes ./projects/filename.txt<br/>{ formatVersion: 2, goal, inbox }
+    Note over P: Writes ./projects/filename.txt<br/>{ formatVersion: 3, goal, inbox }
     R->>S: setActiveProject(filename)
     R-->>F: { projects: [...] }
 

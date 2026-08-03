@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ProjectState } from "@blossom/common";
+import { InboxIdea, ProjectState } from "@blossom/common";
 import { APIClient, RequestFailure } from "../utils/APIClient";
 import { ConnectionState, Notice, RealtimeClient } from "../utils/RealtimeClient";
 import { PlanManager } from "../utils/PlanManager";
@@ -12,7 +12,7 @@ const DEGRADED_POLL_INTERVAL_MS = 10000;
 export type SaveState = "neverSaved" | "saved" | "unsaved";
 
 interface SyncTargets {
-    applyRemoteInbox: (ideas: string[]) => void;
+    applyRemoteInbox: (ideas: InboxIdea[]) => void;
     applyActiveProject: (activeProject: string | null) => void;
     syncRoadmap: () => void;
 }

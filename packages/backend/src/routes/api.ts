@@ -4,7 +4,10 @@ import { InvalidProjectNameError, Project, ProjectNotFoundError } from "../model
 import {
     ProjectStore,
     TaskNotFoundError,
+    IdeaNotFoundError,
+    InvalidBatchError,
     InvalidDependencyError,
+    InvalidMoveError,
     InvalidIndexError,
     VersionConflictError,
     UndoBlockedError,
@@ -29,7 +32,11 @@ const Status = {
 // rather than making the client re-infer it from a status shared by several
 // distinct failures.
 const errorCode = (error: unknown): CommandErrorCode => {
-    if (error instanceof TaskNotFoundError || error instanceof ProjectNotFoundError) {
+    if (
+        error instanceof TaskNotFoundError ||
+        error instanceof IdeaNotFoundError ||
+        error instanceof ProjectNotFoundError
+    ) {
         return "not-found";
     }
     if (error instanceof InvalidCommandError || error instanceof InvalidProjectNameError) {
@@ -47,19 +54,30 @@ const errorCode = (error: unknown): CommandErrorCode => {
     if (error instanceof ConfirmRequiredError) {
         return "confirm-required";
     }
-    if (error instanceof InvalidDependencyError || error instanceof InvalidIndexError) {
+    if (
+        error instanceof InvalidDependencyError ||
+        error instanceof InvalidMoveError ||
+        error instanceof InvalidIndexError ||
+        error instanceof InvalidBatchError
+    ) {
         return "invalid";
     }
     return "internal";
 };
 
 const errorStatus = (error: unknown): number => {
-    if (error instanceof TaskNotFoundError || error instanceof ProjectNotFoundError) {
+    if (
+        error instanceof TaskNotFoundError ||
+        error instanceof IdeaNotFoundError ||
+        error instanceof ProjectNotFoundError
+    ) {
         return Status.NOT_FOUND;
     }
     if (
         error instanceof InvalidDependencyError ||
+        error instanceof InvalidMoveError ||
         error instanceof InvalidIndexError ||
+        error instanceof InvalidBatchError ||
         error instanceof InvalidCommandError ||
         error instanceof InvalidProjectNameError ||
         error instanceof UnknownCommandError

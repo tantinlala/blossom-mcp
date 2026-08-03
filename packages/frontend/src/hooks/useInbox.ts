@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { ProjectState } from "@blossom/common";
+import { InboxIdea, ProjectState } from "@blossom/common";
 import { APIClient } from "../utils/APIClient";
 import { PlanManager } from "../utils/PlanManager";
 
@@ -75,7 +75,8 @@ export function useInbox({ apiClient, planManager, applyState, notify }: UseInbo
      * is dropped - again with a word about why.
      */
     const applyRemoteInbox = useCallback(
-        (ideas: string[]) => {
+        (entries: InboxIdea[]) => {
+            const ideas = entries.map((entry) => entry.text);
             setRemoteIdeas(ideas);
 
             let rebased = false;

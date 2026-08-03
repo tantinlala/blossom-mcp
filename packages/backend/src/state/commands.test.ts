@@ -72,13 +72,13 @@ describe("commands", () => {
     it("loads a restored project into the store", async () => {
         project.restoreProject.mockResolvedValue({
             goal: { name: "Restored", id: GOAL_ID, completionState: false, plan: null as any },
-            inbox: ["an idea"],
+            inbox: [{ id: "idea-1", text: "an idea" }],
         });
 
         const result: any = await run("projects/restore", { filename: "alpha" });
 
         expect(result.goal.name).toBe("Restored");
-        expect(result.inbox).toEqual(["an idea"]);
+        expect(result.inbox).toEqual([{ id: "idea-1", text: "an idea" }]);
     });
 
     describe("attribution", () => {

@@ -12,7 +12,7 @@ const makeState = (version: number, inbox: string[] = []): ProjectState => ({
     version,
     activeProject: null,
     goal: { name: "My Goal", id: GOAL_ID, completionState: false, plan: { tasksList: [], dependenciesList: [] } },
-    inbox,
+    inbox: inbox.map((text, position) => ({ id: `idea-${position}`, text })),
 });
 
 /**
@@ -177,7 +177,10 @@ describe("useServerSync", () => {
         });
 
         expect(mockedPlanManager.applyServerState).toHaveBeenCalledWith(state.goal);
-        expect(mockApplyRemoteInbox).toHaveBeenCalledWith(["idea 1", "idea 2"]);
+        expect(mockApplyRemoteInbox).toHaveBeenCalledWith([
+            { id: "idea-0", text: "idea 1" },
+            { id: "idea-1", text: "idea 2" },
+        ]);
         expect(mockApplyActiveProject).toHaveBeenCalledWith(null);
         expect(mockSyncRoadmap).toHaveBeenCalled();
     });
@@ -207,7 +210,7 @@ describe("useServerSync", () => {
             pushState({ state: makeState(7, ["from someone else"]) });
 
             expect(mockedPlanManager.applyServerState).toHaveBeenCalled();
-            expect(mockApplyRemoteInbox).toHaveBeenCalledWith(["from someone else"]);
+            expect(mockApplyRemoteInbox).toHaveBeenCalledWith([{ id: "idea-0", text: "from someone else" }]);
             expect(mockSyncRoadmap).toHaveBeenCalled();
         });
 
@@ -401,7 +404,7 @@ describe("useServerSync", () => {
 
             expect(mockedAPIClient.getState).toHaveBeenCalledTimes(1);
             expect(mockedPlanManager.applyServerState).toHaveBeenCalledWith(newState.goal);
-            expect(mockApplyRemoteInbox).toHaveBeenCalledWith(["from server"]);
+            expect(mockApplyRemoteInbox).toHaveBeenCalledWith([{ id: "idea-0", text: "from server" }]);
             expect(mockSyncRoadmap).toHaveBeenCalled();
         });
 

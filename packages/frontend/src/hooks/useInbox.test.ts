@@ -2,16 +2,19 @@ import { renderHook, act } from "@testing-library/react";
 import { useInbox } from "./useInbox";
 import { PlanManager } from "../utils/PlanManager";
 import { APIClient } from "../utils/APIClient";
-import { GOAL_ID, ProjectState } from "@blossom/common";
+import { GOAL_ID, InboxIdea, ProjectState } from "@blossom/common";
 
 jest.mock("../utils/PlanManager");
 jest.mock("../utils/APIClient");
+
+// The server's inbox entries, with ids standing in for the ones it generates.
+const ideas = (...texts: string[]): InboxIdea[] => texts.map((text, position) => ({ id: `idea-${position}`, text }));
 
 const makeState = (version = 1, inbox: string[] = []): ProjectState => ({
     version,
     activeProject: null,
     goal: { name: "Goal", id: GOAL_ID, completionState: false, plan: { tasksList: [], dependenciesList: [] } },
-    inbox,
+    inbox: ideas(...inbox),
 });
 
 describe("useInbox", () => {
@@ -103,7 +106,7 @@ describe("useInbox", () => {
         mockedAPIClient.removeIdea.mockResolvedValue(state);
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["first", "second"]));
+        act(() => result.current.applyRemoteInbox(ideas("first", "second")));
 
         await act(async () => {
             await result.current.deleteIdea(1);
@@ -116,7 +119,7 @@ describe("useInbox", () => {
     it("changeIdea overlays the typed text locally without hitting the API", () => {
         const { result } = render();
 
-        act(() => result.current.applyRemoteInbox(["old", "other"]));
+        act(() => result.current.applyRemoteInbox(ideas("old", "other")));
         act(() => result.current.changeIdea(0, "new"));
 
         expect(result.current.ideaList).toEqual(["new", "other"]);
@@ -129,7 +132,7 @@ describe("useInbox", () => {
         mockedAPIClient.updateIdea.mockResolvedValue(state);
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["hello"]));
+        act(() => result.current.applyRemoteInbox(ideas("hello")));
         act(() => result.current.changeIdea(0, "hello there"));
 
         await act(async () => {
@@ -142,7 +145,7 @@ describe("useInbox", () => {
 
     it("commitIdea does nothing when there is no pending edit", async () => {
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["untouched"]));
+        act(() => result.current.applyRemoteInbox(ideas("untouched")));
 
         await act(async () => {
             await result.current.commitIdea(0);
@@ -154,10 +157,10 @@ describe("useInbox", () => {
     it("keeps typing intact when a change arrives for a different row", () => {
         const { result } = render();
 
-        act(() => result.current.applyRemoteInbox(["mine", "theirs"]));
+        act(() => result.current.applyRemoteInbox(ideas("mine", "theirs")));
         act(() => result.current.changeIdea(0, "mine, half typed"));
 
-        act(() => result.current.applyRemoteInbox(["mine", "theirs, edited"]));
+        act(() => result.current.applyRemoteInbox(ideas("mine", "theirs, edited")));
 
         expect(result.current.ideaList).toEqual(["mine, half typed", "theirs, edited"]);
     });
@@ -165,10 +168,10 @@ describe("useInbox", () => {
     it("keeps your typing when the row changes underneath, and says so", () => {
         const { result } = render();
 
-        act(() => result.current.applyRemoteInbox(["mine"]));
+        act(() => result.current.applyRemoteInbox(ideas("mine")));
         act(() => result.current.changeIdea(0, "mine, half typed"));
 
-        act(() => result.current.applyRemoteInbox(["somebody else got there first"]));
+        act(() => result.current.applyRemoteInbox(ideas("somebody else got there first")));
 
         // Discarding half-typed text without a word is the failure this exists
         // to prevent, so the text stays and the person is told instead.
@@ -183,9 +186,9 @@ describe("useInbox", () => {
         mockedAPIClient.updateIdea.mockResolvedValue(state);
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["mine"]));
+        act(() => result.current.applyRemoteInbox(ideas("mine")));
         act(() => result.current.changeIdea(0, "mine, half typed"));
-        act(() => result.current.applyRemoteInbox(["somebody else got there first"]));
+        act(() => result.current.applyRemoteInbox(ideas("somebody else got there first")));
 
         await act(async () => {
             await result.current.commitIdea(0);
@@ -199,10 +202,10 @@ describe("useInbox", () => {
     it("gives up an edit whose row was deleted by somebody else", () => {
         const { result } = render();
 
-        act(() => result.current.applyRemoteInbox(["first", "second"]));
+        act(() => result.current.applyRemoteInbox(ideas("first", "second")));
         act(() => result.current.changeIdea(1, "second, half typed"));
 
-        act(() => result.current.applyRemoteInbox(["first"]));
+        act(() => result.current.applyRemoteInbox(ideas("first")));
 
         expect(result.current.ideaList).toEqual(["first"]);
         expect(mockNotify).toHaveBeenCalledWith("An idea you were editing was removed by someone else.");
@@ -212,7 +215,7 @@ describe("useInbox", () => {
         mockedAPIClient.updateIdea.mockResolvedValue(makeState(3, ["committed"]));
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["mine"]));
+        act(() => result.current.applyRemoteInbox(ideas("mine")));
         act(() => result.current.changeIdea(0, "committed"));
 
         // The commit finishes, clearing the edit, and the push lands before
@@ -220,7 +223,7 @@ describe("useInbox", () => {
         // rendering still reports the edit as pending.
         await act(async () => {
             await result.current.commitIdea(0);
-            result.current.applyRemoteInbox(["somebody else wrote this"]);
+            result.current.applyRemoteInbox(ideas("somebody else wrote this"));
         });
 
         expect(result.current.ideaList).toEqual(["somebody else wrote this"]);
@@ -233,12 +236,12 @@ describe("useInbox", () => {
         mockedAPIClient.promoteAllIdeas.mockResolvedValue(makeState(4, []));
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["mine"]));
+        act(() => result.current.applyRemoteInbox(ideas("mine")));
         act(() => result.current.changeIdea(0, "mine, half typed"));
 
         await act(async () => {
             const promoting = result.current.addAllIdeasToPlan();
-            result.current.applyRemoteInbox([]);
+            result.current.applyRemoteInbox(ideas());
             await promoting;
         });
 
@@ -254,7 +257,7 @@ describe("useInbox", () => {
         });
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["mine"]));
+        act(() => result.current.applyRemoteInbox(ideas("mine")));
         act(() => result.current.changeIdea(0, "mine, half typed"));
 
         await act(async () => {
@@ -269,7 +272,7 @@ describe("useInbox", () => {
         mockedAPIClient.promoteIdea.mockResolvedValue(state);
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["a", "b", "c"]));
+        act(() => result.current.applyRemoteInbox(ideas("a", "b", "c")));
 
         await act(async () => {
             await result.current.addTaskToContextAndRemove(2);
@@ -299,7 +302,7 @@ describe("useInbox", () => {
         mockedAPIClient.promoteAllIdeas.mockResolvedValue(state);
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["a", "b", "c"]));
+        act(() => result.current.applyRemoteInbox(ideas("a", "b", "c")));
 
         await act(async () => {
             await result.current.addAllIdeasToPlan();
@@ -317,7 +320,7 @@ describe("useInbox", () => {
         mockedAPIClient.getState.mockResolvedValue(refetchedState);
 
         const { result } = render();
-        act(() => result.current.applyRemoteInbox(["a", "b", "c"]));
+        act(() => result.current.applyRemoteInbox(ideas("a", "b", "c")));
 
         await act(async () => {
             await result.current.addAllIdeasToPlan();

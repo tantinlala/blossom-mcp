@@ -159,7 +159,7 @@ describe("api router", () => {
             const res = await request(app).post("/api/inbox/add").send({ text: "idea 1" });
 
             expect(res.status).toBe(200);
-            expect(res.body.response.inbox).toEqual(["idea 1"]);
+            expect(res.body.response.inbox).toEqual([{ id: expect.any(String), text: "idea 1" }]);
         });
 
         it("should update an idea", async () => {
@@ -168,7 +168,7 @@ describe("api router", () => {
             const res = await request(app).post("/api/inbox/update").send({ index: 0, text: "updated" });
 
             expect(res.status).toBe(200);
-            expect(res.body.response.inbox).toEqual(["updated"]);
+            expect(res.body.response.inbox).toEqual([{ id: expect.any(String), text: "updated" }]);
         });
 
         it("should remove an idea", async () => {
@@ -272,7 +272,7 @@ describe("api router", () => {
             expect(project.saveProject).toHaveBeenCalledWith(
                 "myProject",
                 expect.objectContaining({ id: GOAL_ID, name: "Goal" }),
-                ["idea"],
+                [{ id: expect.any(String), text: "idea" }],
             );
             expect(store.activeProject).toBe("myProject");
         });
@@ -294,7 +294,10 @@ describe("api router", () => {
                 completionState: false,
                 plan: { tasksList: [], dependenciesList: [] },
             };
-            project.restoreProject.mockResolvedValue({ goal: restoredGoal, inbox: ["saved idea"] });
+            project.restoreProject.mockResolvedValue({
+                goal: restoredGoal,
+                inbox: [{ id: "idea-1", text: "saved idea" }],
+            });
 
             const res = await request(app).post("/api/projects/restore").send({ filename: "myProject" });
 
@@ -303,7 +306,7 @@ describe("api router", () => {
             // Legacy empty root id is normalized to the goal sentinel
             expect(res.body.response.goal.id).toBe(GOAL_ID);
             expect(res.body.response.goal.name).toBe("Restored Goal");
-            expect(res.body.response.inbox).toEqual(["saved idea"]);
+            expect(res.body.response.inbox).toEqual([{ id: "idea-1", text: "saved idea" }]);
             expect(res.body.response.activeProject).toBe("myProject");
         });
     });
