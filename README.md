@@ -164,11 +164,11 @@ The full tool list is documented in [docs/architecture/api.md](./docs/architectu
 
 The server hands the chat application a workflow on connect, so an opening line is enough to get going:
 
-- "Help me plan a wedding for next September." — starts the guided version: it asks what you are trying to achieve one question at a time, then suggests tasks you may not have thought of, then wires them into a graph.
+- "Help me plan a wedding for next September." — starts the guided version: it asks what you are trying to achieve one question at a time, then suggests tasks you may not have thought of, and wires them into a graph once you say you are ready.
 - "Add the florist, the cake and the shuttle to my wedding roadmap." — goes straight to editing a plan that already exists.
 - "What can I start on this week?" — reads the plan back and reports the unblocked work.
 
-Two prompts are also registered for the client's prompt picker: `plan-project` to start or resume the guided workflow, and `generate-plan` to organize whatever is already in the goal, tasks and inbox into a dependency graph.
+Two prompts are also registered for the client's prompt picker: `plan-project` to start or resume the guided workflow, and `generate-visual-roadmap` to organize whatever is already in the goal, tasks and inbox into a dependency graph.
 
 ## Understanding the Codebase
 

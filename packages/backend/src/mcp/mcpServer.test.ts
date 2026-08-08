@@ -83,6 +83,15 @@ describe("mcpServer", () => {
         expect(instructions).toContain("user-only");
     });
 
+    it("should leave the move into plan structuring to the user", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("The user decides when this phase starts");
+        expect(instructions).toContain("wait for their answer");
+    });
+
     it("should steer names to short imperative actions with detail in descriptions", async () => {
         await connect();
 
@@ -100,6 +109,25 @@ describe("mcpServer", () => {
 
         expect(instructions).toContain("when you want the user to review or prune them");
         expect(instructions).toContain("go straight to add_task");
+    });
+
+    it("should keep the inbox current by clearing ideas the conversation has made obsolete", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("read the inbox back");
+        expect(instructions).toContain("obsolete or redundant");
+        expect(instructions).toContain("remove_inbox_ideas");
+    });
+
+    it("should ask exactly one question per turn through both conversational phases", async () => {
+        await connect();
+
+        const instructions = client.getInstructions();
+
+        expect(instructions).toContain("End every turn of goal clarification and task identification with");
+        expect(instructions).toContain("exactly one question");
     });
 
     it("should tell the caller to read what the write tools echo back", async () => {
@@ -137,7 +165,7 @@ describe("mcpServer", () => {
         const instructions = client.getInstructions();
 
         expect(instructions).toContain("connects two siblings in the same plan");
-        expect(instructions).toContain("outgrows about 8 tasks");
+        expect(instructions).toContain("outgrows about 12 tasks");
         expect(instructions).toContain("single entry point and a single exit point");
         expect(instructions).toContain("move those tasks out of the group");
         expect(instructions).toContain("themes stay flat");
@@ -181,35 +209,53 @@ describe("mcpServer", () => {
         expect(byName.get("get_project_state")!.description).toContain("newest first");
     });
 
-    it("should expose the plan-project and generate-plan prompts", async () => {
+    it("should expose the plan-project and generate-visual-roadmap prompts", async () => {
         await connect();
 
         const result = await client.listPrompts();
         const promptNames = result.prompts.map((prompt) => prompt.name).sort();
-        expect(promptNames).toEqual(["generate-plan", "plan-project"]);
+        expect(promptNames).toEqual(["generate-visual-roadmap", "plan-project"]);
 
         const planProject = await client.getPrompt({ name: "plan-project" });
         const planProjectText = (planProject.messages[0].content as any).text;
         expect(planProjectText).toContain("get_project_state");
         expect(planProjectText).toContain("clarifying question");
 
-        const generatePlan = await client.getPrompt({ name: "generate-plan" });
-        const generatePlanText = (generatePlan.messages[0].content as any).text;
-        expect(generatePlanText).toContain("get_project_state");
-        expect(generatePlanText).toContain("get_next_tasks");
-        expect(generatePlanText).toContain("withSubplan");
+        const visualRoadmap = await client.getPrompt({ name: "generate-visual-roadmap" });
+        const visualRoadmapText = (visualRoadmap.messages[0].content as any).text;
+        expect(visualRoadmapText).toContain("get_project_state");
+        expect(visualRoadmapText).toContain("get_next_tasks");
+        expect(visualRoadmapText).toContain("withSubplan");
+    });
+
+    it("should gate plan structuring on the user in the plan-project prompt", async () => {
+        await connect();
+
+        const planProject = await client.getPrompt({ name: "plan-project" });
+        const planProjectText = (planProject.messages[0].content as any).text;
+        expect(planProjectText).toContain("only once I have asked for it");
+        expect(planProjectText).toContain("wait for my answer");
+    });
+
+    it("should carry the inbox pruning and one-question cadence into the plan-project prompt", async () => {
+        await connect();
+
+        const planProject = await client.getPrompt({ name: "plan-project" });
+        const planProjectText = (planProject.messages[0].content as any).text;
+        expect(planProjectText).toContain("clearing out the ones our conversation has made obsolete");
+        expect(planProjectText).toContain("End every turn of both with exactly one question");
     });
 
     it("should keep each prompt to a condensed statement of the workflow", async () => {
         await connect();
 
         const planProject = await client.getPrompt({ name: "plan-project" });
-        const generatePlan = await client.getPrompt({ name: "generate-plan" });
+        const visualRoadmap = await client.getPrompt({ name: "generate-visual-roadmap" });
 
         // The full workflow rides in on the server instructions; a prompt is a
         // kickoff message, so each stays within a few sentences.
         expect((planProject.messages[0].content as any).text.length).toBeLessThan(700);
-        expect((generatePlan.messages[0].content as any).text.length).toBeLessThan(1100);
+        expect((visualRoadmap.messages[0].content as any).text.length).toBeLessThan(1100);
     });
 
     describe("get_project_state", () => {
