@@ -61,7 +61,10 @@ const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({ open, onClose, se
             title="Task Details"
             testId="task-details-drawer"
         >
+            {/* Keying on the task id gives each task a fresh form, so the description
+                opens in its reading view whenever a different task is selected. */}
             <TaskDetailsForm
+                key={selectedTask.id}
                 name={name}
                 description={description}
                 completionState={completionState}
