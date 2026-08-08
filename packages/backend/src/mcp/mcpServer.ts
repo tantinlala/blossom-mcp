@@ -925,4 +925,4 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     return server;
 };
 
-export { createMcpServer };
+export { createMcpServer, MAX_TOP_LEVEL_TASKS };

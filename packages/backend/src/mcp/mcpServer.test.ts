@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { GOAL_ID, Task } from "@blossom/common";
-import { createMcpServer } from "./mcpServer";
+import { createMcpServer, MAX_TOP_LEVEL_TASKS } from "./mcpServer";
 import { ProjectStore } from "../state/projectStore";
 
 const EXPECTED_TOOLS = [
@@ -165,7 +165,7 @@ describe("mcpServer", () => {
         const instructions = client.getInstructions();
 
         expect(instructions).toContain("connects two siblings in the same plan");
-        expect(instructions).toContain("outgrows about 12 tasks");
+        expect(instructions).toContain(`outgrows about ${MAX_TOP_LEVEL_TASKS} tasks`);
         expect(instructions).toContain("single entry point and a single exit point");
         expect(instructions).toContain("move those tasks out of the group");
         expect(instructions).toContain("themes stay flat");
