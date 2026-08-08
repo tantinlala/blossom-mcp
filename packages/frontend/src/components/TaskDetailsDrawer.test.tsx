@@ -43,8 +43,7 @@ describe("TaskDetailsDrawer Component", () => {
         const nameInput = screen.getByTestId("task-name-input").querySelector("input");
         expect(nameInput).toHaveValue(mockTask.name);
 
-        const descriptionInput = screen.getByTestId("task-description-input").querySelector("textarea");
-        expect(descriptionInput).toHaveValue(mockTask.description);
+        expect(screen.getByTestId("task-description-display")).toHaveTextContent(mockTask.description);
 
         // For a task without a plan, the completion checkbox should be present
         expect(screen.getByTestId("task-completion-checkbox").querySelector("input")).not.toBeChecked();
@@ -83,6 +82,7 @@ describe("TaskDetailsDrawer Component", () => {
         fireEvent.change(nameInput, { target: { value: "Updated Task Name" } });
 
         // Edit the description field
+        fireEvent.click(screen.getByTestId("task-description-display"));
         const descriptionInput = screen.getByTestId("task-description-input").querySelector("textarea");
         fireEvent.change(descriptionInput, { target: { value: "Updated task description" } });
 

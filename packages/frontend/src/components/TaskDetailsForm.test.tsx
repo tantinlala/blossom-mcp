@@ -20,14 +20,19 @@ describe("TaskDetailsForm Component", () => {
         jest.clearAllMocks();
     });
 
+    /** Opens the description for editing and hands back its textarea. */
+    const openDescriptionEditor = (): HTMLTextAreaElement => {
+        fireEvent.click(screen.getByTestId("task-description-display"));
+        return screen.getByTestId("task-description-input").querySelector("textarea");
+    };
+
     it("renders form fields with correct values", () => {
         render(<TaskDetailsForm {...defaultProps} />);
 
         const nameInput = screen.getByTestId("task-name-input").querySelector("input");
         expect(nameInput).toHaveValue(defaultProps.name);
 
-        const descriptionInput = screen.getByTestId("task-description-input").querySelector("textarea");
-        expect(descriptionInput).toHaveValue(defaultProps.description);
+        expect(screen.getByTestId("task-description-display")).toHaveTextContent(defaultProps.description);
 
         // For a task without a plan, the completion checkbox should be present
         const completionCheckbox = screen.getByTestId("task-completion-checkbox").querySelector("input");
@@ -67,14 +72,67 @@ describe("TaskDetailsForm Component", () => {
         expect(defaultProps.onNameChange).toHaveBeenCalled();
 
         // Edit the description field
-        const descriptionInput = screen.getByTestId("task-description-input").querySelector("textarea");
-        fireEvent.change(descriptionInput, { target: { value: "Updated task description" } });
+        fireEvent.change(openDescriptionEditor(), { target: { value: "Updated task description" } });
         expect(defaultProps.onDescriptionChange).toHaveBeenCalled();
 
         // Toggle completion checkbox
         const completionCheckbox = screen.getByTestId("task-completion-checkbox").querySelector("input");
         fireEvent.click(completionCheckbox);
         expect(defaultProps.onCompletionStateChange).toHaveBeenCalled();
+    });
+
+    it("renders URLs in the description as links", () => {
+        render(<TaskDetailsForm {...defaultProps} description="Spec: https://example.com/spec" />);
+
+        const link = screen.getByRole("link", { name: "https://example.com/spec" });
+        expect(link).toHaveAttribute("href", "https://example.com/spec");
+    });
+
+    it("shows a placeholder when the description is empty", () => {
+        render(<TaskDetailsForm {...defaultProps} description="" />);
+
+        expect(screen.getByTestId("task-description-display")).toHaveTextContent("Add a description for this task...");
+    });
+
+    it("opens the description for editing when it is clicked", () => {
+        render(<TaskDetailsForm {...defaultProps} />);
+
+        expect(screen.queryByTestId("task-description-input")).not.toBeInTheDocument();
+
+        expect(openDescriptionEditor()).toHaveValue(defaultProps.description);
+        expect(screen.queryByTestId("task-description-display")).not.toBeInTheDocument();
+    });
+
+    it("opens the description for editing when Enter is pressed on it", () => {
+        render(<TaskDetailsForm {...defaultProps} />);
+
+        fireEvent.keyDown(screen.getByTestId("task-description-display"), { key: "Enter" });
+
+        expect(screen.getByTestId("task-description-input")).toBeInTheDocument();
+    });
+
+    it("does not follow a link click into the description editor", () => {
+        render(<TaskDetailsForm {...defaultProps} description="https://example.com" />);
+
+        fireEvent.click(screen.getByRole("link"));
+
+        expect(screen.queryByTestId("task-description-input")).not.toBeInTheDocument();
+    });
+
+    it("returns the description to its reading view on blur", () => {
+        render(<TaskDetailsForm {...defaultProps} />);
+
+        fireEvent.blur(openDescriptionEditor());
+
+        expect(screen.getByTestId("task-description-display")).toBeInTheDocument();
+    });
+
+    it("returns the description to its reading view when Escape is pressed", () => {
+        render(<TaskDetailsForm {...defaultProps} />);
+
+        fireEvent.keyDown(openDescriptionEditor(), { key: "Escape" });
+
+        expect(screen.getByTestId("task-description-display")).toBeInTheDocument();
     });
 
     it("calls onSave handler when save button is clicked", () => {
