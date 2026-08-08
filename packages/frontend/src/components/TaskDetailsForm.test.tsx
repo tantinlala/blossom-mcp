@@ -103,12 +103,26 @@ describe("TaskDetailsForm Component", () => {
         expect(screen.queryByTestId("task-description-display")).not.toBeInTheDocument();
     });
 
-    it("opens the description for editing when Enter is pressed on it", () => {
+    it("opens the description for editing from the edit button", () => {
         render(<TaskDetailsForm {...defaultProps} />);
 
-        fireEvent.keyDown(screen.getByTestId("task-description-display"), { key: "Enter" });
+        fireEvent.click(screen.getByRole("button", { name: "Edit description" }));
 
         expect(screen.getByTestId("task-description-input")).toBeInTheDocument();
+    });
+
+    it("hides the edit button while the description is being edited", () => {
+        render(<TaskDetailsForm {...defaultProps} />);
+
+        openDescriptionEditor();
+
+        expect(screen.queryByRole("button", { name: "Edit description" })).not.toBeInTheDocument();
+    });
+
+    it("keeps the description links out of the edit button, so they stay reachable", () => {
+        render(<TaskDetailsForm {...defaultProps} description="https://example.com" />);
+
+        expect(screen.getByRole("button", { name: "Edit description" })).not.toContainElement(screen.getByRole("link"));
     });
 
     it("does not follow a link click into the description editor", () => {

@@ -200,4 +200,31 @@ describe("TaskDetailsDrawer Component", () => {
         // Save button should be disabled again for new task
         expect(screen.getByTestId("update-task-button")).toBeDisabled();
     });
+
+    it("returns the description to its reading view when a new task is selected", () => {
+        const { rerender } = render(
+            <TaskDetailsDrawer
+                open={true}
+                onClose={mockOnClose}
+                selectedTask={mockTask}
+                updateTaskDetails={mockUpdateTaskDetails}
+            />,
+        );
+
+        // Open the description editor on the first task
+        fireEvent.click(screen.getByTestId("task-description-display"));
+        expect(screen.getByTestId("task-description-input")).toBeInTheDocument();
+
+        rerender(
+            <TaskDetailsDrawer
+                open={true}
+                onClose={mockOnClose}
+                selectedTask={mockTaskWithPlan}
+                updateTaskDetails={mockUpdateTaskDetails}
+            />,
+        );
+
+        expect(screen.queryByTestId("task-description-input")).not.toBeInTheDocument();
+        expect(screen.getByTestId("task-description-display")).toBeInTheDocument();
+    });
 });

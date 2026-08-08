@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import { Typography, Box, TextField, Checkbox, FormControlLabel, Button } from "@mui/material";
+import { Typography, Box, TextField, Checkbox, FormControlLabel, Button, IconButton } from "@mui/material";
 import CheckIcon from "@mui/icons-material/Check";
+import EditIcon from "@mui/icons-material/Edit";
 import LinkifiedText from "./LinkifiedText";
 
 /** Matches the height of the description field's six rows, so the block does not jump on edit. */
@@ -45,13 +46,6 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
         }
     };
 
-    const handleDisplayKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-        if (event.key === "Enter" && event.target === event.currentTarget) {
-            event.preventDefault();
-            setEditingDescription(true);
-        }
-    };
-
     return (
         <Box sx={{ p: 2, display: "flex", flexDirection: "column", height: "100%" }}>
             <Box sx={{ mb: 3 }}>
@@ -68,9 +62,25 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
             </Box>
 
             <Box sx={{ mb: 3 }}>
-                <Typography variant="subtitle2" color="text.secondary">
-                    Description
-                </Typography>
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 30 }}>
+                    <Typography variant="subtitle2" color="text.secondary">
+                        Description
+                    </Typography>
+                    {/* The reading view carries links, so it cannot double as the control that
+                        opens the editor - a button holding links is not reachable by assistive
+                        tech. This button is the keyboard and screen reader route in; clicking
+                        the text itself is the shortcut for a mouse. */}
+                    {!editingDescription && (
+                        <IconButton
+                            size="small"
+                            onClick={() => setEditingDescription(true)}
+                            aria-label="Edit description"
+                            data-testid="edit-description-button"
+                        >
+                            <EditIcon fontSize="small" />
+                        </IconButton>
+                    )}
+                </Box>
                 {editingDescription ? (
                     <TextField
                         fullWidth
@@ -88,10 +98,7 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
                     />
                 ) : (
                     <Box
-                        tabIndex={0}
                         onClick={() => setEditingDescription(true)}
-                        onKeyDown={handleDisplayKeyDown}
-                        aria-label="Description, press Enter to edit"
                         data-testid="task-description-display"
                         sx={{
                             mt: 1,
