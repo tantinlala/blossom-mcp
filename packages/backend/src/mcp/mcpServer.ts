@@ -12,7 +12,7 @@ const TREE_EXPLANATION =
     `the source task must finish before the target can start.`;
 
 // How many top-level tasks a plan should hold before grouping into subgoals.
-const MAX_TOP_LEVEL_TASKS = 8;
+const MAX_TOP_LEVEL_TASKS = 12;
 
 // One line naming every tool, so a client can see the whole surface without a
 // discovery round-trip per tool.
@@ -83,8 +83,12 @@ const SERVER_INSTRUCTIONS =
     `non-obvious ones. Exclude tasks about finding instructions or recipes. Park candidates in the inbox ` +
     `with add_inbox_idea or add_inbox_ideas when you want the user to review or prune them before they ` +
     `reach the roadmap; go straight to add_task or add_tasks when the user has already agreed the scope, ` +
-    `or has handed you a specification to work from.\n\n` +
-    `**Phase 3: Plan Structuring.** When the user is ready to organize (or asks for a plan), turn agreed ` +
+    `or has handed you a specification to work from. Keep the inbox current as the goal sharpens: on each ` +
+    `turn, read the inbox back and clear out ideas the conversation has made obsolete or redundant with ` +
+    `remove_inbox_idea or remove_inbox_ideas, telling the user which ones went and why.\n\n` +
+    `**Phase 3: Plan Structuring.** The user decides when this phase starts. Once the tasks look ` +
+    `complete, ask whether they are ready to organize and wait for their answer; begin as soon as they ` +
+    `ask for a plan. Then turn agreed ` +
     `ideas into tasks (promote_inbox_idea or add_task), each with a short imperative name and a ` +
     `description that captures the specifics from the conversation. If a plan level grows beyond about ` +
     `${MAX_TOP_LEVEL_TASKS} tasks, look for self-contained chains - single entry, single exit - and ` +
@@ -99,8 +103,10 @@ const SERVER_INSTRUCTIONS =
     `**Checking your work:** Every tool that changes something echoes back what it changed, names and all. ` +
     `Read those echoes: they are how you catch a task built from the wrong text before the rest of the ` +
     `roadmap is hung off it.\n\n` +
-    `**Tone:** Non-conversational. Do not parrot the user. Ask exactly one question per turn while ` +
-    `clarifying. Saving, opening, and creating projects is user-only in the web UI - never attempt it.`;
+    `**Tone:** Non-conversational. Do not parrot the user. End every turn of goal clarification and task ` +
+    `identification with exactly one question: while clarifying it sharpens the goal, and while ` +
+    `identifying tasks it offers the user options to choose between. Saving, opening, and creating ` +
+    `projects is user-only in the web UI - never attempt it.`;
 
 const textResult = (value: unknown) => {
     return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
@@ -175,12 +181,15 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                     content: {
                         type: "text" as const,
                         text:
-                            `Help me plan my project. Clarify the goal first, asking one question per turn ` +
-                            `about WHAT and WHY and keeping it current with set_goal; then suggest tasks ` +
-                            `comprehensively, parking candidates in the inbox for my review; then structure ` +
-                            `them into a dependency-ordered roadmap. Begin by calling get_project_state and ` +
-                            `either asking your first clarifying question or, if the goal is already clear, ` +
-                            `continuing with task identification.`,
+                            `Help me plan my project. Clarify the goal first, asking about WHAT and WHY and ` +
+                            `keeping it current with set_goal; then suggest tasks comprehensively, parking ` +
+                            `candidates in the inbox for my review and clearing out the ones our ` +
+                            `conversation has made obsolete. End every turn of both with exactly one ` +
+                            `question. Structure the tasks into a dependency-ordered roadmap only once I ` +
+                            `have asked for it: when they look complete, ask me whether I am ready and wait ` +
+                            `for my answer. Begin by calling get_project_state and either asking your first ` +
+                            `clarifying question or, if the goal is already clear, continuing with task ` +
+                            `identification.`,
                     },
                 },
             ],
@@ -188,9 +197,9 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     );
 
     server.registerPrompt(
-        "generate-plan",
+        "generate-visual-roadmap",
         {
-            title: "Generate the roadmap",
+            title: "Generate the visual roadmap",
             description: "Organize the current goal, tasks, and inbox ideas into a dependency-ordered roadmap.",
         },
         () => ({
@@ -916,4 +925,4 @@ const createMcpServer = (store: ProjectStore): McpServer => {
     return server;
 };
 
-export { createMcpServer };
+export { createMcpServer, MAX_TOP_LEVEL_TASKS };
