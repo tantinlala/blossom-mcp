@@ -33,6 +33,8 @@ export const EDGE_UPDATABLE_HANDLE = "target" as HandleType;
 export const EDGE_MARKER_TYPE = MarkerType.ArrowClosed;
 export const EDGE_WIDTH = 1.5;
 export const EDGE_WIDTH_HIGHLIGHTED = 2;
+/** A selected dependency is the thickest line on the canvas, since acting on it - deleting it - needs it picked out for certain. */
+export const EDGE_WIDTH_SELECTED = 3;
 export const EDGE_MARKER_SIZE = 14;
 /** How far out-of-focus nodes and edges fade when a chain is being traced. */
 export const DIMMED_OPACITY = 0.15;

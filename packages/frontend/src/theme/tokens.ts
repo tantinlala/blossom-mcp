@@ -38,6 +38,7 @@ export interface Palette {
         default: string;
         marker: string;
         highlighted: string;
+        selected: string;
     };
 }
 
@@ -68,6 +69,9 @@ const light: Palette = {
         default: "#B4BAC4",
         marker: "#9AA1AC",
         highlighted: "#1D4E89",
+        // The accent a selected node is ringed in, so one selection colour covers
+        // both kinds of element
+        selected: "#1D4E89",
     },
 };
 

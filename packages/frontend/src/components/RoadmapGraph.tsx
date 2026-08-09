@@ -31,7 +31,7 @@ import { GOAL_ID, createGoalNode } from "../utils/goalNodeUtils";
 import { TaskAndState, TaskState } from "../types/extendedTasks";
 import { Dependency, Task } from "@blossom/common";
 import { Roadmap } from "../types/roadmap";
-import TaskNode, { EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, DIMMED_OPACITY, Position } from "./TaskNode";
+import TaskNode, { EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, EDGE_WIDTH_SELECTED, DIMMED_OPACITY, Position } from "./TaskNode";
 import { useGraphHighlight } from "../hooks/useGraphHighlight";
 import { Direction, nextTaskInDirection } from "../utils/spatialNavigation";
 import { PromptForText } from "../hooks/useTextPrompt";
@@ -463,23 +463,39 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [handleSelectTask],
     );
 
+    /**
+     * Takes the selection off every dependency. One thing on the canvas is picked
+     * out at a time, so whatever puts the selection on a task takes it off the
+     * dependencies - and the delete key reads both, so a dependency left selected
+     * would go with the task.
+     */
+    const deselectEdges = useCallback(() => {
+        setEdges((currentEdges) =>
+            currentEdges.some((edge) => edge.selected)
+                ? currentEdges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge))
+                : currentEdges,
+        );
+    }, [setEdges]);
+
     /** Drops the highlight, leaving the graph with nothing picked out. */
     const clearHighlight = useCallback(() => {
         setNodes((currentNodes) => currentNodes.map((node) => (node.selected ? { ...node, selected: false } : node)));
+        deselectEdges();
         setSelectedNodes([]);
-    }, [setNodes]);
+    }, [setNodes, deselectEdges]);
 
     /** Picks a task out, the way clicking it does. */
     const highlightTask = useCallback(
         (taskId: string) => {
             setNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: node.id === taskId })));
+            deselectEdges();
             // Arriving by keyboard says as much about which task is being worked
             // on as clicking it does, so the details panel follows either way.
             if (taskId !== GOAL_ID) {
                 handleSelectTask(taskId);
             }
         },
-        [setNodes, handleSelectTask],
+        [setNodes, deselectEdges, handleSelectTask],
     );
 
     // A task asked for while its plan was still being swapped in gets the
@@ -879,22 +895,41 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     }, [nodes, highlight, isTracingChain]);
 
     const displayEdges = useMemo(() => {
-        if (!isTracingChain) {
-            return edges;
-        }
-        return edges.map((edge) =>
-            highlight.edgeIds.has(edge.id)
+        const traced = !isTracingChain
+            ? edges
+            : edges.map((edge) =>
+                  highlight.edgeIds.has(edge.id)
+                      ? {
+                            ...edge,
+                            style: {
+                                ...edge.style,
+                                stroke: palette.edge.highlighted,
+                                strokeWidth: EDGE_WIDTH_HIGHLIGHTED,
+                            },
+                            markerEnd: { ...(edge.markerEnd as object), color: palette.edge.highlighted },
+                            zIndex: 1,
+                        }
+                      : { ...edge, style: { ...edge.style, opacity: DIMMED_OPACITY } },
+              );
+
+        // A selected dependency is drawn last and at full opacity, so it stays the
+        // line the eye lands on however the rest of the graph is being traced. The
+        // delete key acts on it, so which line that is has to be visible before the
+        // key is hit.
+        return traced.map((edge) =>
+            edge.selected
                 ? {
                       ...edge,
                       style: {
                           ...edge.style,
-                          stroke: palette.edge.highlighted,
-                          strokeWidth: EDGE_WIDTH_HIGHLIGHTED,
+                          stroke: palette.edge.selected,
+                          strokeWidth: EDGE_WIDTH_SELECTED,
+                          opacity: 1,
                       },
-                      markerEnd: { ...(edge.markerEnd as object), color: palette.edge.highlighted },
-                      zIndex: 1,
+                      markerEnd: { ...(edge.markerEnd as object), color: palette.edge.selected },
+                      zIndex: 2,
                   }
-                : { ...edge, style: { ...edge.style, opacity: DIMMED_OPACITY } },
+                : edge,
         );
     }, [edges, highlight, isTracingChain]);
 
