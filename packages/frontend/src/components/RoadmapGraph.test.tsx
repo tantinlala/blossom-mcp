@@ -8,6 +8,8 @@ import { Dependency, Task } from "@blossom/common";
 import { TASK_COMPLETED_COLOR, TASK_BLOCKED_COLOR, TASK_UNBLOCKED_COLOR, GOAL_COLOR } from "../utils/colors";
 import { TaskAndState, TaskState } from "../types/extendedTasks";
 import { Roadmap } from "../types/roadmap";
+import { palette } from "../theme/tokens";
+import { EDGE_WIDTH, EDGE_WIDTH_HIGHLIGHTED, EDGE_WIDTH_SELECTED } from "./TaskNode";
 
 // How many edges each layout run was given, in the order the runs happened.
 const mockLayoutEdgeCounts: number[] = [];
@@ -211,6 +213,107 @@ describe("RoadmapGraph", () => {
 
             expect(opacityOf("Subtask One")).toBe("");
             expect(opacityOf("Subtask Two")).toBe("");
+        });
+    });
+
+    describe("dependency selection", () => {
+        const task = (id: string, name: string): TaskAndState => ({
+            task: { name, id, completionState: false, plan: null },
+            state: TaskState.UNBLOCKED,
+        });
+
+        /** The colour as the DOM reports it back, which is the form a style read returns. */
+        const asCssColour = (colour: string) => {
+            const probe = document.createElement("div");
+            probe.style.stroke = colour;
+            return probe.style.stroke;
+        };
+
+        const dependencyGroup = () => document.querySelector(".react-flow__edge") as Element;
+        const dependencyPath = () => document.querySelector(".react-flow__edge-path") as SVGPathElement;
+
+        const renderWithOneDependency = async () => {
+            const rendered = renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B")],
+                [{ source: "a", target: "b" }],
+            );
+            await waitFor(() => expect(dependencyPath()).toBeInTheDocument());
+            return rendered;
+        };
+
+        const pressKey = (container: HTMLElement, key: string) =>
+            fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key });
+
+        test("draws a dependency in the default stroke while nothing is selected", async () => {
+            await renderWithOneDependency();
+
+            expect(dependencyPath().style.stroke).toBe(asCssColour(palette.edge.default));
+            expect(dependencyPath().style.strokeWidth).toBe(String(EDGE_WIDTH));
+        });
+
+        test("draws a clicked dependency in the selection colour", async () => {
+            await renderWithOneDependency();
+
+            fireEvent.click(dependencyGroup());
+
+            await waitFor(() => expect(dependencyPath().style.stroke).toBe(asCssColour(palette.edge.selected)));
+            expect(dependencyPath().style.strokeWidth).toBe(String(EDGE_WIDTH_SELECTED));
+        });
+
+        test("returns a dependency to the default stroke once the selection moves to the pane", async () => {
+            await renderWithOneDependency();
+
+            fireEvent.click(dependencyGroup());
+            await waitFor(() => expect(dependencyPath().style.stroke).toBe(asCssColour(palette.edge.selected)));
+
+            fireEvent.click(document.querySelector(".react-flow__pane") as Element);
+
+            await waitFor(() => expect(dependencyPath().style.stroke).toBe(asCssColour(palette.edge.default)));
+        });
+
+        test("hands the selection over to the task an arrow key highlights", async () => {
+            const { container } = await renderWithOneDependency();
+
+            fireEvent.click(dependencyGroup());
+            await waitFor(() => expect(dependencyGroup().classList.contains("selected")).toBe(true));
+
+            pressKey(container, "ArrowRight");
+
+            // The highlighted task traces its chain, which the dependency is part
+            // of, so it is the selection width that says the selection has moved.
+            await waitFor(() => expect(dependencyGroup().classList.contains("selected")).toBe(false));
+            expect(dependencyPath().style.strokeWidth).toBe(String(EDGE_WIDTH_HIGHLIGHTED));
+        });
+
+        test("returns a dependency to the default stroke on Escape", async () => {
+            const { container } = await renderWithOneDependency();
+
+            fireEvent.click(dependencyGroup());
+            await waitFor(() => expect(dependencyPath().style.stroke).toBe(asCssColour(palette.edge.selected)));
+
+            pressKey(container, "Escape");
+
+            await waitFor(() => expect(dependencyPath().style.stroke).toBe(asCssColour(palette.edge.default)));
+        });
+
+        test("keeps a selected dependency at full strength while a chain is traced around it", async () => {
+            renderRoadmapGraph(
+                [task("a", "Task A"), task("b", "Task B"), task("c", "Task C"), task("d", "Task D")],
+                [
+                    { source: "a", target: "b" },
+                    { source: "c", target: "d" },
+                ],
+            );
+            await waitFor(() => expect(document.querySelectorAll(".react-flow__edge-path")).toHaveLength(2));
+
+            const [firstDependency] = Array.from(document.querySelectorAll(".react-flow__edge"));
+            fireEvent.click(firstDependency);
+            // Hovering the other chain dims everything outside it
+            fireEvent.mouseEnter(screen.getByText("Task C").closest(".react-flow__node") as HTMLElement);
+
+            const selectedPath = firstDependency.querySelector(".react-flow__edge-path") as SVGPathElement;
+            await waitFor(() => expect(selectedPath.style.stroke).toBe(asCssColour(palette.edge.selected)));
+            expect(selectedPath.style.opacity).toBe("1");
         });
     });
 
