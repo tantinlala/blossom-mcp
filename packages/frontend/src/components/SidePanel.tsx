@@ -13,9 +13,9 @@ interface SidePanelProps {
 
 /**
  * A panel docked to the right of the workspace. It takes up width alongside the
- * graph rather than covering it, so the plan stays visible and interactive while
- * the panel is open - both panels that use it are reference views you consult
- * *while* editing the plan.
+ * graph, so the plan stays visible and interactive while the panel is open -
+ * both panels that use it are reference views you consult *while* editing the
+ * plan.
  *
  * The left edge is a grab strip: dragging it moves the boundary between the
  * canvas and the panel, so whichever of the two needs the room can have it.

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export const DEFAULT_SIDE_PANEL_WIDTH = 340;
 export const MIN_SIDE_PANEL_WIDTH = 260;
