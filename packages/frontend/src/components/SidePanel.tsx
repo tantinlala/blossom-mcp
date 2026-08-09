@@ -1,8 +1,7 @@
 import React from "react";
 import { Box, IconButton, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-
-export const SIDE_PANEL_WIDTH = 340;
+import { useSidePanelWidth } from "../hooks/useSidePanelWidth";
 
 interface SidePanelProps {
     open: boolean;
@@ -17,8 +16,13 @@ interface SidePanelProps {
  * graph rather than covering it, so the plan stays visible and interactive while
  * the panel is open - both panels that use it are reference views you consult
  * *while* editing the plan.
+ *
+ * The left edge is a grab strip: dragging it moves the boundary between the
+ * canvas and the panel, so whichever of the two needs the room can have it.
  */
 const SidePanel: React.FC<SidePanelProps> = ({ open, title, onClose, children, testId }) => {
+    const { width, dragging, handleProps } = useSidePanelWidth();
+
     if (!open) {
         return null;
     }
@@ -28,7 +32,8 @@ const SidePanel: React.FC<SidePanelProps> = ({ open, title, onClose, children, t
             component="aside"
             data-testid={testId}
             sx={{
-                width: SIDE_PANEL_WIDTH,
+                position: "relative",
+                width,
                 flexShrink: 0,
                 height: "100%",
                 display: "flex",
@@ -39,6 +44,24 @@ const SidePanel: React.FC<SidePanelProps> = ({ open, title, onClose, children, t
                 bgcolor: "background.paper",
             }}
         >
+            <Box
+                {...handleProps}
+                data-testid={testId ? `${testId}-resize-handle` : undefined}
+                sx={{
+                    position: "absolute",
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 6,
+                    zIndex: 2,
+                    cursor: "col-resize",
+                    touchAction: "none",
+                    bgcolor: dragging ? "primary.main" : "transparent",
+                    transition: "background-color 120ms",
+                    "&:hover": { bgcolor: "primary.main" },
+                    "&:focus-visible": { outline: "none", bgcolor: "primary.main" },
+                }}
+            />
             <Box
                 sx={{
                     display: "flex",
