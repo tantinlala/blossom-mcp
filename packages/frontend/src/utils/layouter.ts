@@ -8,7 +8,18 @@ const RANK_SEPARATION = 120;
 const NODE_SEPARATION = 40;
 const EDGE_SEPARATION = 20;
 
-const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
+// The band of empty canvas between one project's lane and the next. Wide enough
+// that the gap reads as a division between two projects.
+const LANE_SEPARATION = 160;
+
+/** Which project a node belongs to, so its lane can be told from its neighbours'. */
+const laneOf = (node: Node): string => String(node.data?.projectKey ?? "");
+
+/** Lays one project's plan out left to right, and reports the box it filled. */
+const layoutLane = (
+    nodes: Node[],
+    edges: Edge[],
+): { positions: Map<string, { x: number; y: number }>; height: number } => {
     const dagreGraph = new dagre.graphlib.Graph();
     dagreGraph.setDefaultEdgeLabel(() => ({}));
     dagreGraph.setGraph({
@@ -18,44 +29,104 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
         edgesep: EDGE_SEPARATION,
     });
 
-    // Create a copy of nodes and edges to avoid mutating the input
-    const nodesCopy = nodes.map((node) => ({ ...node }));
-    const edgesCopy = edges.map((edge) => ({ ...edge }));
-
-    nodesCopy.forEach((node) => {
+    nodes.forEach((node) => {
         dagreGraph.setNode(node.id, { width: node.measured?.width ?? 0, height: node.measured?.height ?? 0 });
     });
-
-    edgesCopy.forEach((edge) => {
-        dagreGraph.setEdge(edge.source, edge.target);
+    edges.forEach((edge) => {
+        // An edge whose ends are not both in this lane has nothing to say about
+        // where these nodes go.
+        if (dagreGraph.hasNode(edge.source) && dagreGraph.hasNode(edge.target)) {
+            dagreGraph.setEdge(edge.source, edge.target);
+        }
     });
 
     dagre.layout(dagreGraph);
 
-    const goalNode = dagreGraph.node("Goal");
+    const positions = new Map<string, { x: number; y: number }>();
+    let top = Number.POSITIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
 
-    // Create new node objects with updated positions
+    nodes.forEach((node) => {
+        const placed = dagreGraph.node(node.id);
+        if (!placed) {
+            return;
+        }
+        positions.set(node.id, { x: placed.x, y: placed.y });
+        top = Math.min(top, placed.y - placed.height / 2);
+        bottom = Math.max(bottom, placed.y + placed.height / 2);
+    });
+
+    const height = Number.isFinite(top) ? bottom - top : 0;
+
+    // Every lane is measured from its own top edge, so stacking them is a matter
+    // of adding up the heights that came before.
+    if (Number.isFinite(top)) {
+        positions.forEach((position, id) => {
+            positions.set(id, { x: position.x, y: position.y - top });
+        });
+    }
+
+    return { positions, height };
+};
+
+/**
+ * Places every node on the board.
+ *
+ * Each project is laid out on its own, from the dependencies inside it, and the
+ * results are stacked down the canvas as bands - so a board holding several
+ * projects reads as one lane per project, and the plan inside a lane is laid out
+ * exactly as it would be on a board of its own.
+ *
+ * `laneOrder` fixes which band a project gets, so the lanes stay in the order the
+ * session chose them however the graph changes underneath.
+ */
+const getLayoutedElements = (nodes: Node[], edges: Edge[], laneOrder: string[] = []) => {
+    const nodesCopy = nodes.map((node) => ({ ...node }));
+    const edgesCopy = edges.map((edge) => ({ ...edge }));
+
+    const byLane = new Map<string, Node[]>();
+    for (const node of nodesCopy) {
+        const lane = laneOf(node);
+        const existing = byLane.get(lane);
+        if (existing) {
+            existing.push(node);
+        } else {
+            byLane.set(lane, [node]);
+        }
+    }
+
+    // Lanes the caller named come first, in that order; anything else follows in
+    // the order it turned up, so no node is left unplaced.
+    const lanes = [
+        ...laneOrder.filter((lane) => byLane.has(lane)),
+        ...[...byLane.keys()].filter((lane) => !laneOrder.includes(lane)),
+    ];
+
+    const positions = new Map<string, { x: number; y: number }>();
+    let offsetY = 0;
+    for (const lane of lanes) {
+        const laneNodes = byLane.get(lane)!;
+        const { positions: lanePositions, height } = layoutLane(laneNodes, edgesCopy);
+        for (const [id, position] of lanePositions) {
+            positions.set(id, { x: position.x, y: position.y + offsetY });
+        }
+        offsetY += height + LANE_SEPARATION;
+    }
+
     const layoutedNodes = nodesCopy.map((node) => {
-        const nodeWithPosition = dagreGraph.node(node.id);
-
-        // Skip nodes that don't exist in the dagre graph
-        if (!nodeWithPosition) {
+        const position = positions.get(node.id);
+        if (!position) {
             return node;
         }
-
-        // Create a new node object with updated properties
         return {
             ...node,
             targetPosition: TARGET_HANDLE_POSITION,
             sourcePosition: SOURCE_HANDLE_POSITION,
-            position: {
-                x: nodeWithPosition.x - (goalNode ? goalNode.x : 0),
-                y: nodeWithPosition.y - (goalNode ? goalNode.y : 0),
-            },
+            position,
         };
     });
 
     return { nodes: layoutedNodes, edges: edgesCopy };
 };
 
-export { getLayoutedElements };
+export { getLayoutedElements, LANE_SEPARATION };

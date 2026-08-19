@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { GOAL_ID, MCP_AUTHOR, Task } from "@blossom/common";
-import { ProjectStore, UndoBlockedError } from "../state/projectStore";
+import { UndoBlockedError } from "../state/projectStore";
+import { Workspace } from "../state/workspace";
 import { checkName, checkNames, MAX_NAME_CHARS } from "./nameRules";
 
 const TREE_EXPLANATION =
@@ -105,7 +106,8 @@ const SERVER_INSTRUCTIONS =
     `roadmap is hung off it.\n\n` +
     `**Tone:** Non-conversational. Do not parrot the user. End every turn of goal clarification and task ` +
     `identification with exactly one question: while clarifying it sharpens the goal, and while ` +
-    `identifying tasks it offers the user options to choose between. Saving, opening, and creating ` +
+    `identifying tasks it offers the user options to choose between. You work on the one project the ` +
+    `user has chosen for you in the web UI, which get_project_state names; saving, opening, and creating ` +
     `projects is user-only in the web UI - never attempt it.`;
 
 const textResult = (value: unknown) => {
@@ -154,15 +156,21 @@ const IDEA_INDEX_PARAM = z
 /**
  * Builds the MCP server through which external chat applications (e.g. Claude
  * Desktop) collaborate on the project plan. All mutations go through the same
- * ProjectStore as the REST API, so every connected web UI is pushed the change
- * as it happens.
+ * ProjectStore as the REST API, so every web UI looking at that project is
+ * pushed the change as it happens.
+ *
+ * Which project that is comes from the workspace, where a person chooses it in
+ * the web UI. It is read on each call, so moving the assistant onto another
+ * project takes effect on the assistant's next tool call.
  */
-const createMcpServer = (store: ProjectStore): McpServer => {
+const createMcpServer = (workspace: Workspace): McpServer => {
     const server = new McpServer({ name: "blossom", version: "1.0.0" }, { instructions: SERVER_INSTRUCTIONS });
+
+    const store = () => workspace.assistantStore();
 
     // Attributes every change made through MCP, so undo can tell the work done
     // here apart from whatever people are doing in the web UI.
-    const asMcp = <T>(fn: () => T): T => store.runAs(MCP_AUTHOR, fn);
+    const asMcp = <T>(fn: () => T): T => store().runAs(MCP_AUTHOR, fn);
 
     // Invocable prompts for clients that surface them (e.g. Claude Desktop).
     // Each carries a condensed statement of the workflow, sized so a client
@@ -234,11 +242,17 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         "get_project_state",
         {
             description:
-                `Get the full current project state: version counter, active project name, the complete goal ` +
-                `tree and the inbox of raw ideas. Each inbox entry is {id, text}; address ideas by that id. ` +
-                `The inbox is ordered newest first. ${TREE_EXPLANATION}`,
+                `Get the full current project state: version counter, the key naming the project, whether a ` +
+                `file holds it, the complete goal tree and the inbox of raw ideas. Each inbox entry is ` +
+                `{id, text}; address ideas by that id. The inbox is ordered newest first. ${TREE_EXPLANATION}`,
         },
-        async () => textResult(store.getState()),
+        async () => {
+            try {
+                return textResult(store().getState());
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
     );
 
     server.registerTool(
@@ -253,7 +267,12 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             },
         },
         async ({ taskId }) => {
-            const task = store.findTask(taskId ?? GOAL_ID);
+            let task: Task | null;
+            try {
+                task = store().findTask(taskId ?? GOAL_ID);
+            } catch (error) {
+                return errorResult(error);
+            }
             if (!task) {
                 return errorResult(`Task not found: ${taskId}`);
             }
@@ -281,7 +300,13 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                 "List the tasks that are currently actionable: incomplete leaf tasks whose dependencies are " +
                 "all complete.",
         },
-        async () => textResult(store.getNextTasks()),
+        async () => {
+            try {
+                return textResult(store().getNextTasks());
+            } catch (error) {
+                return errorResult(error);
+            }
+        },
     );
 
     // ------------------------------------------------------------- mutations
@@ -303,15 +328,15 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                 // The goal names the whole project, so spanning several
                 // outcomes is its job and earns no "and" warning.
                 const warnings = checkName(name, { subgoal: true });
-                asMcp(() => store.setGoal(name, description));
-                const goal = store.findTask(GOAL_ID)!;
+                asMcp(() => store().setGoal(name, description));
+                const goal = store().findTask(GOAL_ID)!;
                 return textResult(
                     withWarnings(
                         {
                             taskId: GOAL_ID,
                             name: goal.name,
                             description: goal.description,
-                            version: store.getVersion(),
+                            version: store().getVersion(),
                         },
                         warnings,
                     ),
@@ -343,7 +368,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         async ({ name, description, parentId, withSubplan }) => {
             try {
                 const warnings = checkName(name, { subgoal: withSubplan ?? false });
-                const task = asMcp(() => store.addTask(parentId ?? GOAL_ID, name, description, withSubplan));
+                const task = asMcp(() => store().addTask(parentId ?? GOAL_ID, name, description, withSubplan));
                 return textResult(
                     withWarnings(
                         {
@@ -351,7 +376,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                             name: task.name,
                             parentId: parentId ?? GOAL_ID,
                             hasSubplan: task.plan !== null,
-                            version: store.getVersion(),
+                            version: store().getVersion(),
                         },
                         warnings,
                     ),
@@ -390,7 +415,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                 const warnings = tasks.flatMap((draft) =>
                     checkName(draft.name, { subgoal: draft.withSubplan ?? false }),
                 );
-                const added = asMcp(() => store.addTasks(tasks));
+                const added = asMcp(() => store().addTasks(tasks));
                 return textResult(
                     withWarnings(
                         {
@@ -400,7 +425,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                                 parentId: tasks[position].parentId ?? GOAL_ID,
                                 hasSubplan: task.plan !== null,
                             })),
-                            version: store.getVersion(),
+                            version: store().getVersion(),
                         },
                         warnings,
                     ),
@@ -425,17 +450,17 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             try {
                 // A task that holds a subplan is a subgoal, so its name gets
                 // the subgoal reading when the "and" heuristic is applied.
-                const subgoal = (store.findTask(taskId)?.plan ?? null) !== null;
+                const subgoal = (store().findTask(taskId)?.plan ?? null) !== null;
                 const warnings = name === undefined ? [] : checkName(name, { subgoal });
-                asMcp(() => store.updateTask(taskId, { name, description }));
-                const task = store.findTask(taskId)!;
+                asMcp(() => store().updateTask(taskId, { name, description }));
+                const task = store().findTask(taskId)!;
                 return textResult(
                     withWarnings(
                         {
                             taskId: task.id,
                             name: task.name,
                             description: task.description,
-                            version: store.getVersion(),
+                            version: store().getVersion(),
                         },
                         warnings,
                     ),
@@ -461,12 +486,12 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId, newParentId }) => {
             try {
-                const task = asMcp(() => store.moveTask(taskId, newParentId));
+                const task = asMcp(() => store().moveTask(taskId, newParentId));
                 return textResult({
                     taskId: task.id,
                     name: task.name,
                     parentId: newParentId,
-                    version: store.getVersion(),
+                    version: store().getVersion(),
                 });
             } catch (error) {
                 return errorResult(error);
@@ -498,14 +523,14 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ moves }) => {
             try {
-                const tasks = asMcp(() => store.moveTasks(moves));
+                const tasks = asMcp(() => store().moveTasks(moves));
                 return textResult({
                     tasks: tasks.map((task, position) => ({
                         taskId: task.id,
                         name: task.name,
                         parentId: moves[position].newParentId,
                     })),
-                    version: store.getVersion(),
+                    version: store().getVersion(),
                 });
             } catch (error) {
                 return errorResult(error);
@@ -526,13 +551,13 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId, completed }) => {
             try {
-                asMcp(() => store.setTaskCompletion(taskId, completed));
-                const task = store.findTask(taskId)!;
+                asMcp(() => store().setTaskCompletion(taskId, completed));
+                const task = store().findTask(taskId)!;
                 return textResult({
                     taskId: task.id,
                     name: task.name,
                     completionState: task.completionState,
-                    version: store.getVersion(),
+                    version: store().getVersion(),
                 });
             } catch (error) {
                 return errorResult(error);
@@ -550,10 +575,10 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId }) => {
             try {
-                const doomed = store.findTask(taskId);
+                const doomed = store().findTask(taskId);
                 const name = doomed?.name;
-                asMcp(() => store.removeTask(taskId));
-                return textResult({ taskId, name, deleted: true, version: store.getVersion() });
+                asMcp(() => store().removeTask(taskId));
+                return textResult({ taskId, name, deleted: true, version: store().getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -572,10 +597,10 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskIds }) => {
             try {
-                const deleted = asMcp(() => store.removeTasks(taskIds));
+                const deleted = asMcp(() => store().removeTasks(taskIds));
                 return textResult({
                     tasks: deleted.map((task) => ({ taskId: task.id, name: task.name, deleted: true })),
-                    version: store.getVersion(),
+                    version: store().getVersion(),
                 });
             } catch (error) {
                 return errorResult(error);
@@ -594,9 +619,9 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ taskId }) => {
             try {
-                asMcp(() => store.createSubplan(taskId));
-                const task = store.findTask(taskId)!;
-                return textResult({ taskId: task.id, name: task.name, version: store.getVersion() });
+                asMcp(() => store().createSubplan(taskId));
+                const task = store().findTask(taskId)!;
+                return textResult({ taskId: task.id, name: task.name, version: store().getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -623,8 +648,8 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ sourceId, targetId }) => {
             try {
-                const edge = asMcp(() => store.addDependency(sourceId, targetId));
-                return textResult({ ...edge, version: store.getVersion() });
+                const edge = asMcp(() => store().addDependency(sourceId, targetId));
+                return textResult({ ...edge, version: store().getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -656,8 +681,8 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ dependencies }) => {
             try {
-                const added = asMcp(() => store.addDependencies(dependencies));
-                return textResult({ dependencies: added, version: store.getVersion() });
+                const added = asMcp(() => store().addDependencies(dependencies));
+                return textResult({ dependencies: added, version: store().getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -675,8 +700,8 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ sourceId, targetId }) => {
             try {
-                const edge = asMcp(() => store.removeDependency(sourceId, targetId));
-                return textResult({ ...edge, removed: true, version: store.getVersion() });
+                const edge = asMcp(() => store().removeDependency(sourceId, targetId));
+                return textResult({ ...edge, removed: true, version: store().getVersion() });
             } catch (error) {
                 return errorResult(error);
             }
@@ -694,17 +719,17 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             inputSchema: { text: z.string() },
         },
         async ({ text }) => {
-            const existing = store.findIdeaByText(text);
+            const existing = store().findIdeaByText(text);
             if (existing) {
                 return textResult({
                     ideaId: existing.id,
                     text: existing.text,
                     duplicate: true,
-                    version: store.getVersion(),
+                    version: store().getVersion(),
                 });
             }
-            const idea = asMcp(() => store.addIdea(text));
-            return textResult({ ideaId: idea.id, text: idea.text, duplicate: false, version: store.getVersion() });
+            const idea = asMcp(() => store().addIdea(text));
+            return textResult({ ideaId: idea.id, text: idea.text, duplicate: false, version: store().getVersion() });
         },
     );
 
@@ -729,7 +754,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             const claimed = new Map<string, number>();
 
             texts.forEach((text, position) => {
-                const existing = store.findIdeaByText(text);
+                const existing = store().findIdeaByText(text);
                 if (existing) {
                     results[position] = { ideaId: existing.id, text: existing.text, duplicate: true };
                     return;
@@ -747,7 +772,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                 freshPositions.push(position);
             });
 
-            const added = asMcp(() => store.addIdeas(freshPositions.map((position) => texts[position])));
+            const added = asMcp(() => store().addIdeas(freshPositions.map((position) => texts[position])));
             added.forEach((idea, order) => {
                 results[freshPositions[order]].ideaId = idea.id;
             });
@@ -757,7 +782,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                 }
             });
 
-            return textResult({ ideas: results, version: store.getVersion() });
+            return textResult({ ideas: results, version: store().getVersion() });
         },
     );
 
@@ -772,12 +797,12 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ ideaId, index }) => {
             try {
-                const removed = asMcp(() => store.removeIdea({ ideaId, index }));
+                const removed = asMcp(() => store().removeIdea({ ideaId, index }));
                 return textResult({
                     ideaId: removed.id,
                     text: removed.text,
                     removed: true,
-                    version: store.getVersion(),
+                    version: store().getVersion(),
                 });
             } catch (error) {
                 return errorResult(error);
@@ -800,10 +825,10 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async ({ ideaIds }) => {
             try {
-                const removed = asMcp(() => store.removeIdeas(ideaIds));
+                const removed = asMcp(() => store().removeIdeas(ideaIds));
                 return textResult({
                     ideas: removed.map((idea) => ({ ideaId: idea.id, text: idea.text, removed: true })),
-                    version: store.getVersion(),
+                    version: store().getVersion(),
                 });
             } catch (error) {
                 return errorResult(error);
@@ -834,7 +859,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
             try {
                 const warnings = checkNames([name]);
                 const task = asMcp(() =>
-                    store.promoteIdea({ ideaId, index }, parentId ?? GOAL_ID, undefined, { name, description }),
+                    store().promoteIdea({ ideaId, index }, parentId ?? GOAL_ID, undefined, { name, description }),
                 );
                 return textResult(
                     withWarnings(
@@ -842,7 +867,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                             taskId: task.id,
                             name: task.name,
                             parentId: parentId ?? GOAL_ID,
-                            version: store.getVersion(),
+                            version: store().getVersion(),
                         },
                         warnings,
                     ),
@@ -877,7 +902,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         async ({ promotions }) => {
             try {
                 const warnings = checkNames(promotions.map((promotion) => promotion.name));
-                const tasks = asMcp(() => store.promoteIdeas(promotions));
+                const tasks = asMcp(() => store().promoteIdeas(promotions));
                 return textResult(
                     withWarnings(
                         {
@@ -886,7 +911,7 @@ const createMcpServer = (store: ProjectStore): McpServer => {
                                 name: task.name,
                                 parentId: promotions[position].parentId ?? GOAL_ID,
                             })),
-                            version: store.getVersion(),
+                            version: store().getVersion(),
                         },
                         warnings,
                     ),
@@ -907,10 +932,10 @@ const createMcpServer = (store: ProjectStore): McpServer => {
         },
         async () => {
             try {
-                return textResult({ undone: asMcp(() => store.undo()), version: store.getVersion() });
+                return textResult({ undone: asMcp(() => store().undo()), version: store().getVersion() });
             } catch (error) {
                 if (error instanceof UndoBlockedError) {
-                    return textResult({ undone: false, reason: error.message, version: store.getVersion() });
+                    return textResult({ undone: false, reason: error.message, version: store().getVersion() });
                 }
                 return errorResult(error);
             }
@@ -919,8 +944,8 @@ const createMcpServer = (store: ProjectStore): McpServer => {
 
     // Project management — listing, saving, opening, and creating projects — is
     // deliberately NOT exposed over MCP; only the user can do that, from the
-    // frontend. MCP therefore only ever touches
-    // the active project held in the store.
+    // frontend. MCP therefore only ever touches the one project a person has
+    // chosen for the assistant in the web UI.
 
     return server;
 };

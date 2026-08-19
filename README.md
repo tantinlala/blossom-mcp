@@ -58,6 +58,14 @@ Half-formed thoughts go to the inbox, where they wait to be edited, deleted or p
 
 Several people can have the project open at once, from different devices, and each of them sees every change as it happens.
 
+### Several projects on one board
+
+Each session chooses what it is looking at from the projects menu in the header. Tick more than one and each gets its own lane down the canvas, drawn from the level that project is drilled into — so a whole set of plans reads at once, and each is navigated on its own. Every action names the lane it was made in, so a task added, ticked off or deleted lands in the project it was made in.
+
+A board belongs to the session that arranged it. Opening a project puts it on your board and leaves everybody else's exactly as it was, so two people over one server can sit on different projects. The board is in the address bar (`?projects=wedding,house`), so it can be bookmarked or sent to somebody as a link, and reopening the app lands back where you left off.
+
+The assistant works on one project, which you hand it from the control on that project's row in the projects menu. That choice is shared, so the model writing to a plan and the people reading it are looking at the same thing.
+
 ## Setup Environment
 
 ```sh

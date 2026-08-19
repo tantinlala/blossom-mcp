@@ -118,25 +118,30 @@ class UndoBlockedError extends Error {
 }
 
 /**
- * Single source of truth for the active project's state. Both the REST API and
- * the MCP server mutate project state exclusively through this store. Every
- * mutation pushes an undo snapshot, increments the monotonic version counter,
- * and notifies listeners so connected clients can be sent the change.
+ * Single source of truth for one project's state. Both the REST API and the MCP
+ * server mutate project state exclusively through a store. Every mutation
+ * pushes an undo snapshot, increments the monotonic version counter, and
+ * notifies listeners so connected clients can be sent the change.
+ *
+ * The Workspace decides which key a store answers to and whether it has a file
+ * behind it, so those two are the only pieces of its state written from outside.
  */
 class ProjectStore {
     private _goal: Task;
     private _inbox: InboxIdea[];
-    private _activeProject: string | null;
+    private _key: string;
+    private _savedToDisk: boolean;
     private _version: number;
     private _undoStack: UndoSnapshot[];
     private _listeners: Set<() => void>;
     private _currentAuthor: Author | null;
     private _lastChangeAuthor: Author | null;
 
-    constructor() {
+    constructor(key: string, savedToDisk: boolean = false) {
         this._goal = this._emptyGoal();
         this._inbox = [];
-        this._activeProject = null;
+        this._key = key;
+        this._savedToDisk = savedToDisk;
         this._version = 1;
         this._undoStack = [];
         this._listeners = new Set();
@@ -231,7 +236,8 @@ class ProjectStore {
     public getState(): ProjectState {
         return {
             version: this._version,
-            activeProject: this._activeProject,
+            key: this._key,
+            savedToDisk: this._savedToDisk,
             goal: this._deepClone(this._goal),
             inbox: this._inbox.map((idea) => ({ ...idea })),
         };
@@ -241,8 +247,14 @@ class ProjectStore {
         return this._version;
     }
 
-    public get activeProject(): string | null {
-        return this._activeProject;
+    /** What this project answers to. The Workspace keeps these unique. */
+    public get key(): string {
+        return this._key;
+    }
+
+    /** Whether a file holds this project's work. */
+    public get savedToDisk(): boolean {
+        return this._savedToDisk;
     }
 
     public findIdea(ideaId: string): InboxIdea | null {
@@ -318,26 +330,28 @@ class ProjectStore {
 
     // ------------------------------------------------------- lifecycle
 
-    public reset() {
-        this._goal = this._emptyGoal();
-        this._inbox = [];
-        this._activeProject = null;
-        this._undoStack = [];
-        this._bump();
-    }
-
-    public load(goal: Task, inbox: InboxIdea[], activeProject: string | null) {
+    /** Fills the store from a saved project, discarding whatever it held. */
+    public load(goal: Task, inbox: InboxIdea[]) {
         this._goal = this._deepClone(goal);
         // Normalize legacy root ids ("" in old saved files) to the sentinel
         this._goal.id = GOAL_ID;
         this._inbox = inbox.map((idea) => ({ ...idea }));
-        this._activeProject = activeProject;
         this._undoStack = [];
         this._bump();
     }
 
-    public setActiveProject(name: string | null) {
-        this._activeProject = name;
+    /**
+     * Renames the project. Called by the Workspace, which owns key uniqueness;
+     * writing a project to disk under another filename is what moves it.
+     */
+    public setKey(key: string) {
+        this._key = key;
+        this._bump();
+    }
+
+    /** Records whether a file holds this project's work. */
+    public setSavedToDisk(savedToDisk: boolean) {
+        this._savedToDisk = savedToDisk;
         this._bump();
     }
 

@@ -67,6 +67,11 @@ class Project {
         await this.fileIO.writeFile(filepath, JSON.stringify(project));
     };
 
+    /** Whether a file holds the named project. */
+    public projectExists = async (filename: string): Promise<boolean> => {
+        return await this.fileIO.exists(this.filepath(filename));
+    };
+
     public listExistingProjects = async (): Promise<string[]> => {
         if (!(await this.fileIO.exists("./projects"))) {
             return [];

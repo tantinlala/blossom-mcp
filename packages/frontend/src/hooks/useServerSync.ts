@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { InboxIdea, ProjectState } from "@blossom/common";
+import { InboxIdea, ProjectState, ViewState } from "@blossom/common";
 import { APIClient, RequestFailure } from "../utils/APIClient";
 import { ConnectionState, Notice, RealtimeClient } from "../utils/RealtimeClient";
-import { PlanManager } from "../utils/PlanManager";
+import { WorkspaceManager } from "../utils/WorkspaceManager";
 
 // Only used while the socket is down, so it is a safety net rather than the
 // mechanism: pushed updates arrive in milliseconds.
@@ -12,14 +12,19 @@ const DEGRADED_POLL_INTERVAL_MS = 10000;
 export type SaveState = "neverSaved" | "saved" | "unsaved";
 
 interface SyncTargets {
-    applyRemoteInbox: (ideas: InboxIdea[]) => void;
-    applyActiveProject: (activeProject: string | null) => void;
-    syncRoadmap: () => void;
+    /** Adopts the inbox of every project in the view, in one go. */
+    applyInboxView: (view: ViewState) => void;
+    /** Adopts one project's inbox. */
+    applyRemoteInbox: (projectKey: string, ideas: InboxIdea[]) => void;
+    /** Redraws the board from the workspace. */
+    syncBoard: () => void;
+    /** Follows which project MCP acts on. */
+    applyAssistantProject: (projectKey: string | null) => void;
 }
 
 interface UseServerSyncDeps {
     apiClient: APIClient;
-    planManager: PlanManager;
+    workspace: WorkspaceManager;
     realtime: RealtimeClient;
     /** Shows the user something worth knowing that is not an error. */
     notify?: (message: string) => void;
@@ -28,78 +33,153 @@ interface UseServerSyncDeps {
 /**
  * Keeps the client in sync with the server-owned project state.
  *
- * The server pushes every change over the realtime socket, so changes made by
- * anyone else - another person on another device, or an LLM connected over MCP
- * - land here as they happen. Mutation responses come through the same
- * applyState path, and a slow poll covers the window while the socket is down.
+ * The server pushes every change to a project this session is looking at, so
+ * changes made by anyone else - another person on another device, or an LLM
+ * connected over MCP - land here as they happen. Mutation responses come through
+ * the same applyProject path, and a slow poll covers the window while the socket
+ * is down.
+ *
+ * Versions are tracked per project, since each project counts its own changes.
  */
-export function useServerSync({ apiClient, planManager, realtime, notify }: UseServerSyncDeps) {
+export function useServerSync({ apiClient, workspace, realtime, notify }: UseServerSyncDeps) {
     const targetsRef = useRef<SyncTargets>({
+        applyInboxView: () => {},
         applyRemoteInbox: () => {},
-        applyActiveProject: () => {},
-        syncRoadmap: () => {},
+        syncBoard: () => {},
+        applyAssistantProject: () => {},
     });
-    const versionRef = useRef<number>(0);
+    const versionsRef = useRef<Record<string, number>>({});
     const serverIdRef = useRef<string | null>(null);
     const pollInFlightRef = useRef<boolean>(false);
     const notifyRef = useRef(notify);
     notifyRef.current = notify;
 
-    // The server bumps its version on every mutation, so comparing the current
-    // version against the one captured at the last save is enough to know
-    // whether there is anything unsaved - including edits made over MCP.
-    const [version, setVersion] = useState<number>(0);
-    const [savedVersion, setSavedVersion] = useState<number | null>(null);
+    // The server bumps a project's version on every mutation to it, so comparing
+    // the current version against the one captured at the last save is enough to
+    // know whether there is anything unsaved - including edits made over MCP.
+    const [versions, setVersions] = useState<Record<string, number>>({});
+    const [savedVersions, setSavedVersions] = useState<Record<string, number>>({});
     const [connectionState, setConnectionState] = useState<ConnectionState>(() => realtime.getConnectionState());
 
-    const applyState = useCallback(
-        (state: ProjectState) => {
-            versionRef.current = state.version;
-            setVersion(state.version);
-            planManager.applyServerState(state.goal);
-            targetsRef.current.applyRemoteInbox(state.inbox);
-            targetsRef.current.applyActiveProject(state.activeProject);
-            targetsRef.current.syncRoadmap();
+    const setVersionFor = useCallback((key: string, version: number) => {
+        versionsRef.current = { ...versionsRef.current, [key]: version };
+        setVersions(versionsRef.current);
+    }, []);
+
+    /** Replaces the board with what the server says this session is looking at. */
+    const applyView = useCallback(
+        (view: ViewState) => {
+            workspace.applyView(view);
+
+            const next: Record<string, number> = {};
+            for (const project of view.projects) {
+                next[project.key] = project.version;
+            }
+            versionsRef.current = next;
+            setVersions(next);
+
+            targetsRef.current.applyInboxView(view);
+            targetsRef.current.applyAssistantProject(view.assistantProject);
+            targetsRef.current.syncBoard();
         },
-        [planManager],
+        [workspace],
     );
 
     /**
-     * Applies a pushed update. The version counter only ever climbs, so an
-     * update at or below the one already held is stale - a duplicate delivery,
+     * Applies one project's state. A project this session is not looking at
+     * belongs to somebody else's board and is left alone.
+     */
+    const applyProject = useCallback(
+        (state: ProjectState) => {
+            if (!workspace.applyProject(state)) {
+                return;
+            }
+            setVersionFor(state.key, state.version);
+            targetsRef.current.applyRemoteInbox(state.key, state.inbox);
+            targetsRef.current.syncBoard();
+        },
+        [workspace, setVersionFor],
+    );
+
+    /** Puts a project this session has just opened or started onto the board. */
+    const addProject = useCallback(
+        (state: ProjectState) => {
+            workspace.addProject(state);
+            setVersionFor(state.key, state.version);
+            targetsRef.current.applyRemoteInbox(state.key, state.inbox);
+            targetsRef.current.syncBoard();
+        },
+        [workspace, setVersionFor],
+    );
+
+    /** Takes a project off the board, and with it everything tracked about it. */
+    const removeProject = useCallback(
+        (key: string) => {
+            workspace.removeProject(key);
+            const { [key]: removedVersion, ...remainingVersions } = versionsRef.current;
+            versionsRef.current = remainingVersions;
+            setVersions(remainingVersions);
+            setSavedVersions(({ [key]: removedSave, ...rest }) => rest);
+            targetsRef.current.syncBoard();
+        },
+        [workspace],
+    );
+
+    /**
+     * Applies a pushed update. A project's version counter only ever climbs, so
+     * an update at or below the one already held is stale - a duplicate delivery,
      * a reordered frame, or the echo of a change this client just made - and
      * dropping it is what makes the push path idempotent.
      *
-     * Snapshots bypass the check: they arrive on connect, and after a server
-     * restart the version starts over below whatever the client is holding.
+     * A restarted server counts from the beginning again, so a new server id is
+     * taken as reason to trust whatever arrives.
      */
     const applyUpdate = useCallback(
-        (state: ProjectState, isSnapshot: boolean, serverId?: string) => {
+        (state: ProjectState, serverId?: string) => {
             const restarted =
                 serverId !== undefined && serverIdRef.current !== null && serverId !== serverIdRef.current;
             if (serverId !== undefined) {
                 serverIdRef.current = serverId;
             }
-            if (!isSnapshot && !restarted && state.version <= versionRef.current) {
+            const held = versionsRef.current[state.key];
+            if (!restarted && held !== undefined && state.version <= held) {
                 return;
             }
-            applyState(state);
+            applyProject(state);
         },
-        [applyState],
+        [applyProject],
     );
 
-    /** Call once what is on screen has been written to disk, or read from it. */
-    const markSaved = useCallback(() => setSavedVersion(versionRef.current), []);
+    /** Call once a project has been written to disk, or read from it. */
+    const markSaved = useCallback((key: string) => {
+        setSavedVersions((previous) => ({ ...previous, [key]: versionsRef.current[key] ?? 0 }));
+    }, []);
 
-    /** Call for a project that has no file behind it yet. */
-    const markNeverSaved = useCallback(() => setSavedVersion(null), []);
+    /** Where one project stands against its copy on disk. */
+    const saveStateOf = useCallback(
+        (key: string | null): SaveState => {
+            if (!key || !workspace.savedToDisk(key)) {
+                return "neverSaved";
+            }
+            return savedVersions[key] === versions[key] ? "saved" : "unsaved";
+        },
+        [workspace, savedVersions, versions],
+    );
 
-    let saveState: SaveState = "unsaved";
-    if (savedVersion === null) {
-        saveState = "neverSaved";
-    } else if (savedVersion === version) {
-        saveState = "saved";
-    }
+    /** Follows a project that answers to a new key, keeping what is tracked about it. */
+    const renameProject = useCallback(
+        (from: string, to: string) => {
+            workspace.renameProject(from, to);
+
+            const { [from]: version, ...otherVersions } = versionsRef.current;
+            versionsRef.current = version === undefined ? otherVersions : { ...otherVersions, [to]: version };
+            setVersions(versionsRef.current);
+
+            setSavedVersions(({ [from]: saved, ...rest }) => (saved === undefined ? rest : { ...rest, [to]: saved }));
+            targetsRef.current.syncBoard();
+        },
+        [workspace],
+    );
 
     // Hooks that own React state register their setters here (they are created
     // after this hook, so registration happens via an effect in App).
@@ -109,30 +189,30 @@ export function useServerSync({ apiClient, planManager, realtime, notify }: UseS
 
     useEffect(() => {
         const unsubscribes = [
-            realtime.onState(({ state, isSnapshot, serverId }) => applyUpdate(state, isSnapshot, serverId)),
+            realtime.onView(({ view, serverId }) => {
+                serverIdRef.current = serverId;
+                applyView(view);
+            }),
+            realtime.onState(({ state, serverId }) => applyUpdate(state, serverId)),
             realtime.onConnectionChange(setConnectionState),
             realtime.onProtocolMismatch(() =>
                 notifyRef.current?.("This page is out of date and has stopped syncing. Reload to continue."),
             ),
             realtime.onNotice((notice: Notice) => {
-                // Everyone gets told the project changed under them, except the
-                // person who changed it - they watched themselves do it.
+                if (notice.kind === "assistant-target") {
+                    targetsRef.current.applyAssistantProject(notice.project);
+                    return;
+                }
+                renameProject(notice.from, notice.to);
+                // Whoever saved the project watched themselves do it.
                 if (!notice.byThisBrowser) {
-                    const target = notice.project ?? "a new project";
-                    notifyRef.current?.(`Somebody switched everyone to ${target}`);
+                    notifyRef.current?.(`${notice.from} was saved as ${notice.to}`);
                 }
-                // The notice follows the state that carried the switch, so the
-                // version is already current, and where it stands against disk
-                // follows from whether there is a file behind it.
-                if (notice.project) {
-                    markSaved();
-                } else {
-                    markNeverSaved();
-                }
+                markSaved(notice.to);
             }),
         ];
         return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
-    }, [realtime, applyUpdate, markSaved, markNeverSaved]);
+    }, [realtime, applyView, applyUpdate, renameProject, markSaved]);
 
     // A rejected write leaves this client holding state the server disagrees
     // with, and the server hands back its own copy precisely so that can be
@@ -140,13 +220,13 @@ export function useServerSync({ apiClient, planManager, realtime, notify }: UseS
     useEffect(() => {
         return apiClient.onRequestFailure((failure: RequestFailure) => {
             if (failure.state) {
-                applyUpdate(failure.state, true);
+                applyProject(failure.state);
             }
             if (failure.code === "conflict" || failure.code === "undo-blocked") {
                 notifyRef.current?.(failure.message);
             }
         });
-    }, [apiClient, applyUpdate]);
+    }, [apiClient, applyProject]);
 
     useEffect(() => {
         if (connectionState === "open") {
@@ -159,12 +239,21 @@ export function useServerSync({ apiClient, planManager, realtime, notify }: UseS
             }
             pollInFlightRef.current = true;
             try {
-                const polledVersion = await apiClient.getStateVersion();
-                if (polledVersion !== undefined && polledVersion !== versionRef.current) {
-                    const state = await apiClient.getState();
-                    if (state) {
-                        applyState(state);
-                    }
+                const keys = workspace.keys;
+                if (keys.length === 0) {
+                    return;
+                }
+                const polled = await apiClient.getViewVersions(keys);
+                if (polled === undefined) {
+                    return;
+                }
+                const moved = keys.some((key) => polled[key] !== undefined && polled[key] !== versionsRef.current[key]);
+                if (!moved) {
+                    return;
+                }
+                const view = await apiClient.getView(keys);
+                if (view) {
+                    applyView(view);
                 }
             } finally {
                 pollInFlightRef.current = false;
@@ -173,14 +262,17 @@ export function useServerSync({ apiClient, planManager, realtime, notify }: UseS
 
         const interval = setInterval(poll, DEGRADED_POLL_INTERVAL_MS);
         return () => clearInterval(interval);
-    }, [apiClient, applyState, connectionState]);
+    }, [apiClient, applyView, connectionState, workspace]);
 
     return {
-        applyState,
+        applyView,
+        applyProject,
+        addProject,
+        removeProject,
+        renameProject,
         registerTargets,
-        saveState,
+        saveStateOf,
         markSaved,
-        markNeverSaved,
         connectionState,
     };
 }

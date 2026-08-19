@@ -1,20 +1,21 @@
 import axios from "axios";
-import { Author, CommandErrorCode, CommandName, Dependency, ProjectState, Task } from "@blossom/common";
+import { Author, CommandErrorCode, CommandName, Dependency, ProjectState, Task, ViewState } from "@blossom/common";
 import { CommandFailure, RealtimeClient } from "./RealtimeClient";
 
 /** Why a request did not produce a result, in terms the UI can act on. */
 export interface RequestFailure {
-    /** `cancelled` means the person declined a confirmation - not a problem. */
-    code: CommandErrorCode | "network" | "cancelled";
+    code: CommandErrorCode | "network";
     message: string;
     /** The server's authoritative state at the point of failure, when it sent one. */
     state?: ProjectState;
-    /** Set on `confirm-required`: how many other browsers are connected. */
-    otherCount?: number;
 }
 
-/** Asks the person whether to go ahead with something that affects everyone. */
-export type ConfirmHandler = (otherCount: number) => Promise<boolean>;
+/** Every saved project, which of them the server holds open, and MCP's target. */
+export interface ProjectListing {
+    projects: string[];
+    open: string[];
+    assistantProject: string | null;
+}
 
 const networkFailure = (error: unknown): RequestFailure => ({ code: "network", message: String(error) });
 
@@ -25,7 +26,6 @@ const toFailure = (error: unknown): RequestFailure => {
             code: error.error.code,
             message: error.error.message,
             state: error.state,
-            otherCount: error.error.otherCount,
         };
     }
 
@@ -45,7 +45,7 @@ const toFailure = (error: unknown): RequestFailure => {
         } else if (response.status === 400) {
             code = "invalid";
         } else if (response.status === 409) {
-            code = typeof data.otherCount === "number" ? "confirm-required" : "conflict";
+            code = "conflict";
         }
     }
 
@@ -53,13 +53,17 @@ const toFailure = (error: unknown): RequestFailure => {
         code,
         message: typeof data.error === "string" ? data.error : String(error),
         state: data.response as ProjectState | undefined,
-        otherCount: data.otherCount as number | undefined,
     };
 };
 
 /**
  * Talks to the backend. The server owns all project state, and every mutation
- * comes back as the full new ProjectState, so the client can never drift.
+ * comes back as the full new ProjectState for the project it changed, so the
+ * client can never drift.
+ *
+ * A board can hold several projects, so every write names the one it means with
+ * `projectKey` - the person clicking knows which lane they clicked in, and the
+ * server does not have to guess.
  *
  * Mutations prefer the realtime socket and fall back to HTTP when it is not
  * open. The transport is chosen once, before sending, and never switched
@@ -68,7 +72,6 @@ const toFailure = (error: unknown): RequestFailure => {
  */
 class APIClient {
     private readonly realtime?: RealtimeClient;
-    private confirmHandler?: ConfirmHandler;
     private lastFailureRecord: RequestFailure | null = null;
     private readonly failureListeners = new Set<(failure: RequestFailure) => void>();
 
@@ -82,14 +85,6 @@ class APIClient {
     public setAuthor(author: Author) {
         axios.defaults.headers.common["X-Blossom-Author"] = JSON.stringify(author);
         this.realtime?.identify(author);
-    }
-
-    /**
-     * Registers how to ask about commands the server refuses to run unattended
-     * because they would change what everyone else is looking at.
-     */
-    public setConfirmHandler(handler: ConfirmHandler) {
-        this.confirmHandler = handler;
     }
 
     /** Notified whenever a request fails, so the UI can explain rather than go quiet. */
@@ -124,22 +119,7 @@ class APIClient {
             this.lastFailureRecord = null;
             return response;
         } catch (error) {
-            const failure = toFailure(error);
-
-            // The server declined to act rather than acting - so asking and
-            // resending is safe; nothing was changed the first time round.
-            if (failure.code === "confirm-required" && this.confirmHandler) {
-                const confirmed = await this.confirmHandler(failure.otherCount ?? 1);
-                if (confirmed) {
-                    // Commands with no payload spread to {}, which is what the
-                    // resend needs; there is nothing to preserve.
-                    return await this.post(name, { ...(data as object | undefined), confirmed: true });
-                }
-                this.reportFailure({ ...failure, code: "cancelled", message: "Cancelled" });
-                return undefined;
-            }
-
-            this.reportFailure(failure);
+            this.reportFailure(toFailure(error));
             return undefined;
         }
     }
@@ -151,123 +131,174 @@ class APIClient {
         return (await axios.post(`/${name}`, data)).data?.response;
     }
 
-    public async getState(): Promise<ProjectState | undefined> {
-        return await this.get("/state");
+    // -------------------------------------------------------------- the board
+
+    /** The projects named, opening any the server does not hold yet. */
+    public async getView(projectKeys: string[]): Promise<ViewState | undefined> {
+        return await this.get(`/view?projects=${encodeURIComponent(projectKeys.join(","))}`);
     }
 
-    public async getStateVersion(): Promise<number | undefined> {
-        return (await this.get("/state/version"))?.version;
+    /** Each named project's version counter, read by the poll that runs while the socket is down. */
+    public async getViewVersions(projectKeys: string[]): Promise<Record<string, number> | undefined> {
+        return (await this.get(`/view/versions?projects=${encodeURIComponent(projectKeys.join(","))}`))?.versions;
     }
 
-    public async setGoal(name: string, description?: string, baseVersion?: number): Promise<ProjectState | undefined> {
-        return await this.post("goal", { name, description, baseVersion });
+    public async listProjects(): Promise<ProjectListing | undefined> {
+        return await this.get("/projects");
+    }
+
+    // ------------------------------------------------------------ the project
+
+    public async setGoal(
+        projectKey: string,
+        name: string,
+        description?: string,
+        baseVersion?: number,
+    ): Promise<ProjectState | undefined> {
+        return await this.post("goal", { projectKey, name, description, baseVersion });
     }
 
     public async addTask(
+        projectKey: string,
         parentId: string,
         name: string,
         description?: string,
     ): Promise<{ task: Task; state: ProjectState } | undefined> {
-        return await this.post("tasks/add", { parentId, name, description });
+        return await this.post("tasks/add", { projectKey, parentId, name, description });
     }
 
     public async updateTask(
+        projectKey: string,
         taskId: string,
         name?: string,
         description?: string,
         baseVersion?: number,
     ): Promise<ProjectState | undefined> {
-        return await this.post("tasks/update", { taskId, name, description, baseVersion });
+        return await this.post("tasks/update", { projectKey, taskId, name, description, baseVersion });
     }
 
-    public async setTaskCompletion(taskId: string, completed: boolean): Promise<ProjectState | undefined> {
-        return await this.post("tasks/set-completion", { taskId, completed });
+    public async setTaskCompletion(
+        projectKey: string,
+        taskId: string,
+        completed: boolean,
+    ): Promise<ProjectState | undefined> {
+        return await this.post("tasks/set-completion", { projectKey, taskId, completed });
     }
 
-    public async removeTask(taskId: string): Promise<ProjectState | undefined> {
-        return await this.post("tasks/remove", { taskId });
+    public async removeTask(projectKey: string, taskId: string): Promise<ProjectState | undefined> {
+        return await this.post("tasks/remove", { projectKey, taskId });
     }
 
-    public async createSubplan(taskId: string): Promise<ProjectState | undefined> {
-        return await this.post("tasks/create-subplan", { taskId });
+    public async createSubplan(projectKey: string, taskId: string): Promise<ProjectState | undefined> {
+        return await this.post("tasks/create-subplan", { projectKey, taskId });
     }
 
     public async pasteTasks(
+        projectKey: string,
         parentId: string,
         tasks: Task[],
         dependencies: Dependency[],
     ): Promise<ProjectState | undefined> {
-        return await this.post("tasks/paste", { parentId, tasks, dependencies });
+        return await this.post("tasks/paste", { projectKey, parentId, tasks, dependencies });
     }
 
-    public async addDependency(sourceId: string, targetId: string): Promise<ProjectState | undefined> {
-        return await this.post("dependencies/add", { sourceId, targetId });
+    public async addDependency(
+        projectKey: string,
+        sourceId: string,
+        targetId: string,
+    ): Promise<ProjectState | undefined> {
+        return await this.post("dependencies/add", { projectKey, sourceId, targetId });
     }
 
-    public async removeDependency(sourceId: string, targetId: string): Promise<ProjectState | undefined> {
-        return await this.post("dependencies/remove", { sourceId, targetId });
+    public async removeDependency(
+        projectKey: string,
+        sourceId: string,
+        targetId: string,
+    ): Promise<ProjectState | undefined> {
+        return await this.post("dependencies/remove", { projectKey, sourceId, targetId });
     }
 
     public async updateDependency(
+        projectKey: string,
         oldSource: string,
         oldTarget: string,
         newSource: string,
         newTarget: string,
     ): Promise<ProjectState | undefined> {
-        return await this.post("dependencies/update", { oldSource, oldTarget, newSource, newTarget });
+        return await this.post("dependencies/update", { projectKey, oldSource, oldTarget, newSource, newTarget });
     }
 
-    public async addIdea(text: string): Promise<ProjectState | undefined> {
-        return await this.post("inbox/add", { text });
+    public async addIdea(projectKey: string, text: string): Promise<ProjectState | undefined> {
+        return await this.post("inbox/add", { projectKey, text });
     }
 
-    public async updateIdea(ideaId: string, text: string, expectedText?: string): Promise<ProjectState | undefined> {
-        return await this.post("inbox/update", { ideaId, text, expectedText });
+    public async updateIdea(
+        projectKey: string,
+        ideaId: string,
+        text: string,
+        expectedText?: string,
+    ): Promise<ProjectState | undefined> {
+        return await this.post("inbox/update", { projectKey, ideaId, text, expectedText });
     }
 
-    public async removeIdea(ideaId: string, expectedText?: string): Promise<ProjectState | undefined> {
-        return await this.post("inbox/remove", { ideaId, expectedText });
+    public async removeIdea(
+        projectKey: string,
+        ideaId: string,
+        expectedText?: string,
+    ): Promise<ProjectState | undefined> {
+        return await this.post("inbox/remove", { projectKey, ideaId, expectedText });
     }
 
     public async promoteIdea(
+        projectKey: string,
         ideaId: string,
         parentId?: string,
         expectedText?: string,
     ): Promise<ProjectState | undefined> {
-        return await this.post("inbox/promote", { ideaId, parentId, expectedText });
+        return await this.post("inbox/promote", { projectKey, ideaId, parentId, expectedText });
     }
 
-    public async promoteAllIdeas(parentId?: string): Promise<ProjectState | undefined> {
-        return await this.post("inbox/promote-all", { parentId });
+    public async promoteAllIdeas(projectKey: string, parentId?: string): Promise<ProjectState | undefined> {
+        return await this.post("inbox/promote-all", { projectKey, parentId });
     }
 
-    public async undo(): Promise<ProjectState | undefined> {
-        return await this.post("undo");
+    public async undo(projectKey: string): Promise<ProjectState | undefined> {
+        return await this.post("undo", { projectKey });
     }
 
-    public async listExistingProjects(): Promise<string[] | undefined> {
-        return (await this.get("/projects"))?.projects;
-    }
+    // -------------------------------------------------- project housekeeping
 
+    /** Opens an empty project, for the caller to put on its own board. */
     public async newProject(): Promise<ProjectState | undefined> {
         return await this.post("projects/new");
     }
 
-    public async saveProject(filename: string): Promise<string[] | undefined> {
-        return (await this.post("projects/save", { filename }))?.projects;
+    /** Writes a project to disk. It answers to the filename it was written to. */
+    public async saveProject(
+        projectKey: string,
+        filename: string,
+    ): Promise<{ projects: string[]; state: ProjectState } | undefined> {
+        return await this.post("projects/save", { projectKey, filename });
     }
 
-    public async restoreProject(filename: string): Promise<ProjectState | undefined> {
-        return await this.post("projects/restore", { filename });
+    /** Opens a saved project, for the caller to put on its own board. */
+    public async openProject(filename: string): Promise<ProjectState | undefined> {
+        return await this.post("projects/open", { filename });
+    }
+
+    /** Re-reads a project from disk, discarding what is on screen. */
+    public async reloadProject(projectKey: string): Promise<ProjectState | undefined> {
+        return await this.post("projects/reload", { projectKey });
     }
 
     /** Resolves to the projects that remain, and the state the deletion left behind. */
-    public async deleteProject(filename: string): Promise<{ projects: string[]; state: ProjectState } | undefined> {
+    public async deleteProject(filename: string): Promise<{ projects: string[]; state?: ProjectState } | undefined> {
         return await this.post("projects/delete", { filename });
     }
 
-    public async getActiveProject(): Promise<string | null | undefined> {
-        return (await this.get("/projects/active"))?.activeProject;
+    /** Chooses which project MCP tool calls act on. */
+    public async setAssistantProject(projectKey: string | null): Promise<string | null | undefined> {
+        return (await this.post("assistant/target", { projectKey }))?.assistantProject;
     }
 }
 

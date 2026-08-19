@@ -7,11 +7,13 @@ import { NextTask } from "../types/roadmap";
 describe("TaskDrawer Component", () => {
     const topLevelTask: NextTask = {
         task: { id: "task1", name: "Task 1", completionState: false, plan: null },
+        projectKey: "Trip",
         path: [],
     };
 
     const nestedTask: NextTask = {
         task: { id: "task2", name: "Task 2", completionState: true, plan: null },
+        projectKey: "Trip",
         path: [
             { id: "p1", name: "Prepare for departure" },
             { id: "p2", name: "Sort paperwork" },
@@ -28,12 +30,13 @@ describe("TaskDrawer Component", () => {
         jest.clearAllMocks();
     });
 
-    const renderDrawer = (open = true, shownTasks = unblockedTasks) =>
+    const renderDrawer = (open = true, shownTasks = unblockedTasks, showProjectKeys = false) =>
         render(
             <NextTasksDrawer
                 open={open}
                 onClose={mockOnClose}
                 shownTasks={shownTasks}
+                showProjectKeys={showProjectKeys}
                 toggleCompletion={mockToggleComplete}
                 changeContext={mockChangeContext}
             />,
@@ -73,7 +76,7 @@ describe("TaskDrawer Component", () => {
         const checkbox = screen.getByTestId("task-checkbox-task1").querySelector("input");
         fireEvent.click(checkbox as HTMLInputElement);
 
-        expect(mockToggleComplete).toHaveBeenCalledWith("task1");
+        expect(mockToggleComplete).toHaveBeenCalledWith({ projectKey: "Trip", taskId: "task1" });
     });
 
     it("navigates to the plan a task lives in", () => {
@@ -81,7 +84,7 @@ describe("TaskDrawer Component", () => {
 
         fireEvent.click(screen.getByTestId("change-context-button-task1"));
 
-        expect(mockChangeContext).toHaveBeenCalledWith("task1");
+        expect(mockChangeContext).toHaveBeenCalledWith({ projectKey: "Trip", taskId: "task1" });
     });
 
     it("displays checkboxes with correct checked state", () => {

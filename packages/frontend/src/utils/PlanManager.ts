@@ -12,12 +12,16 @@ import {
 import { NextTask, Roadmap, RoadmapCrumb } from "../types/roadmap";
 
 /**
- * Client-side view-model over the server-owned project state. The backend's
+ * Client-side view-model over one project's server-owned state. The backend's
  * ProjectStore is the source of truth; this class only keeps a local copy of
  * the goal tree (applyServerState), the drill-down context, and derived views
  * for rendering. All mutations go through the APIClient.
+ *
+ * One of these exists per project on the board, so each project is drilled into
+ * on its own.
  */
 class PlanManager {
+    private _projectKey: string;
     private _fullProject: Task;
     private _presentContext: Task;
 
@@ -26,8 +30,27 @@ class PlanManager {
         this._presentContext = this._fullProject;
     }
 
-    constructor() {
+    /**
+     * @param projectKey Which project this plan belongs to. A board can hold
+     * several, so every task handed out says where it came from.
+     */
+    constructor(projectKey: string) {
+        this._projectKey = projectKey;
         this.reset();
+    }
+
+    public get projectKey(): string {
+        return this._projectKey;
+    }
+
+    /**
+     * Renames the project this plan belongs to, keeping the tree and the level it
+     * is drilled into. A project is renamed by being written to disk under
+     * another filename, which is no reason for the person looking at it to be
+     * bounced back to the top of the plan.
+     */
+    public setProjectKey(projectKey: string) {
+        this._projectKey = projectKey;
     }
 
     public get fullProject(): Task {
@@ -109,7 +132,7 @@ class PlanManager {
             }
 
             if (unblockedTask.task.plan === null) {
-                results.push({ task: unblockedTask.task, path });
+                results.push({ task: unblockedTask.task, projectKey: this._projectKey, path });
                 return;
             }
 

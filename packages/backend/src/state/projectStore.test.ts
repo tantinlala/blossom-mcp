@@ -19,7 +19,7 @@ describe("ProjectStore", () => {
     let store: ProjectStore;
 
     beforeEach(() => {
-        store = new ProjectStore();
+        store = new ProjectStore("Trip");
     });
 
     describe("initial state", () => {
@@ -27,7 +27,8 @@ describe("ProjectStore", () => {
             const state = store.getState();
 
             expect(state.version).toBe(1);
-            expect(state.activeProject).toBeNull();
+            expect(state.key).toBe("Trip");
+            expect(state.savedToDisk).toBe(false);
             expect(state.goal.id).toBe(GOAL_ID);
             expect(state.goal.name).toBe("");
             expect(state.goal.completionState).toBe(false);
@@ -817,14 +818,12 @@ describe("ProjectStore", () => {
                 },
             };
 
-            store.load(goal, [{ id: "idea-1", text: "idea" }], "myProject");
+            store.load(goal, [{ id: "idea-1", text: "idea" }]);
 
             const state = store.getState();
             expect(state.goal.name).toBe("Loaded Goal");
             expect(state.goal.plan!.tasksList).toHaveLength(1);
             expect(state.inbox).toEqual([{ id: "idea-1", text: "idea" }]);
-            expect(state.activeProject).toBe("myProject");
-            expect(store.activeProject).toBe("myProject");
         });
 
         it("should normalize a legacy empty root id to GOAL_ID", () => {
@@ -835,7 +834,7 @@ describe("ProjectStore", () => {
                 plan: { tasksList: [], dependenciesList: [] },
             };
 
-            store.load(legacyGoal, [], "legacy");
+            store.load(legacyGoal, []);
 
             expect(store.getState().goal.id).toBe(GOAL_ID);
             expect(store.findTask(GOAL_ID)!.name).toBe("Legacy");
@@ -844,7 +843,7 @@ describe("ProjectStore", () => {
         it("should tolerate a null plan", () => {
             const goal: Task = { id: GOAL_ID, name: "No plan", completionState: false, plan: null };
 
-            store.load(goal, [], null);
+            store.load(goal, []);
 
             expect(store.getState().goal.plan).toBeNull();
         });
@@ -854,7 +853,7 @@ describe("ProjectStore", () => {
             const before = store.getVersion();
             const goal: Task = { id: GOAL_ID, name: "Loaded", completionState: false, plan: null };
 
-            store.load(goal, [], "project");
+            store.load(goal, []);
 
             expect(store.getVersion()).toBe(before + 1);
             expect(store.undo()).toBe(false);
@@ -863,41 +862,51 @@ describe("ProjectStore", () => {
         it("should not alias the caller's goal object", () => {
             const goal: Task = { id: GOAL_ID, name: "Loaded", completionState: false, plan: null };
 
-            store.load(goal, [], null);
+            store.load(goal, []);
             goal.name = "Mutated";
 
             expect(store.getState().goal.name).toBe("Loaded");
         });
     });
 
-    describe("reset", () => {
-        it("should restore the empty initial state and clear the undo stack", () => {
-            store.setGoal("Goal");
-            store.addTask(GOAL_ID, "Task");
-            store.addIdea("idea");
-            store.setActiveProject("project");
+    describe("setKey", () => {
+        it("should rename the project and bump the version", () => {
             const before = store.getVersion();
 
-            store.reset();
+            store.setKey("Holiday");
 
-            const state = store.getState();
-            expect(state.goal.name).toBe("");
-            expect(state.goal.plan).toBeNull();
-            expect(state.inbox).toEqual([]);
-            expect(state.activeProject).toBeNull();
+            expect(store.key).toBe("Holiday");
+            expect(store.getState().key).toBe("Holiday");
             expect(store.getVersion()).toBe(before + 1);
-            expect(store.undo()).toBe(false);
         });
     });
 
-    describe("setActiveProject", () => {
-        it("should set the active project and bump the version", () => {
+    describe("setSavedToDisk", () => {
+        it("should record that a file holds the work, and bump the version", () => {
             const before = store.getVersion();
 
-            store.setActiveProject("myProject");
+            store.setSavedToDisk(true);
 
-            expect(store.activeProject).toBe("myProject");
+            expect(store.savedToDisk).toBe(true);
+            expect(store.getState().savedToDisk).toBe(true);
             expect(store.getVersion()).toBe(before + 1);
+        });
+
+        it("should report a project with nothing written for it", () => {
+            store.setSavedToDisk(true);
+
+            store.setSavedToDisk(false);
+
+            expect(store.getState().savedToDisk).toBe(false);
+        });
+    });
+
+    describe("a store opened for a saved project", () => {
+        it("should report the file behind it from the start", () => {
+            const saved = new ProjectStore("Holiday", true);
+
+            expect(saved.getState().key).toBe("Holiday");
+            expect(saved.getState().savedToDisk).toBe(true);
         });
     });
 
@@ -932,7 +941,7 @@ describe("ProjectStore", () => {
                     ],
                 },
             };
-            store.load(goal, [], null);
+            store.load(goal, []);
 
             const nextTasks = store.getNextTasks();
 

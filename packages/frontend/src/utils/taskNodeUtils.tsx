@@ -16,8 +16,9 @@ import { palette } from "../theme/tokens";
 
 const createTaskNode = (
     task: TaskAndState,
+    projectKey: string,
     position: { x: number; y: number },
-    onToggleComplete: (taskId: string) => void,
+    onToggleComplete: () => void,
     hidden: boolean,
 ) => {
     return {
@@ -25,6 +26,7 @@ const createTaskNode = (
         data: {
             label: task.task.name,
             description: "",
+            projectKey,
             taskState: task.state,
             completionState: task.task.completionState,
             onToggleComplete,
@@ -45,6 +47,7 @@ const createTaskNodeFromExisting = (task: TaskAndState, existingNode: Node) => {
         data: {
             label: task.task.name,
             description: "",
+            projectKey: existingNode.data.projectKey,
             taskState: task.state,
             completionState: task.task.completionState,
             onToggleComplete: existingNode.data.onToggleComplete,

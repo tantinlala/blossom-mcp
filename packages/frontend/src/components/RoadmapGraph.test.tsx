@@ -3,11 +3,11 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import RoadmapGraph from "./RoadmapGraph";
 import { mockReactFlow } from "../test/setup";
-import { GOAL_ID } from "../utils/goalNodeUtils";
-import { Dependency, Task } from "@blossom/common";
+import { goalNodeId } from "../utils/goalNodeUtils";
+import { Dependency, GOAL_ID, Task } from "@blossom/common";
 import { TASK_COMPLETED_COLOR, TASK_BLOCKED_COLOR, TASK_UNBLOCKED_COLOR, GOAL_COLOR } from "../utils/colors";
 import { TaskAndState, TaskState } from "../types/extendedTasks";
-import { Roadmap } from "../types/roadmap";
+import { Board, BoardLane, Roadmap, TaskRef } from "../types/roadmap";
 import { palette } from "../theme/tokens";
 import { EDGE_WIDTH, EDGE_WIDTH_HIGHLIGHTED, EDGE_WIDTH_SELECTED } from "./TaskNode";
 
@@ -17,40 +17,47 @@ jest.mock("../utils/layouter", () => {
     const actual = jest.requireActual("../utils/layouter");
     return {
         ...actual,
-        getLayoutedElements: (nodes: any, edges: any) => {
+        getLayoutedElements: (nodes: any, edges: any, laneOrder?: string[]) => {
             mockLayoutEdgeCounts.push(edges.length);
-            return actual.getLayoutedElements(nodes, edges);
+            return actual.getLayoutedElements(nodes, edges, laneOrder);
         },
     };
 });
 
+// The project every single-lane test draws.
+const PROJECT = "Trip";
+
+// The canvas id of that project's goal node. Every project names its own goal
+// with the same sentinel, so a board keeps them apart by the project.
+const GOAL_NODE = goalNodeId(PROJECT);
+
 // Fake callbacks
 const setGoal = jest.fn();
-const addTask = jest.fn(async (taskName: string): Promise<Task | null> => {
+const addTask = jest.fn(async (projectKey: string, taskName: string): Promise<Task | null> => {
     return { name: taskName, id: "new-task-id", completionState: false, plan: null };
 });
-const removeTask = (taskId: string) => {
+const removeTask = (ref: TaskRef) => {
     /* ... */
 };
-const connect = async (source: string, target: string) => {
+const connect = async (projectKey: string, source: string, target: string) => {
     /* ... */
 };
-const edgeRemove = async (source: string, target: string) => {
+const edgeRemove = async (projectKey: string, source: string, target: string) => {
     /* ... */
 };
-const edgeUpdate = (oldSource: string, oldTarget: string, newSource: string, newTarget: string) => {
+const edgeUpdate = (projectKey: string, oldSource: string, oldTarget: string, newSource: string, newTarget: string) => {
     /* ... */
 };
-const toggleComplete = (taskId: string) => {
+const toggleComplete = (ref: TaskRef) => {
     /* ... */
 };
-const changeRoadmapContext = (taskId: string) => {
+const changeRoadmapContext = (ref: TaskRef) => {
     /* ... */
 };
-const createPlanForTask = (taskId: string) => {
+const createPlanForTask = (ref: TaskRef) => {
     /* ... */
 };
-const selectTask = (taskId: string) => {
+const selectTask = (ref: TaskRef) => {
     /* ... */
 };
 const toggleTaskDetails = () => {
@@ -59,10 +66,10 @@ const toggleTaskDetails = () => {
 const toggleNextTaskDrawer = () => {
     /* ... */
 };
-const handlePaste = (tasks: Task[], dependencies: Dependency[]) => {
+const handlePaste = (projectKey: string, tasks: Task[], dependencies: Dependency[]) => {
     /* ... */
 };
-const handleUndo = () => {
+const handleUndo = (projectKey: string) => {
     /* ... */
 };
 const toggleInbox = () => {
@@ -70,22 +77,23 @@ const toggleInbox = () => {
 };
 const promptForText = jest.fn(async () => "New Task" as string | null);
 
-const renderRoadmapGraph = (
+/** One project's lane, which is what a board showing a single project holds. */
+const laneFor = (
     tasksList: TaskAndState[],
     dependenciesList: Dependency[],
     roadmapOverrides: Partial<Roadmap> = {},
-    propOverrides: Record<string, any> = {},
-) => {
+    projectKey: string = PROJECT,
+): BoardLane => ({
+    projectKey,
+    savedToDisk: true,
+    roadmap: { tasksList, dependenciesList, isSubplan: false, ancestors: [], ...roadmapOverrides },
+});
+
+const renderBoard = (board: Board, propOverrides: Record<string, any> = {}) => {
     return render(
         <ReactFlowProvider>
             <RoadmapGraph
-                presentlyShownRoadmap={{
-                    tasksList,
-                    dependenciesList,
-                    isSubplan: false,
-                    ancestors: [],
-                    ...roadmapOverrides,
-                }}
+                board={board}
                 handleSetGoal={setGoal}
                 handleAddTask={addTask}
                 handleRemoveTask={removeTask}
@@ -102,11 +110,19 @@ const renderRoadmapGraph = (
                 handleUndo={handleUndo}
                 toggleInbox={toggleInbox}
                 promptForText={promptForText}
+                focusedProject={PROJECT}
                 {...propOverrides}
             />
         </ReactFlowProvider>,
     );
 };
+
+const renderRoadmapGraph = (
+    tasksList: TaskAndState[],
+    dependenciesList: Dependency[],
+    roadmapOverrides: Partial<Roadmap> = {},
+    propOverrides: Record<string, any> = {},
+) => renderBoard({ lanes: [laneFor(tasksList, dependenciesList, roadmapOverrides)] }, propOverrides);
 
 describe("RoadmapGraph", () => {
     const GOAL_STRING: string = "My goal";
@@ -180,13 +196,19 @@ describe("RoadmapGraph", () => {
             rerender(
                 <ReactFlowProvider>
                     <RoadmapGraph
-                        presentlyShownRoadmap={{
-                            tasksList: [task("sub1", "Subtask One"), task("sub2", "Subtask Two")],
-                            dependenciesList: [{ source: "sub1", target: "sub2" }],
-                            isSubplan: true,
-                            ancestors: [
-                                { id: GOAL_ID, name: "Goal" },
-                                { id: "a", name: "Task A" },
+                        board={{
+                            lanes: [
+                                laneFor(
+                                    [task("sub1", "Subtask One"), task("sub2", "Subtask Two")],
+                                    [{ source: "sub1", target: "sub2" }],
+                                    {
+                                        isSubplan: true,
+                                        ancestors: [
+                                            { id: GOAL_ID, name: "Goal" },
+                                            { id: "a", name: "Task A" },
+                                        ],
+                                    },
+                                ),
                             ],
                         }}
                         handleSetGoal={setGoal}
@@ -205,6 +227,7 @@ describe("RoadmapGraph", () => {
                         handleUndo={handleUndo}
                         toggleInbox={toggleInbox}
                         promptForText={promptForText}
+                        focusedProject={PROJECT}
                     />
                 </ReactFlowProvider>,
             );
@@ -338,11 +361,11 @@ describe("RoadmapGraph", () => {
 
         test("keeps the toolbar in place regardless of the nesting depth", () => {
             const { unmount } = renderRoadmapGraph([], [], { isSubplan: false, ancestors: [ancestors[0]] });
-            const atRoot = screen.getByText("Add Goal").getBoundingClientRect().top;
+            const atRoot = screen.getByText("Name Goal").getBoundingClientRect().top;
             unmount();
 
             renderRoadmapGraph([], [], { isSubplan: true, ancestors });
-            const inSubplan = screen.getByText("Add Goal").getBoundingClientRect().top;
+            const inSubplan = screen.getByText("Name Goal").getBoundingClientRect().top;
 
             expect(inSubplan).toBe(atRoot);
         });
@@ -361,7 +384,7 @@ describe("RoadmapGraph", () => {
 
             fireEvent.click(screen.getByText("Ship product"));
 
-            expect(changeContext).toHaveBeenCalledWith(GOAL_ID);
+            expect(changeContext).toHaveBeenCalledWith({ projectKey: PROJECT, taskId: GOAL_ID });
         });
 
         test("renders the current plan as plain text rather than a link", () => {
@@ -449,10 +472,10 @@ describe("RoadmapGraph", () => {
             await waitFor(() => expect(screen.queryByTestId("canvas-empty-state")).not.toBeInTheDocument());
         });
 
-        test("shows only Add Goal when no goal exists yet", () => {
+        test("offers to name the goal while the lane has none", () => {
             renderRoadmapGraph([], []);
 
-            expect(screen.getByText("Add Goal")).toBeInTheDocument();
+            expect(screen.getByText("Name Goal")).toBeInTheDocument();
             expect(screen.queryByText("Add Task")).not.toBeInTheDocument();
         });
 
@@ -469,23 +492,23 @@ describe("RoadmapGraph", () => {
             await waitFor(() => {
                 expect(screen.getByText("Add Task")).toBeInTheDocument();
             });
-            expect(screen.queryByText("Add Goal")).not.toBeInTheDocument();
+            expect(screen.queryByText("Name Goal")).not.toBeInTheDocument();
         });
 
-        test("Add Goal asks for a name and calls handleSetGoal", async () => {
+        test("Name Goal asks for a name and calls handleSetGoal", async () => {
             promptForText.mockResolvedValueOnce("My new goal");
 
             renderRoadmapGraph([], []);
-            fireEvent.click(screen.getByText("Add Goal"));
+            fireEvent.click(screen.getByText("Name Goal"));
 
-            await waitFor(() => expect(setGoal).toHaveBeenCalledWith("My new goal"));
+            await waitFor(() => expect(setGoal).toHaveBeenCalledWith(PROJECT, "My new goal"));
         });
 
-        test("Add Goal does nothing when the prompt is cancelled", async () => {
+        test("Name Goal does nothing when the prompt is cancelled", async () => {
             promptForText.mockResolvedValueOnce(null);
 
             renderRoadmapGraph([], []);
-            fireEvent.click(screen.getByText("Add Goal"));
+            fireEvent.click(screen.getByText("Name Goal"));
 
             await waitFor(() => expect(promptForText).toHaveBeenCalled());
             expect(setGoal).not.toHaveBeenCalled();
@@ -566,12 +589,7 @@ describe("RoadmapGraph", () => {
         rerender(
             <ReactFlowProvider>
                 <RoadmapGraph
-                    presentlyShownRoadmap={{
-                        tasksList: newTasksList,
-                        dependenciesList: newDependenciesList,
-                        isSubplan: false,
-                        ancestors: [],
-                    }}
+                    board={{ lanes: [laneFor(newTasksList, newDependenciesList)] }}
                     handleSetGoal={setGoal}
                     handleAddTask={addTask}
                     handleRemoveTask={removeTask}
@@ -588,6 +606,7 @@ describe("RoadmapGraph", () => {
                     handleUndo={handleUndo}
                     toggleInbox={toggleInbox}
                     promptForText={promptForText}
+                    focusedProject={PROJECT}
                 />
             </ReactFlowProvider>,
         );
@@ -678,7 +697,7 @@ describe("RoadmapGraph", () => {
 
             fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter" });
 
-            expect(changeContext).toHaveBeenCalledWith("a");
+            expect(changeContext).toHaveBeenCalledWith({ projectKey: PROJECT, taskId: "a" });
         });
 
         test("Enter ticks off a highlighted task that holds no plan", async () => {
@@ -696,7 +715,7 @@ describe("RoadmapGraph", () => {
 
             fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter" });
 
-            expect(toggleCompletion).toHaveBeenCalledWith("a");
+            expect(toggleCompletion).toHaveBeenCalledWith({ projectKey: PROJECT, taskId: "a" });
         });
 
         test("Shift+Enter steps out to the plan this one sits in", async () => {
@@ -717,7 +736,7 @@ describe("RoadmapGraph", () => {
 
             fireEvent.keyDown(container.querySelector(".react-flow") as HTMLElement, { key: "Enter", shiftKey: true });
 
-            expect(changeContext).toHaveBeenCalledWith(GOAL_ID);
+            expect(changeContext).toHaveBeenCalledWith({ projectKey: PROJECT, taskId: GOAL_ID });
         });
 
         test("Shift+Enter lands the highlight on the task whose subplan was left", async () => {
@@ -748,7 +767,7 @@ describe("RoadmapGraph", () => {
                 return (
                     <ReactFlowProvider>
                         <RoadmapGraph
-                            presentlyShownRoadmap={roadmap}
+                            board={{ lanes: [{ projectKey: PROJECT, savedToDisk: true, roadmap }] }}
                             handleChangeRoadmapContext={() => setInSubplan(false)}
                             handleSetGoal={setGoal}
                             handleAddTask={addTask}
@@ -765,6 +784,7 @@ describe("RoadmapGraph", () => {
                             handleUndo={handleUndo}
                             toggleInbox={toggleInbox}
                             promptForText={promptForText}
+                            focusedProject={PROJECT}
                         />
                     </ReactFlowProvider>
                 );
@@ -827,6 +847,179 @@ describe("RoadmapGraph", () => {
         });
     });
 
+    describe("a board holding several projects", () => {
+        const OTHER = "House";
+
+        const laneTask = (id: string, name: string): TaskAndState => ({
+            task: { name, id, completionState: false, plan: null },
+            state: TaskState.UNBLOCKED,
+        });
+
+        const goalOf = (name: string): TaskAndState => ({
+            task: { name, id: GOAL_ID, completionState: false, plan: null },
+            state: TaskState.BLOCKED,
+        });
+
+        const twoLanes = (): Board => ({
+            lanes: [
+                laneFor([laneTask("t1", "Pack"), goalOf("Get to Lisbon")], [{ source: "t1", target: GOAL_ID }]),
+                laneFor([laneTask("h1", "Choose paint"), goalOf("Redecorate")], [], {}, OTHER),
+            ],
+        });
+
+        test("draws every project's tasks, each lane anchored by its own goal", async () => {
+            renderBoard(twoLanes());
+
+            await waitFor(() => expect(screen.getByText("Pack")).toBeInTheDocument());
+            expect(screen.getByText("Choose paint")).toBeInTheDocument();
+            expect(screen.getByText("Get to Lisbon")).toBeInTheDocument();
+            expect(screen.getByText("Redecorate")).toBeInTheDocument();
+        });
+
+        test("names each lane's project on its goal node, so which lane is which is readable", async () => {
+            renderBoard(twoLanes());
+
+            await waitFor(() => expect(screen.getByText(PROJECT)).toBeInTheDocument());
+            expect(screen.getByText(OTHER)).toBeInTheDocument();
+        });
+
+        test("keeps the two goals apart, since every project names its goal the same way", async () => {
+            renderBoard(twoLanes());
+
+            await waitFor(() => expect(screen.getByText("Get to Lisbon")).toBeInTheDocument());
+            // Two tasks and two goals: the goals are separate nodes, drawn under
+            // ids that carry the project each belongs to.
+            expect(document.querySelectorAll(".react-flow__node")).toHaveLength(4);
+            expect(goalNodeId(PROJECT)).not.toBe(goalNodeId(OTHER));
+        });
+
+        test("says which project the toolbar acts on", async () => {
+            renderBoard(twoLanes());
+
+            await waitFor(() => expect(screen.getByText(`Add Task to ${PROJECT}`)).toBeInTheDocument());
+        });
+
+        test("adds a task to the project it was told is being worked in", async () => {
+            promptForText.mockResolvedValueOnce("Choose a colour");
+            renderBoard(twoLanes(), { focusedProject: OTHER });
+            await waitFor(() => expect(screen.getByText(`Add Task to ${OTHER}`)).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText(`Add Task to ${OTHER}`));
+
+            await waitFor(() => expect(addTask).toHaveBeenCalledWith(OTHER, "Choose a colour"));
+        });
+
+        test("reports the project holding whatever was picked out", async () => {
+            const onSelectionProjectChange = jest.fn();
+            renderBoard(twoLanes(), { onSelectionProjectChange });
+            await waitFor(() => expect(screen.getByText("Choose paint")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Choose paint").closest(".react-flow__node") as HTMLElement);
+
+            await waitFor(() => expect(onSelectionProjectChange).toHaveBeenLastCalledWith(OTHER));
+        });
+
+        test("reports nothing picked out while nothing is", async () => {
+            const onSelectionProjectChange = jest.fn();
+            renderBoard(twoLanes(), { onSelectionProjectChange });
+
+            await waitFor(() => expect(onSelectionProjectChange).toHaveBeenCalledWith(null));
+        });
+
+        test("names the task's project when it is selected", async () => {
+            const handleSelectTask = jest.fn();
+            renderBoard(twoLanes(), { handleSelectTask });
+            await waitFor(() => expect(screen.getByText("Choose paint")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Choose paint").closest(".react-flow__node") as HTMLElement);
+
+            expect(handleSelectTask).toHaveBeenCalledWith({ projectKey: OTHER, taskId: "h1" });
+        });
+
+        test("deletes a task from the project holding it", async () => {
+            const handleRemoveTask = jest.fn();
+            renderBoard(twoLanes(), { handleRemoveTask });
+            await waitFor(() => expect(screen.getByText("Choose paint")).toBeInTheDocument());
+
+            fireEvent.click(screen.getByText("Choose paint").closest(".react-flow__node") as HTMLElement);
+            fireEvent.keyDown(document.querySelector(".react-flow") as HTMLElement, { key: "Delete" });
+
+            expect(handleRemoveTask).toHaveBeenCalledWith({ projectKey: OTHER, taskId: "h1" });
+        });
+
+        test("undoes within the project being worked in", async () => {
+            const handleUndo = jest.fn();
+            renderBoard(twoLanes(), { handleUndo, focusedProject: OTHER });
+            await waitFor(() => expect(screen.getByText("Choose paint")).toBeInTheDocument());
+
+            fireEvent.keyDown(document.querySelector(".react-flow") as HTMLElement, { key: "z", ctrlKey: true });
+
+            expect(handleUndo).toHaveBeenCalledWith(OTHER);
+        });
+
+        test("pastes into the project being worked in", async () => {
+            const handlePasteInto = jest.fn();
+            const clipboard = JSON.stringify({ tasks: [{ id: "c", name: "Copied" }], dependencies: [] });
+            Object.assign(navigator, { clipboard: { readText: async () => clipboard } });
+            renderBoard(twoLanes(), { handlePaste: handlePasteInto, focusedProject: OTHER });
+            await waitFor(() => expect(screen.getByText("Choose paint")).toBeInTheDocument());
+
+            fireEvent.keyDown(document.querySelector(".react-flow") as HTMLElement, { key: "v", ctrlKey: true });
+
+            await waitFor(() => expect(handlePasteInto).toHaveBeenCalledWith(OTHER, expect.anything(), []));
+        });
+
+        test("drills one lane into a subplan by the project it belongs to", async () => {
+            const handleChangeRoadmapContext = jest.fn();
+            const withSubplan: TaskAndState = {
+                task: {
+                    name: "Prepare",
+                    id: "h2",
+                    completionState: false,
+                    plan: { tasksList: [], dependenciesList: [] },
+                },
+                state: TaskState.UNBLOCKED,
+            };
+            renderBoard(
+                {
+                    lanes: [
+                        laneFor([laneTask("t1", "Pack"), goalOf("Get to Lisbon")], []),
+                        laneFor([withSubplan, goalOf("Redecorate")], [], {}, OTHER),
+                    ],
+                },
+                { handleChangeRoadmapContext },
+            );
+            await waitFor(() => expect(screen.getByText("Prepare")).toBeInTheDocument());
+
+            fireEvent.doubleClick(screen.getByText("Prepare").closest(".react-flow__node") as HTMLElement);
+
+            expect(handleChangeRoadmapContext).toHaveBeenCalledWith({ projectKey: OTHER, taskId: "h2" });
+        });
+
+        test("leaves the empty-state prompt off a board that holds work", async () => {
+            renderBoard(twoLanes());
+
+            await waitFor(() => expect(screen.getByText("Pack")).toBeInTheDocument());
+            expect(screen.queryByTestId("canvas-empty-state")).not.toBeInTheDocument();
+            expect(screen.queryByTestId("board-empty-state")).not.toBeInTheDocument();
+        });
+    });
+
+    describe("an empty board", () => {
+        test("says where projects are chosen", () => {
+            renderBoard({ lanes: [] });
+
+            expect(screen.getByTestId("board-empty-state")).toBeInTheDocument();
+        });
+
+        test("offers no toolbar, since there is no project for it to act on", () => {
+            renderBoard({ lanes: [] });
+
+            expect(screen.queryByText("Add Task")).not.toBeInTheDocument();
+            expect(screen.queryByText("Name Goal")).not.toBeInTheDocument();
+        });
+    });
+
     describe("creating a task from a selection", () => {
         /**
          * Stands in for the server: adding a task and adding a dependency are
@@ -840,7 +1033,7 @@ describe("RoadmapGraph", () => {
             ]);
             const [dependenciesList, setDependenciesList] = React.useState<Dependency[]>([]);
 
-            const handleAddTask = async (name: string): Promise<Task> => {
+            const handleAddTask = async (projectKey: string, name: string): Promise<Task> => {
                 const task: Task = { name, id: "new-task-id", completionState: false, plan: null };
                 setTasksList((current) => [...current, { task, state: TaskState.UNBLOCKED }]);
                 return task;
@@ -848,7 +1041,7 @@ describe("RoadmapGraph", () => {
 
             // The dependency makes the new task wait on Task A, which the server
             // reports back as a state on the task itself.
-            const handleConnect = async (source: string, target: string) => {
+            const handleConnect = async (projectKey: string, source: string, target: string) => {
                 await releaseConnect;
                 setDependenciesList((current) => [...current, { source, target }]);
                 setTasksList((current) =>
@@ -856,17 +1049,17 @@ describe("RoadmapGraph", () => {
                 );
             };
 
-            // The app hands the graph a roadmap that only changes when the plan
+            // The app hands the graph a board that only changes when a plan
             // does, and the graph rebuilds its nodes from every one it is given.
-            const presentlyShownRoadmap = React.useMemo(
-                () => ({ tasksList, dependenciesList, isSubplan: false, ancestors: [] }),
+            const board = React.useMemo(
+                () => ({ lanes: [laneFor(tasksList, dependenciesList)] }),
                 [tasksList, dependenciesList],
             );
 
             return (
                 <ReactFlowProvider>
                     <RoadmapGraph
-                        presentlyShownRoadmap={presentlyShownRoadmap}
+                        board={board}
                         handleAddTask={handleAddTask}
                         handleConnect={handleConnect}
                         handleSetGoal={setGoal}
@@ -883,6 +1076,7 @@ describe("RoadmapGraph", () => {
                         handleUndo={handleUndo}
                         toggleInbox={toggleInbox}
                         promptForText={promptForText}
+                        focusedProject={PROJECT}
                     />
                 </ReactFlowProvider>
             );

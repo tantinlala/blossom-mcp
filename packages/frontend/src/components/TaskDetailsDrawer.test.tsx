@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import TaskDetailsDrawer from "./TaskDetailsDrawer";
 import { Task } from "@blossom/common";
+import { SelectedTask } from "../hooks/useRoadmap";
 
 describe("TaskDetailsDrawer Component", () => {
     const mockTask: Task = {
@@ -20,6 +21,8 @@ describe("TaskDetailsDrawer Component", () => {
         plan: { tasksList: [], dependenciesList: [] },
     };
 
+    const selected = (task: Task): SelectedTask => ({ ref: { projectKey: "Trip", taskId: task.id }, task });
+
     const mockOnClose = jest.fn();
     const mockUpdateTaskDetails = jest.fn();
 
@@ -32,8 +35,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTask}
+                selectedTask={selected(mockTask)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -54,8 +58,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTaskWithPlan}
+                selectedTask={selected(mockTaskWithPlan)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -72,8 +77,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTask}
+                selectedTask={selected(mockTask)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -99,8 +105,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTask}
+                selectedTask={selected(mockTask)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -113,7 +120,7 @@ describe("TaskDetailsDrawer Component", () => {
         fireEvent.click(saveButton);
 
         // Check if updateTaskDetails was called with correct parameters
-        expect(mockUpdateTaskDetails).toHaveBeenCalledWith("task1", "Updated Task Name", mockTask.description, false);
+        expect(mockUpdateTaskDetails).toHaveBeenCalledWith("Updated Task Name", mockTask.description, false);
     });
 
     it("calls updateTaskDetails when save button is clicked for task with plan", async () => {
@@ -121,8 +128,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTaskWithPlan}
+                selectedTask={selected(mockTaskWithPlan)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -137,11 +145,38 @@ describe("TaskDetailsDrawer Component", () => {
         // Check if updateTaskDetails was called with correct parameters
         // Note: The component initializes the description as empty string '' when undefined
         expect(mockUpdateTaskDetails).toHaveBeenCalledWith(
-            "task2",
             "Updated Task With Plan",
             "", // description is initialized as empty string when undefined in the component
             true,
         );
+    });
+
+    it("names the project the task belongs to when the board holds more than one", () => {
+        render(
+            <TaskDetailsDrawer
+                open={true}
+                onClose={mockOnClose}
+                selectedTask={selected(mockTask)}
+                updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={true}
+            />,
+        );
+
+        expect(screen.getByTestId("task-details-project")).toHaveTextContent("Trip");
+    });
+
+    it("leaves the project unsaid on a board holding one project", () => {
+        render(
+            <TaskDetailsDrawer
+                open={true}
+                onClose={mockOnClose}
+                selectedTask={selected(mockTask)}
+                updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
+            />,
+        );
+
+        expect(screen.queryByTestId("task-details-project")).not.toBeInTheDocument();
     });
 
     it("does not render when there is no selected task", () => {
@@ -151,6 +186,7 @@ describe("TaskDetailsDrawer Component", () => {
                 onClose={mockOnClose}
                 selectedTask={null}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -162,8 +198,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={false}
                 onClose={mockOnClose}
-                selectedTask={mockTask}
+                selectedTask={selected(mockTask)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -175,8 +212,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTask}
+                selectedTask={selected(mockTask)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -192,8 +230,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTaskWithPlan}
+                selectedTask={selected(mockTaskWithPlan)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -206,8 +245,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTask}
+                selectedTask={selected(mockTask)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 
@@ -219,8 +259,9 @@ describe("TaskDetailsDrawer Component", () => {
             <TaskDetailsDrawer
                 open={true}
                 onClose={mockOnClose}
-                selectedTask={mockTaskWithPlan}
+                selectedTask={selected(mockTaskWithPlan)}
                 updateTaskDetails={mockUpdateTaskDetails}
+                showProjectKey={false}
             />,
         );
 

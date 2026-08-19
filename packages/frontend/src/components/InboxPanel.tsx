@@ -1,26 +1,30 @@
 import React from "react";
-import { Box, Button, Tooltip } from "@mui/material";
-import AddIcon from "@mui/icons-material/Add";
-import PlaylistAddCheckIcon from "@mui/icons-material/PlaylistAddCheck";
+import { Box } from "@mui/material";
 import Inbox from "./Inbox";
 import SidePanel from "./SidePanel";
+import { InboxGroup } from "../hooks/useInbox";
 
 interface InboxPanelProps {
     open: boolean;
     onClose: () => void;
-    ideaList: string[];
-    addIdea: () => void;
-    addAllIdeasToPlan: () => void;
-    changeIdea: (index: number, newIdea: string) => void;
-    commitIdea: (index: number) => void;
-    deleteIdea: (index: number) => void;
-    addTaskToContextAndRemove: (index: number) => void;
+    /** One entry per project on the board, in lane order. */
+    groups: InboxGroup[];
+    addIdea: (projectKey: string) => void;
+    addAllIdeasToPlan: (projectKey: string) => void;
+    changeIdea: (ideaId: string, newIdea: string) => void;
+    commitIdea: (ideaId: string) => void;
+    deleteIdea: (ideaId: string) => void;
+    addTaskToContextAndRemove: (ideaId: string) => void;
 }
 
+/**
+ * The inbox panel. Each project on the board keeps its own list, with its own
+ * add and move-everything controls, since an idea belongs to one plan.
+ */
 const InboxPanel: React.FC<InboxPanelProps> = ({
     open,
     onClose,
-    ideaList,
+    groups,
     addIdea,
     addAllIdeasToPlan,
     changeIdea,
@@ -28,46 +32,19 @@ const InboxPanel: React.FC<InboxPanelProps> = ({
     deleteIdea,
     addTaskToContextAndRemove,
 }) => {
-    const isEmpty = ideaList.length === 0;
-
     return (
         <SidePanel open={open} onClose={onClose} title="Inbox" testId="inbox-panel">
             <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-                <Box sx={{ display: "flex", gap: 1, p: 1.5, borderBottom: 1, borderColor: "divider" }}>
-                    <Button
-                        variant="contained"
-                        size="small"
-                        startIcon={<AddIcon />}
-                        onClick={addIdea}
-                        sx={{ flex: 1 }}
-                        data-testid="add-idea-button"
-                    >
-                        Add
-                    </Button>
-                    <Tooltip title={isEmpty ? "Nothing in the inbox to move" : "Move every idea into the plan"}>
-                        {/* A disabled button emits no events, so the tooltip needs a live wrapper */}
-                        <Box sx={{ flex: 1, display: "flex" }}>
-                            <Button
-                                variant="outlined"
-                                size="small"
-                                startIcon={<PlaylistAddCheckIcon />}
-                                onClick={addAllIdeasToPlan}
-                                disabled={isEmpty}
-                                sx={{ flex: 1 }}
-                                data-testid="move-all-button"
-                            >
-                                Move
-                            </Button>
-                        </Box>
-                    </Tooltip>
-                </Box>
                 <Box sx={{ flex: 1, overflow: "hidden" }}>
                     <Inbox
-                        ideaList={ideaList}
+                        groups={groups}
+                        showProjectKeys={groups.length > 1}
                         changeIdea={changeIdea}
                         commitIdea={commitIdea}
                         deleteIdea={deleteIdea}
                         addTaskToContextAndRemove={addTaskToContextAndRemove}
+                        addIdea={addIdea}
+                        addAllIdeasToPlan={addAllIdeasToPlan}
                     />
                 </Box>
             </Box>

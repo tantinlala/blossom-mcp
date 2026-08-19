@@ -1,18 +1,27 @@
 import { renderHook, act } from "@testing-library/react";
 import { useServerSync } from "./useServerSync";
-import { PlanManager } from "../utils/PlanManager";
+import { WorkspaceManager } from "../utils/WorkspaceManager";
 import { APIClient, RequestFailure } from "../utils/APIClient";
-import { ConnectionState, Notice, RealtimeClient, StateUpdate } from "../utils/RealtimeClient";
-import { GOAL_ID, ProjectState } from "@blossom/common";
+import { ConnectionState, Notice, RealtimeClient, StateUpdate, ViewUpdate } from "../utils/RealtimeClient";
+import { GOAL_ID, ProjectState, ViewState } from "@blossom/common";
 
-jest.mock("../utils/PlanManager");
 jest.mock("../utils/APIClient");
 
-const makeState = (version: number, inbox: string[] = []): ProjectState => ({
-    version,
-    activeProject: null,
-    goal: { name: "My Goal", id: GOAL_ID, completionState: false, plan: { tasksList: [], dependenciesList: [] } },
-    inbox: inbox.map((text, position) => ({ id: `idea-${position}`, text })),
+const makeState = (version: number, options: { key?: string; savedToDisk?: boolean; inbox?: string[] } = {}) => {
+    const { key = "Trip", savedToDisk = true, inbox = [] } = options;
+    const state: ProjectState = {
+        version,
+        key,
+        savedToDisk,
+        goal: { name: "My Goal", id: GOAL_ID, completionState: false, plan: { tasksList: [], dependenciesList: [] } },
+        inbox: inbox.map((text, position) => ({ id: `idea-${position}`, text })),
+    };
+    return state;
+};
+
+const makeView = (projects: ProjectState[], assistantProject: string | null = null): ViewState => ({
+    projects,
+    assistantProject,
 });
 
 /**
@@ -23,6 +32,7 @@ const makeState = (version: number, inbox: string[] = []): ProjectState => ({
 const createMockRealtime = () => {
     const listeners = {
         state: [] as ((update: StateUpdate) => void)[],
+        view: [] as ((update: ViewUpdate) => void)[],
         connection: [] as ((state: ConnectionState) => void)[],
         notice: [] as ((notice: Notice) => void)[],
         protocolMismatch: [] as (() => void)[],
@@ -38,6 +48,10 @@ const createMockRealtime = () => {
             getConnectionState: () => connectionState,
             onState: (listener: (update: StateUpdate) => void) => {
                 listeners.state.push(listener);
+                return () => {};
+            },
+            onView: (listener: (update: ViewUpdate) => void) => {
+                listeners.view.push(listener);
                 return () => {};
             },
             onConnectionChange: (listener: (state: ConnectionState) => void) => {
@@ -57,11 +71,12 @@ const createMockRealtime = () => {
 };
 
 describe("useServerSync", () => {
-    let mockedPlanManager: jest.Mocked<PlanManager>;
+    let workspace: WorkspaceManager;
     let mockedAPIClient: jest.Mocked<APIClient>;
+    let mockApplyInboxView: jest.Mock;
     let mockApplyRemoteInbox: jest.Mock;
-    let mockApplyActiveProject: jest.Mock;
-    let mockSyncRoadmap: jest.Mock;
+    let mockSyncBoard: jest.Mock;
+    let mockApplyAssistantProject: jest.Mock;
     let mockNotify: jest.Mock;
     let realtime: ReturnType<typeof createMockRealtime>;
     let failureListeners: ((failure: RequestFailure) => void)[];
@@ -69,16 +84,19 @@ describe("useServerSync", () => {
     beforeEach(() => {
         jest.clearAllMocks();
         jest.useFakeTimers();
-        mockedPlanManager = new PlanManager() as jest.Mocked<PlanManager>;
+        // The real view-model: it holds no React state and does no I/O, and the
+        // hook's whole job is keeping it in step with the server.
+        workspace = new WorkspaceManager();
         mockedAPIClient = new APIClient() as jest.Mocked<APIClient>;
         failureListeners = [];
         mockedAPIClient.onRequestFailure.mockImplementation((listener) => {
             failureListeners.push(listener);
             return () => {};
         });
+        mockApplyInboxView = jest.fn();
         mockApplyRemoteInbox = jest.fn();
-        mockApplyActiveProject = jest.fn();
-        mockSyncRoadmap = jest.fn();
+        mockSyncBoard = jest.fn();
+        mockApplyAssistantProject = jest.fn();
         mockNotify = jest.fn();
         realtime = createMockRealtime();
     });
@@ -91,15 +109,35 @@ describe("useServerSync", () => {
         renderHook(() =>
             useServerSync({
                 apiClient: mockedAPIClient,
-                planManager: mockedPlanManager,
+                workspace,
                 realtime: realtime.client,
                 notify: mockNotify,
             }),
         );
 
+    const registerTargets = (result: { current: ReturnType<typeof useServerSync> }) =>
+        act(() => {
+            result.current.registerTargets({
+                applyInboxView: mockApplyInboxView,
+                applyRemoteInbox: mockApplyRemoteInbox,
+                syncBoard: mockSyncBoard,
+                applyAssistantProject: mockApplyAssistantProject,
+            });
+        });
+
     const pushState = (update: Partial<StateUpdate> & { state: ProjectState }) =>
         act(() => {
-            realtime.listeners.state.forEach((listener) => listener({ isSnapshot: false, ...update }));
+            realtime.listeners.state.forEach((listener) => listener(update as StateUpdate));
+        });
+
+    const pushView = (view: ViewState, serverId = "server-a") =>
+        act(() => {
+            realtime.listeners.view.forEach((listener) => listener({ view, serverId }));
+        });
+
+    const pushNotice = (notice: Notice) =>
+        act(() => {
+            realtime.listeners.notice.forEach((listener) => listener(notice));
         });
 
     // Advances past one degraded-poll interval and flushes the async poll chain.
@@ -112,195 +150,230 @@ describe("useServerSync", () => {
         });
     };
 
+    describe("the board", () => {
+        it("puts the projects the server reports onto the board", () => {
+            const { result } = render();
+            registerTargets(result);
+            const view = makeView([makeState(5), makeState(3, { key: "House" })]);
+
+            act(() => result.current.applyView(view));
+
+            expect(workspace.keys).toEqual(["Trip", "House"]);
+            expect(mockApplyInboxView).toHaveBeenCalledWith(view);
+            expect(mockApplyAssistantProject).toHaveBeenCalledWith(null);
+            expect(mockSyncBoard).toHaveBeenCalled();
+        });
+
+        it("applies one project's change without disturbing the others", () => {
+            const { result } = render();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5), makeState(3, { key: "House" })])));
+            mockApplyRemoteInbox.mockClear();
+
+            act(() => result.current.applyProject(makeState(6, { key: "House", inbox: ["from someone else"] })));
+
+            expect(mockApplyRemoteInbox).toHaveBeenCalledTimes(1);
+            expect(mockApplyRemoteInbox).toHaveBeenCalledWith("House", [{ id: "idea-0", text: "from someone else" }]);
+        });
+
+        it("leaves a project this session is not looking at alone", () => {
+            const { result } = render();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            mockApplyRemoteInbox.mockClear();
+
+            act(() => result.current.applyProject(makeState(2, { key: "SomebodyElsesProject" })));
+
+            expect(workspace.keys).toEqual(["Trip"]);
+            expect(mockApplyRemoteInbox).not.toHaveBeenCalled();
+        });
+
+        it("puts a newly opened project onto the board", () => {
+            const { result } = render();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5)])));
+
+            act(() => result.current.addProject(makeState(1, { key: "House", savedToDisk: false })));
+
+            expect(workspace.keys).toEqual(["Trip", "House"]);
+        });
+
+        it("takes a project off the board", () => {
+            const { result } = render();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5), makeState(3, { key: "House" })])));
+
+            act(() => result.current.removeProject("Trip"));
+
+            expect(workspace.keys).toEqual(["House"]);
+        });
+
+        it("does not throw before targets are registered", () => {
+            const { result } = render();
+
+            expect(() => {
+                act(() => result.current.applyView(makeView([makeState(1)])));
+            }).not.toThrow();
+            expect(workspace.keys).toEqual(["Trip"]);
+        });
+    });
+
     describe("save state", () => {
         it("reports a project with no file behind it as never saved", () => {
             const { result } = render();
+            act(() => result.current.applyView(makeView([makeState(5, { savedToDisk: false })])));
 
-            expect(result.current.saveState).toBe("neverSaved");
+            expect(result.current.saveStateOf("Trip")).toBe("neverSaved");
+        });
+
+        it("reports an empty board as never saved, since nothing is on it to save", () => {
+            const { result } = render();
+
+            expect(result.current.saveStateOf(null)).toBe("neverSaved");
         });
 
         it("reports saved once the current version has been written to disk", () => {
             const { result } = render();
 
-            act(() => result.current.applyState(makeState(5)));
-            act(() => result.current.markSaved());
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            act(() => result.current.markSaved("Trip"));
 
-            expect(result.current.saveState).toBe("saved");
+            expect(result.current.saveStateOf("Trip")).toBe("saved");
         });
 
         it("reports unsaved as soon as the version moves past the saved one", () => {
             const { result } = render();
 
-            act(() => result.current.applyState(makeState(5)));
-            act(() => result.current.markSaved());
-            act(() => result.current.applyState(makeState(6)));
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            act(() => result.current.markSaved("Trip"));
+            act(() => result.current.applyProject(makeState(6)));
 
-            expect(result.current.saveState).toBe("unsaved");
+            expect(result.current.saveStateOf("Trip")).toBe("unsaved");
         });
 
         it("notices a change pushed by another writer, not just local edits", () => {
             const { result } = render();
-            act(() => result.current.applyState(makeState(5)));
-            act(() => result.current.markSaved());
-            expect(result.current.saveState).toBe("saved");
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            act(() => result.current.markSaved("Trip"));
+            expect(result.current.saveStateOf("Trip")).toBe("saved");
 
             pushState({ state: makeState(9) });
 
-            expect(result.current.saveState).toBe("unsaved");
+            expect(result.current.saveStateOf("Trip")).toBe("unsaved");
         });
 
-        it("goes back to never saved when a new project is started", () => {
+        it("tracks each project on the board separately", () => {
             const { result } = render();
+            act(() => result.current.applyView(makeView([makeState(5), makeState(3, { key: "House" })])));
+            act(() => result.current.markSaved("Trip"));
+            act(() => result.current.markSaved("House"));
 
-            act(() => result.current.applyState(makeState(5)));
-            act(() => result.current.markSaved());
-            act(() => result.current.markNeverSaved());
+            act(() => result.current.applyProject(makeState(6)));
 
-            expect(result.current.saveState).toBe("neverSaved");
+            expect(result.current.saveStateOf("Trip")).toBe("unsaved");
+            expect(result.current.saveStateOf("House")).toBe("saved");
         });
-    });
-
-    it("applyState updates the plan manager and the registered targets", () => {
-        const state = makeState(5, ["idea 1", "idea 2"]);
-        const { result } = render();
-
-        act(() => {
-            result.current.registerTargets({
-                applyRemoteInbox: mockApplyRemoteInbox,
-                applyActiveProject: mockApplyActiveProject,
-                syncRoadmap: mockSyncRoadmap,
-            });
-        });
-
-        act(() => {
-            result.current.applyState(state);
-        });
-
-        expect(mockedPlanManager.applyServerState).toHaveBeenCalledWith(state.goal);
-        expect(mockApplyRemoteInbox).toHaveBeenCalledWith([
-            { id: "idea-0", text: "idea 1" },
-            { id: "idea-1", text: "idea 2" },
-        ]);
-        expect(mockApplyActiveProject).toHaveBeenCalledWith(null);
-        expect(mockSyncRoadmap).toHaveBeenCalled();
-    });
-
-    it("applyState does not throw before targets are registered", () => {
-        const { result } = render();
-
-        expect(() => {
-            act(() => {
-                result.current.applyState(makeState(1));
-            });
-        }).not.toThrow();
-        expect(mockedPlanManager.applyServerState).toHaveBeenCalled();
     });
 
     describe("pushed updates", () => {
         it("applies a pushed change from another writer", () => {
             const { result } = render();
-            act(() => {
-                result.current.registerTargets({
-                    applyRemoteInbox: mockApplyRemoteInbox,
-                    applyActiveProject: mockApplyActiveProject,
-                    syncRoadmap: mockSyncRoadmap,
-                });
-            });
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5)])));
 
-            pushState({ state: makeState(7, ["from someone else"]) });
+            pushState({ state: makeState(7, { inbox: ["from someone else"] }) });
 
-            expect(mockedPlanManager.applyServerState).toHaveBeenCalled();
-            expect(mockApplyRemoteInbox).toHaveBeenCalledWith([{ id: "idea-0", text: "from someone else" }]);
-            expect(mockSyncRoadmap).toHaveBeenCalled();
+            expect(mockApplyRemoteInbox).toHaveBeenCalledWith("Trip", [{ id: "idea-0", text: "from someone else" }]);
+            expect(mockSyncBoard).toHaveBeenCalled();
         });
 
         it("ignores an update at or below the version already held", () => {
             const { result } = render();
-            act(() => result.current.applyState(makeState(7)));
-            mockedPlanManager.applyServerState.mockClear();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(7)])));
+            mockApplyRemoteInbox.mockClear();
 
             pushState({ state: makeState(7) });
             pushState({ state: makeState(6) });
 
-            expect(mockedPlanManager.applyServerState).not.toHaveBeenCalled();
+            expect(mockApplyRemoteInbox).not.toHaveBeenCalled();
         });
 
-        it("applies a snapshot even when its version is not ahead", () => {
+        it("guards each project on its own version, since each counts its own changes", () => {
             const { result } = render();
-            act(() => result.current.applyState(makeState(7)));
-            mockedPlanManager.applyServerState.mockClear();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(7), makeState(2, { key: "House" })])));
+            mockApplyRemoteInbox.mockClear();
 
-            pushState({ state: makeState(3), isSnapshot: true });
+            // Behind for Trip, ahead for House.
+            pushState({ state: makeState(4, { key: "House" }) });
 
-            expect(mockedPlanManager.applyServerState).toHaveBeenCalled();
+            expect(mockApplyRemoteInbox).toHaveBeenCalledWith("House", []);
+        });
+
+        it("applies the whole board even when its versions are not ahead", () => {
+            const { result } = render();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(7)])));
+            mockApplyInboxView.mockClear();
+
+            pushView(makeView([makeState(3)]));
+
+            expect(mockApplyInboxView).toHaveBeenCalled();
         });
 
         it("applies an update from a restarted server whose version went backwards", () => {
             const { result } = render();
-            pushState({ state: makeState(7), isSnapshot: true, serverId: "server-a" });
-            act(() => result.current.applyState(makeState(7)));
-            mockedPlanManager.applyServerState.mockClear();
+            registerTargets(result);
+            pushView(makeView([makeState(7)]), "server-a");
+            mockApplyRemoteInbox.mockClear();
 
             // A fresh process starts counting from 1 again.
             pushState({ state: makeState(2), serverId: "server-b" });
 
-            expect(mockedPlanManager.applyServerState).toHaveBeenCalled();
+            expect(mockApplyRemoteInbox).toHaveBeenCalled();
         });
 
-        it("surfaces a project switch made by somebody else", () => {
-            render();
-
-            act(() => {
-                realtime.listeners.notice.forEach((listener) =>
-                    listener({ kind: "project-switched", project: "q3-roadmap", byThisBrowser: false }),
-                );
-            });
-
-            expect(mockNotify).toHaveBeenCalledWith("Somebody switched everyone to q3-roadmap");
-        });
-
-        it("stays quiet about a project switch this browser made", () => {
+        it("follows a project that answers to a new key", () => {
             const { result } = render();
-            act(() => result.current.applyState(makeState(4)));
-            act(() => result.current.markNeverSaved());
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5, { key: "Untitled", savedToDisk: false })])));
+            act(() => result.current.markSaved("Untitled"));
 
-            act(() => {
-                realtime.listeners.notice.forEach((listener) =>
-                    listener({ kind: "project-switched", project: "q3-roadmap", byThisBrowser: true }),
-                );
-            });
+            pushNotice({ kind: "project-renamed", from: "Untitled", to: "q3-roadmap", byThisBrowser: true });
+
+            expect(workspace.keys).toEqual(["q3-roadmap"]);
+            expect(mockSyncBoard).toHaveBeenCalled();
+        });
+
+        it("says nothing about a save this browser asked for", () => {
+            const { result } = render();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5, { key: "Untitled" })])));
+
+            pushNotice({ kind: "project-renamed", from: "Untitled", to: "q3-roadmap", byThisBrowser: true });
 
             expect(mockNotify).not.toHaveBeenCalled();
-            expect(result.current.saveState).toBe("saved");
+            expect(result.current.saveStateOf("q3-roadmap")).toBe("saved");
         });
 
-        it("treats a project somebody else opened as matching disk", () => {
+        it("says when somebody else saved a project this session is looking at", () => {
             const { result } = render();
-            act(() => result.current.applyState(makeState(4)));
-            act(() => result.current.markSaved());
-            pushState({ state: makeState(12) });
-            expect(result.current.saveState).toBe("unsaved");
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5, { key: "Untitled" })])));
 
-            act(() => {
-                realtime.listeners.notice.forEach((listener) =>
-                    listener({ kind: "project-switched", project: "q3-roadmap", byThisBrowser: false }),
-                );
-            });
+            pushNotice({ kind: "project-renamed", from: "Untitled", to: "q3-roadmap", byThisBrowser: false });
 
-            expect(result.current.saveState).toBe("saved");
+            expect(mockNotify).toHaveBeenCalledWith("Untitled was saved as q3-roadmap");
         });
 
-        it("treats a new project somebody else started as having no file behind it", () => {
+        it("follows which project the assistant works on", () => {
             const { result } = render();
-            pushState({ state: makeState(12) });
+            registerTargets(result);
 
-            act(() => {
-                realtime.listeners.notice.forEach((listener) =>
-                    listener({ kind: "project-switched", project: null, byThisBrowser: false }),
-                );
-            });
+            pushNotice({ kind: "assistant-target", project: "House", byThisBrowser: false });
 
-            expect(result.current.saveState).toBe("neverSaved");
+            expect(mockApplyAssistantProject).toHaveBeenCalledWith("House");
         });
 
         it("asks the user to reload when the server speaks another protocol", () => {
@@ -329,8 +402,9 @@ describe("useServerSync", () => {
     describe("rejected writes", () => {
         it("adopts the authoritative state the server sent back", () => {
             const { result } = render();
-            act(() => result.current.applyState(makeState(9)));
-            mockedPlanManager.applyServerState.mockClear();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(9)])));
+            mockApplyRemoteInbox.mockClear();
 
             act(() => {
                 failureListeners.forEach((listener) =>
@@ -338,7 +412,7 @@ describe("useServerSync", () => {
                 );
             });
 
-            expect(mockedPlanManager.applyServerState).toHaveBeenCalled();
+            expect(mockApplyRemoteInbox).toHaveBeenCalled();
             expect(mockNotify).toHaveBeenCalledWith("Someone got there first");
         });
 
@@ -370,91 +444,90 @@ describe("useServerSync", () => {
             realtime.setInitialConnectionState("offline");
         });
 
-        it("does not refetch state when the polled version is unchanged", async () => {
+        it("does not read the board when every polled version is unchanged", async () => {
             const { result } = render();
-
-            act(() => {
-                result.current.applyState(makeState(5));
-            });
-
-            mockedAPIClient.getStateVersion.mockResolvedValue(5);
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            mockedAPIClient.getViewVersions.mockResolvedValue({ Trip: 5 });
 
             await advanceOnePoll();
 
-            expect(mockedAPIClient.getStateVersion).toHaveBeenCalledTimes(1);
-            expect(mockedAPIClient.getState).not.toHaveBeenCalled();
+            expect(mockedAPIClient.getViewVersions).toHaveBeenCalledWith(["Trip"]);
+            expect(mockedAPIClient.getView).not.toHaveBeenCalled();
         });
 
-        it("refetches and applies state when the polled version moved", async () => {
-            const newState = makeState(7, ["from server"]);
-            mockedAPIClient.getStateVersion.mockResolvedValue(7);
-            mockedAPIClient.getState.mockResolvedValue(newState);
-
+        it("reads and applies the board when any project's version moved", async () => {
             const { result } = render();
-
-            act(() => {
-                result.current.registerTargets({
-                    applyRemoteInbox: mockApplyRemoteInbox,
-                    applyActiveProject: mockApplyActiveProject,
-                    syncRoadmap: mockSyncRoadmap,
-                });
-            });
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5), makeState(2, { key: "House" })])));
+            mockApplyInboxView.mockClear();
+            mockedAPIClient.getViewVersions.mockResolvedValue({ Trip: 5, House: 4 });
+            const fresh = makeView([makeState(5), makeState(4, { key: "House", inbox: ["from server"] })]);
+            mockedAPIClient.getView.mockResolvedValue(fresh);
 
             await advanceOnePoll();
 
-            expect(mockedAPIClient.getState).toHaveBeenCalledTimes(1);
-            expect(mockedPlanManager.applyServerState).toHaveBeenCalledWith(newState.goal);
-            expect(mockApplyRemoteInbox).toHaveBeenCalledWith([{ id: "idea-0", text: "from server" }]);
-            expect(mockSyncRoadmap).toHaveBeenCalled();
+            expect(mockedAPIClient.getView).toHaveBeenCalledWith(["Trip", "House"]);
+            expect(mockApplyInboxView).toHaveBeenCalledWith(fresh);
+            expect(mockSyncBoard).toHaveBeenCalled();
         });
 
-        it("records the fetched version so the next poll does not refetch", async () => {
-            mockedAPIClient.getStateVersion.mockResolvedValue(7);
-            mockedAPIClient.getState.mockResolvedValue(makeState(7));
+        it("records the versions it read, so the next poll does not read again", async () => {
+            const { result } = render();
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            mockedAPIClient.getViewVersions.mockResolvedValue({ Trip: 7 });
+            mockedAPIClient.getView.mockResolvedValue(makeView([makeState(7)]));
 
+            await advanceOnePoll();
+            expect(mockedAPIClient.getView).toHaveBeenCalledTimes(1);
+
+            await advanceOnePoll();
+
+            expect(mockedAPIClient.getViewVersions).toHaveBeenCalledTimes(2);
+            expect(mockedAPIClient.getView).toHaveBeenCalledTimes(1);
+        });
+
+        it("does not apply anything when reading the board fails", async () => {
+            const { result } = render();
+            registerTargets(result);
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            mockApplyInboxView.mockClear();
+            mockedAPIClient.getViewVersions.mockResolvedValue({ Trip: 7 });
+            mockedAPIClient.getView.mockResolvedValue(undefined);
+
+            await advanceOnePoll();
+
+            expect(mockedAPIClient.getView).toHaveBeenCalledTimes(1);
+            expect(mockApplyInboxView).not.toHaveBeenCalled();
+        });
+
+        it("asks nothing while the board is empty", async () => {
             render();
 
             await advanceOnePoll();
-            expect(mockedAPIClient.getState).toHaveBeenCalledTimes(1);
 
-            await advanceOnePoll();
-
-            expect(mockedAPIClient.getStateVersion).toHaveBeenCalledTimes(2);
-            expect(mockedAPIClient.getState).toHaveBeenCalledTimes(1);
-        });
-
-        it("does not apply anything when the state refetch fails", async () => {
-            mockedAPIClient.getStateVersion.mockResolvedValue(7);
-            mockedAPIClient.getState.mockResolvedValue(undefined);
-
-            render();
-
-            await advanceOnePoll();
-
-            expect(mockedAPIClient.getState).toHaveBeenCalledTimes(1);
-            expect(mockedPlanManager.applyServerState).not.toHaveBeenCalled();
+            expect(mockedAPIClient.getViewVersions).not.toHaveBeenCalled();
         });
 
         it("stops polling on unmount", async () => {
-            mockedAPIClient.getStateVersion.mockResolvedValue(0);
-
-            const { unmount } = render();
+            const { result, unmount } = render();
+            act(() => result.current.applyView(makeView([makeState(5)])));
+            mockedAPIClient.getViewVersions.mockResolvedValue({ Trip: 5 });
 
             unmount();
 
             jest.advanceTimersByTime(30000);
 
-            expect(mockedAPIClient.getStateVersion).not.toHaveBeenCalled();
+            expect(mockedAPIClient.getViewVersions).not.toHaveBeenCalled();
         });
     });
 
     it("does not poll while the socket is open", async () => {
-        mockedAPIClient.getStateVersion.mockResolvedValue(0);
-
-        render();
+        const { result } = render();
+        act(() => result.current.applyView(makeView([makeState(5)])));
+        mockedAPIClient.getViewVersions.mockResolvedValue({ Trip: 5 });
 
         await advanceOnePoll();
 
-        expect(mockedAPIClient.getStateVersion).not.toHaveBeenCalled();
+        expect(mockedAPIClient.getViewVersions).not.toHaveBeenCalled();
     });
 });

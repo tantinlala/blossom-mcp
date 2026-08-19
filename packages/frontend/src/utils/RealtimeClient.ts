@@ -6,30 +6,36 @@ import {
     ProjectState,
     REALTIME_PROTOCOL_VERSION,
     ServerMessage,
+    ViewState,
 } from "@blossom/common";
 import { resolveRealtimeUrl } from "./realtimeUrl";
 
 export type ConnectionState = "connecting" | "open" | "offline";
 
+/** One project in this session's view changed. */
 export interface StateUpdate {
     state: ProjectState;
     author?: Author;
-    /**
-     * Snapshots are applied unconditionally. Ordinary updates are subject to the
-     * receiver's version guard, which a snapshot must bypass so that a server
-     * restart - which resets the version counter - still resyncs.
-     */
-    isSnapshot: boolean;
     /** Identifies the server process; a change means it restarted. */
     serverId?: string;
 }
 
-export interface Notice {
-    kind: "project-switched";
-    project: string | null;
-    /** Whether this browser is the one that caused what the notice describes. */
-    byThisBrowser: boolean;
+/**
+ * The whole view, which the client applies unconditionally. Ordinary updates are
+ * subject to the receiver's version guard, which a snapshot must bypass so that
+ * a server restart - which resets the version counters - still resyncs.
+ */
+export interface ViewUpdate {
+    view: ViewState;
+    /** Identifies the server process; a change means it restarted. */
+    serverId: string;
 }
+
+export type Notice =
+    /** A project this session holds answers to a new key, after being saved under it. */
+    | { kind: "project-renamed"; from: string; to: string; byThisBrowser: boolean }
+    /** Which project MCP acts on, which is the same for everybody. */
+    | { kind: "assistant-target"; project: string | null; byThisBrowser: boolean };
 
 /** Rejection reason for a command that never got a successful reply. */
 export class CommandFailure extends Error {
@@ -76,6 +82,7 @@ export class RealtimeClient {
 
     private socket: WebSocket | null = null;
     private author: Author | null = null;
+    private view: string[] = [];
     private connectionState: ConnectionState = "connecting";
     private serverId: string | null = null;
 
@@ -92,6 +99,7 @@ export class RealtimeClient {
     >();
 
     private readonly stateListeners = new Set<Listener<StateUpdate>>();
+    private readonly viewListeners = new Set<Listener<ViewUpdate>>();
     private readonly connectionListeners = new Set<Listener<ConnectionState>>();
     private readonly noticeListeners = new Set<Listener<Notice>>();
     private readonly protocolMismatchListeners = new Set<Listener<void>>();
@@ -122,6 +130,7 @@ export class RealtimeClient {
         this.socket = null;
         socket?.close();
         this.stateListeners.clear();
+        this.viewListeners.clear();
         this.connectionListeners.clear();
         this.noticeListeners.clear();
         this.protocolMismatchListeners.clear();
@@ -130,7 +139,22 @@ export class RealtimeClient {
     /** Identifies this browser to the server so its changes can be told apart. */
     public identify(author: Author) {
         this.author = author;
-        this.rawSend({ type: "hello", author });
+        this.rawSend({ type: "hello", author, view: this.view });
+    }
+
+    /**
+     * Says which projects this session is looking at. The server answers with a
+     * snapshot of them, and pushes their changes from then on. Held so a
+     * reconnection lands back on the same board.
+     */
+    public subscribe(view: string[]) {
+        this.view = [...view];
+        this.rawSend({ type: "subscribe", view: this.view });
+    }
+
+    /** The projects this session last asked for. */
+    public subscribedView(): string[] {
+        return [...this.view];
     }
 
     // ------------------------------------------------------------- observers
@@ -138,6 +162,12 @@ export class RealtimeClient {
     public onState(listener: Listener<StateUpdate>): () => void {
         this.stateListeners.add(listener);
         return () => this.stateListeners.delete(listener) as unknown as void;
+    }
+
+    /** Fired with the whole view: on connect, and whenever it is asked for afresh. */
+    public onView(listener: Listener<ViewUpdate>): () => void {
+        this.viewListeners.add(listener);
+        return () => this.viewListeners.delete(listener) as unknown as void;
     }
 
     public onConnectionChange(listener: Listener<ConnectionState>): () => void {
@@ -223,8 +253,12 @@ export class RealtimeClient {
             }, STABLE_CONNECTION_MS);
 
             this.setConnectionState("open");
+            // The server answers hello with a snapshot of the view, so a
+            // reconnection restores the board without a separate round trip.
             if (this.author) {
-                this.rawSend({ type: "hello", author: this.author });
+                this.rawSend({ type: "hello", author: this.author, view: this.view });
+            } else {
+                this.rawSend({ type: "subscribe", view: this.view });
             }
         };
 
@@ -264,27 +298,36 @@ export class RealtimeClient {
                     return;
                 }
                 this.serverId = message.serverId;
-                this.emit(this.stateListeners, {
-                    state: message.state,
-                    isSnapshot: true,
-                    serverId: message.serverId,
-                });
+                this.emit(this.viewListeners, { view: message.view, serverId: message.serverId });
                 return;
             case "state":
                 this.emit(this.stateListeners, {
                     state: message.state,
                     author: message.author,
-                    isSnapshot: false,
                     serverId: this.serverId ?? undefined,
                 });
                 return;
-            case "notice":
+            case "notice": {
+                const byThisBrowser = message.author !== undefined && message.author.id === this.author?.id;
+                if (message.kind === "project-renamed") {
+                    // The board follows the project, so the socket keeps asking
+                    // for the key the server now knows it by.
+                    this.view = this.view.map((key) => (key === message.from ? message.to : key));
+                    this.emit(this.noticeListeners, {
+                        kind: "project-renamed",
+                        from: message.from,
+                        to: message.to,
+                        byThisBrowser,
+                    });
+                    return;
+                }
                 this.emit(this.noticeListeners, {
-                    kind: message.kind,
+                    kind: "assistant-target",
                     project: message.project,
-                    byThisBrowser: message.author !== undefined && message.author.id === this.author?.id,
+                    byThisBrowser,
                 });
                 return;
+            }
             case "result": {
                 const pending = this.pending.get(message.id);
                 if (pending) {

@@ -7,9 +7,10 @@ jest.mock("axios");
 
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
-const makeState = (version: number): ProjectState => ({
+const makeState = (version: number, key = "Trip"): ProjectState => ({
     version,
-    activeProject: null,
+    key,
+    savedToDisk: true,
     goal: { name: "Goal", id: GOAL_ID, completionState: false, plan: { tasksList: [], dependenciesList: [] } },
     inbox: [],
 });
@@ -33,9 +34,9 @@ describe("APIClient", () => {
             (realtime.send as jest.Mock).mockResolvedValue(makeState(2));
             const client = new APIClient(realtime);
 
-            const result = await client.addIdea("an idea");
+            const result = await client.addIdea("Trip", "an idea");
 
-            expect(realtime.send).toHaveBeenCalledWith("inbox/add", { text: "an idea" });
+            expect(realtime.send).toHaveBeenCalledWith("inbox/add", { projectKey: "Trip", text: "an idea" });
             expect(mockedAxios.post).not.toHaveBeenCalled();
             expect(result).toEqual(makeState(2));
         });
@@ -45,10 +46,10 @@ describe("APIClient", () => {
             mockedAxios.post.mockResolvedValue({ data: { response: makeState(3) } });
             const client = new APIClient(realtime);
 
-            const result = await client.addIdea("an idea");
+            const result = await client.addIdea("Trip", "an idea");
 
             expect(realtime.send).not.toHaveBeenCalled();
-            expect(mockedAxios.post).toHaveBeenCalledWith("/inbox/add", { text: "an idea" });
+            expect(mockedAxios.post).toHaveBeenCalledWith("/inbox/add", { projectKey: "Trip", text: "an idea" });
             expect(result).toEqual(makeState(3));
         });
 
@@ -60,7 +61,7 @@ describe("APIClient", () => {
             const client = new APIClient(realtime);
 
             // These mutations are not idempotent: a retry could add the idea twice.
-            const result = await client.addIdea("an idea");
+            const result = await client.addIdea("Trip", "an idea");
 
             expect(result).toBeUndefined();
             expect(mockedAxios.post).not.toHaveBeenCalled();
@@ -68,12 +69,35 @@ describe("APIClient", () => {
 
         it("always reads over HTTP, even with the socket open", async () => {
             const realtime = createRealtime(true);
-            mockedAxios.get.mockResolvedValue({ data: { response: makeState(1) } });
+            mockedAxios.get.mockResolvedValue({
+                data: { response: { projects: [makeState(1)], assistantProject: null } },
+            });
             const client = new APIClient(realtime);
 
-            await client.getState();
+            await client.getView(["Trip"]);
 
-            expect(mockedAxios.get).toHaveBeenCalledWith("/state");
+            expect(mockedAxios.get).toHaveBeenCalledWith("/view?projects=Trip");
+        });
+
+        it("names every project a board read asks about", async () => {
+            mockedAxios.get.mockResolvedValue({
+                data: { response: { projects: [], assistantProject: null } },
+            });
+            const client = new APIClient();
+
+            await client.getView(["Trip", "House"]);
+
+            expect(mockedAxios.get).toHaveBeenCalledWith("/view?projects=Trip%2CHouse");
+        });
+
+        it("reads each project's version for the poll that runs while the socket is down", async () => {
+            mockedAxios.get.mockResolvedValue({ data: { response: { versions: { Trip: 4 } } } });
+            const client = new APIClient();
+
+            const versions = await client.getViewVersions(["Trip"]);
+
+            expect(mockedAxios.get).toHaveBeenCalledWith("/view/versions?projects=Trip");
+            expect(versions).toEqual({ Trip: 4 });
         });
     });
 
@@ -84,7 +108,7 @@ describe("APIClient", () => {
             const failures: any[] = [];
             client.onRequestFailure((failure) => failures.push(failure));
 
-            const result = await client.addIdea("an idea");
+            const result = await client.addIdea("Trip", "an idea");
 
             expect(result).toBeUndefined();
             expect(failures).toHaveLength(1);
@@ -99,7 +123,7 @@ describe("APIClient", () => {
             );
             const client = new APIClient(realtime);
 
-            await client.updateIdea("idea-1", "mine", "theirs");
+            await client.updateIdea("Trip", "idea-1", "mine", "theirs");
 
             expect(client.lastFailure()).toMatchObject({ code: "conflict", state: makeState(8) });
         });
@@ -113,7 +137,7 @@ describe("APIClient", () => {
             });
             const client = new APIClient();
 
-            await client.undo();
+            await client.undo("Trip");
 
             expect(client.lastFailure()).toMatchObject({
                 code: "conflict",
@@ -133,20 +157,20 @@ describe("APIClient", () => {
             });
             const client = new APIClient();
 
-            await client.undo();
+            await client.undo("Trip");
 
             // Several distinct failures share a 409, so the status alone would
             // collapse this into a plain conflict.
             expect(client.lastFailure()?.code).toBe("undo-blocked");
         });
 
-        it("falls back to the status when an older server sends no code", async () => {
+        it("falls back to the status when the body carries no code", async () => {
             mockedAxios.post.mockRejectedValue({
                 response: { status: 404, data: { error: "Task not found: abc" } },
             });
             const client = new APIClient();
 
-            await client.removeTask("abc");
+            await client.removeTask("Trip", "abc");
 
             expect(client.lastFailure()?.code).toBe("not-found");
         });
@@ -156,57 +180,67 @@ describe("APIClient", () => {
             mockedAxios.post.mockResolvedValueOnce({ data: { response: makeState(2) } });
             const client = new APIClient();
 
-            await client.addIdea("first");
+            await client.addIdea("Trip", "first");
             expect(client.lastFailure()).not.toBeNull();
 
-            await client.addIdea("second");
+            await client.addIdea("Trip", "second");
             expect(client.lastFailure()).toBeNull();
         });
     });
 
-    describe("commands that need confirming", () => {
-        const refusal = {
-            response: { status: 409, data: { error: "Somebody else is working on this project", otherCount: 1 } },
-        };
-
-        it("asks, then resends with confirmation when the person agrees", async () => {
-            mockedAxios.post.mockRejectedValueOnce(refusal);
-            mockedAxios.post.mockResolvedValueOnce({ data: { response: makeState(4) } });
+    describe("project housekeeping", () => {
+        it("opens a saved project without disturbing anybody else", async () => {
+            mockedAxios.post.mockResolvedValue({ data: { response: makeState(4, "q3-roadmap") } });
             const client = new APIClient();
-            const confirm = jest.fn().mockResolvedValue(true);
-            client.setConfirmHandler(confirm);
 
-            const result = await client.restoreProject("q3-roadmap");
+            const result = await client.openProject("q3-roadmap");
 
-            expect(confirm).toHaveBeenCalledWith(1);
-            expect(mockedAxios.post).toHaveBeenLastCalledWith("/projects/restore", {
-                filename: "q3-roadmap",
-                confirmed: true,
-            });
-            expect(result).toEqual(makeState(4));
+            expect(mockedAxios.post).toHaveBeenCalledWith("/projects/open", { filename: "q3-roadmap" });
+            expect(result).toEqual(makeState(4, "q3-roadmap"));
         });
 
-        it("resends a command that carries no payload at all", async () => {
-            mockedAxios.post.mockRejectedValueOnce(refusal);
-            mockedAxios.post.mockResolvedValueOnce({ data: { response: makeState(5) } });
+        it("starts a new project with nothing to say about it", async () => {
+            mockedAxios.post.mockResolvedValue({ data: { response: makeState(1, "Untitled") } });
             const client = new APIClient();
-            client.setConfirmHandler(jest.fn().mockResolvedValue(true));
 
             const result = await client.newProject();
 
-            expect(mockedAxios.post).toHaveBeenLastCalledWith("/projects/new", { confirmed: true });
-            expect(result).toEqual(makeState(5));
+            expect(mockedAxios.post).toHaveBeenCalledWith("/projects/new", undefined);
+            expect(result).toEqual(makeState(1, "Untitled"));
         });
 
-        it("does nothing when the person declines", async () => {
-            mockedAxios.post.mockRejectedValue(refusal);
+        it("names both the project it is saving and the filename to write", async () => {
+            mockedAxios.post.mockResolvedValue({
+                data: { response: { projects: ["q3-roadmap"], state: makeState(5, "q3-roadmap") } },
+            });
             const client = new APIClient();
-            client.setConfirmHandler(jest.fn().mockResolvedValue(false));
 
-            const result = await client.restoreProject("q3-roadmap");
+            const result = await client.saveProject("Untitled", "q3-roadmap");
 
-            expect(result).toBeUndefined();
-            expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+            expect(mockedAxios.post).toHaveBeenCalledWith("/projects/save", {
+                projectKey: "Untitled",
+                filename: "q3-roadmap",
+            });
+            expect(result!.state.key).toBe("q3-roadmap");
+        });
+
+        it("re-reads one project from disk", async () => {
+            mockedAxios.post.mockResolvedValue({ data: { response: makeState(6) } });
+            const client = new APIClient();
+
+            await client.reloadProject("Trip");
+
+            expect(mockedAxios.post).toHaveBeenCalledWith("/projects/reload", { projectKey: "Trip" });
+        });
+
+        it("chooses which project the assistant works on", async () => {
+            mockedAxios.post.mockResolvedValue({ data: { response: { assistantProject: "Trip" } } });
+            const client = new APIClient();
+
+            const chosen = await client.setAssistantProject("Trip");
+
+            expect(mockedAxios.post).toHaveBeenCalledWith("/assistant/target", { projectKey: "Trip" });
+            expect(chosen).toBe("Trip");
         });
     });
 

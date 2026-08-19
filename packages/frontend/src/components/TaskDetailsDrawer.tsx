@@ -1,16 +1,25 @@
 import React, { useState, useEffect } from "react";
-import { Task } from "@blossom/common";
 import TaskDetailsForm from "./TaskDetailsForm";
 import SidePanel from "./SidePanel";
+import { SelectedTask } from "../hooks/useRoadmap";
 
 interface TaskDetailsDrawerProps {
     open: boolean;
     onClose: () => void;
-    selectedTask: Task | null;
-    updateTaskDetails: (taskId: string, name: string, description?: string, completionState?: boolean) => void;
+    selectedTask: SelectedTask | null;
+    /** Applies the edit to whichever task is selected, in whichever project holds it. */
+    updateTaskDetails: (name: string, description?: string, completionState?: boolean) => void;
+    /** Named above the form when the board holds more than one project. */
+    showProjectKey: boolean;
 }
 
-const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({ open, onClose, selectedTask, updateTaskDetails }) => {
+const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({
+    open,
+    onClose,
+    selectedTask,
+    updateTaskDetails,
+    showProjectKey,
+}) => {
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
     const [completionState, setCompletionState] = useState(false);
@@ -18,16 +27,16 @@ const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({ open, onClose, se
 
     useEffect(() => {
         if (selectedTask) {
-            setName(selectedTask.name);
-            setDescription(selectedTask.description || "");
-            setCompletionState(selectedTask.completionState);
+            setName(selectedTask.task.name);
+            setDescription(selectedTask.task.description || "");
+            setCompletionState(selectedTask.task.completionState);
             setModified(false);
         }
     }, [selectedTask]);
 
     const handleSave = () => {
         if (selectedTask && modified) {
-            updateTaskDetails(selectedTask.id, name, description, completionState);
+            updateTaskDetails(name, description, completionState);
             setModified(false);
         }
     };
@@ -52,7 +61,7 @@ const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({ open, onClose, se
     }
 
     // Check if the task has a subplan
-    const hasSubplan = selectedTask.plan !== null;
+    const hasSubplan = selectedTask.task.plan !== null;
 
     return (
         <SidePanel
@@ -64,7 +73,8 @@ const TaskDetailsDrawer: React.FC<TaskDetailsDrawerProps> = ({ open, onClose, se
             {/* Keying on the task id gives each task a fresh form, so the description
                 opens in its reading view whenever a different task is selected. */}
             <TaskDetailsForm
-                key={selectedTask.id}
+                key={selectedTask.ref.taskId}
+                projectKey={showProjectKey ? selectedTask.ref.projectKey : undefined}
                 name={name}
                 description={description}
                 completionState={completionState}

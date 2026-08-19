@@ -1,29 +1,37 @@
-import { Position, Node } from "@xyflow/react";
-import { GOAL_COLOR, GOAL_FONT_COLOR } from "./colors";
+import { Node } from "@xyflow/react";
 import { GOAL_ID } from "@blossom/common";
-import { NODE_BORDER_RADIUS, NODE_FONT_SIZE, NODE_PADDING, NODE_WIDTH } from "../components/TaskNode";
-import { shadows } from "../theme/tokens";
+import { GOAL_NODE_TYPE, TARGET_HANDLE_POSITION } from "../components/TaskNode";
 
-const createGoalNode = (goalString: string) => {
+/**
+ * The canvas id of a project's goal node.
+ *
+ * Every project's plan names its own goal with the same sentinel, so a board
+ * holding several needs the project in the id to keep the goals apart. Task ids
+ * are unique across projects and are used as they are.
+ */
+const goalNodeId = (projectKey: string): string => `${GOAL_ID}@${projectKey}`;
+
+/** Whether a canvas id names a goal node, and which project's if so. */
+const parseGoalNodeId = (nodeId: string): string | null => {
+    const separator = nodeId.indexOf("@");
+    if (separator === -1 || nodeId.slice(0, separator) !== GOAL_ID) {
+        return null;
+    }
+    return nodeId.slice(separator + 1);
+};
+
+/** The canvas id a task carries inside one project's lane. */
+const laneNodeId = (projectKey: string, taskId: string): string =>
+    taskId === GOAL_ID ? goalNodeId(projectKey) : taskId;
+
+const createGoalNode = (projectKey: string, goalString: string): Node => {
     return {
-        id: GOAL_ID,
-        data: { label: goalString, description: "" },
-        // Matches the task node shell so the goal reads as the same family of thing
-        style: {
-            background: GOAL_COLOR,
-            color: GOAL_FONT_COLOR,
-            border: "none",
-            borderRadius: NODE_BORDER_RADIUS,
-            boxShadow: shadows.card,
-            padding: NODE_PADDING,
-            width: NODE_WIDTH,
-            fontSize: NODE_FONT_SIZE,
-            fontWeight: 600,
-        },
-        type: "output",
-        targetPosition: Position.Left,
+        id: goalNodeId(projectKey),
+        data: { label: goalString, description: "", projectKey },
+        type: GOAL_NODE_TYPE,
+        targetPosition: TARGET_HANDLE_POSITION,
         position: { x: 0, y: 0 },
     } as Node;
 };
 
-export { createGoalNode, GOAL_ID };
+export { createGoalNode, goalNodeId, parseGoalNodeId, laneNodeId };

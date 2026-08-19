@@ -1,5 +1,6 @@
-import { Author, CommandName, CommandResultMap, ProjectState, Task } from "@blossom/common";
+import { Author, CommandName, CommandResultMap, GOAL_ID, ProjectState, Task } from "@blossom/common";
 import { ProjectStore } from "./projectStore";
+import { AmbiguousProjectError, Workspace } from "./workspace";
 import { Project } from "../models/project";
 
 /** A command's payload was missing something it needs, or held the wrong type. */
@@ -18,39 +19,15 @@ class UnknownCommandError extends Error {
     }
 }
 
-/**
- * The command would swap the project out from under everyone else who is
- * connected. Resending with `confirmed: true` goes ahead anyway.
- */
-class ConfirmRequiredError extends Error {
-    public readonly otherCount: number;
-
-    constructor(otherCount: number) {
-        super(
-            otherCount === 1
-                ? "Somebody else is working on this project"
-                : `${otherCount} other people are working on this project`,
-        );
-        this.name = "ConfirmRequiredError";
-        this.otherCount = otherCount;
-    }
-}
-
 interface CommandDeps {
-    store: ProjectStore;
+    workspace: Workspace;
     project: Project;
-    /**
-     * How many browsers other than the caller's are connected. Supplied by the
-     * realtime layer; absent when there is nothing tracking connections (the
-     * REST router on its own), in which case nothing needs confirming.
-     */
-    otherPeerCount?: (author: Author | null) => number;
 }
 
 interface CommandContext extends CommandDeps {
     author: Author | null;
-    /** Runs a synchronous store mutation attributed to the caller. */
-    run<T>(fn: () => T): T;
+    /** Runs a synchronous mutation on one project, attributed to the caller. */
+    run<T>(store: ProjectStore, fn: () => T): T;
 }
 
 type CommandHandler<K extends CommandName> = (
@@ -65,6 +42,52 @@ const requireString = (value: unknown, field: string): string => {
         throw new InvalidCommandError(`${field} is required`);
     }
     return value;
+};
+
+// Every field a payload can name a task by. The goal sentinel is left out
+// deliberately: every project has a task under that id, so it settles nothing.
+const TASK_ID_FIELDS = ["taskId", "parentId", "sourceId", "targetId", "oldSource", "oldTarget", "newSource"];
+
+/**
+ * Which project a command acts on.
+ *
+ * `projectKey` says it outright, and is what the web UI sends: the person
+ * clicking knows which board lane they clicked in. Failing that the ids in the
+ * payload settle it, since a task or idea id belongs to exactly one project; and
+ * a workspace holding one project needs nothing to settle. Anything else is
+ * reported as the ambiguity it is, naming the command that arrived without a
+ * project.
+ */
+const resolveProject = (ctx: CommandContext, name: CommandName, payload: any): ProjectStore => {
+    if (typeof payload?.projectKey === "string" && payload.projectKey !== "") {
+        return ctx.workspace.require(payload.projectKey);
+    }
+
+    for (const field of TASK_ID_FIELDS) {
+        const value = payload?.[field];
+        if (typeof value === "string" && value !== "" && value !== GOAL_ID) {
+            const store = ctx.workspace.findByTaskId(value);
+            if (store) {
+                return store;
+            }
+        }
+    }
+
+    if (typeof payload?.ideaId === "string" && payload.ideaId !== "") {
+        const store = ctx.workspace.findByIdeaId(payload.ideaId);
+        if (store) {
+            return store;
+        }
+    }
+
+    const keys = ctx.workspace.keys();
+    if (keys.length === 1) {
+        return ctx.workspace.require(keys[0]);
+    }
+
+    throw new AmbiguousProjectError(
+        `${name} did not say which project it means: pass projectKey. Open projects: ${keys.join(", ") || "none"}`,
+    );
 };
 
 // Which inbox entry a payload means. Callers may name it by `ideaId`, which
@@ -86,17 +109,6 @@ const ideaRef = (payload: any): { ideaId?: string; index?: number } => {
     return { index: payload.index };
 };
 
-// Guards the two commands that replace the project everyone is looking at.
-const assertSwitchConfirmed = (ctx: CommandContext, payload: any) => {
-    if (payload?.confirmed === true) {
-        return;
-    }
-    const others = ctx.otherPeerCount?.(ctx.author) ?? 0;
-    if (others > 0) {
-        throw new ConfirmRequiredError(others);
-    }
-};
-
 /**
  * Every mutation the app supports, in one table. The REST router and the
  * WebSocket server both dispatch through here, so the two transports cannot
@@ -105,154 +117,207 @@ const assertSwitchConfirmed = (ctx: CommandContext, payload: any) => {
  *
  * MCP is deliberately not routed through this table: its tools have their own
  * names, schemas and return shapes, and a deliberately smaller surface. It
- * shares the seam that matters - the store - so MCP writes still broadcast.
+ * shares the seam that matters - the workspace - so MCP writes still broadcast.
  */
 const COMMANDS: CommandTable = {
     goal: (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "goal", payload);
         const name = payload?.name;
         if (typeof name !== "string") {
             throw new InvalidCommandError("Goal name is required");
         }
-        return ctx.run(() => {
-            ctx.store.setGoal(name, payload?.description, payload?.baseVersion);
-            return ctx.store.getState();
+        return ctx.run(store, () => {
+            store.setGoal(name, payload?.description, payload?.baseVersion);
+            return store.getState();
         });
     },
 
     "tasks/add": (ctx, payload): { task: Task; state: ProjectState } => {
+        const store = resolveProject(ctx, "tasks/add", payload);
         const name = requireString(payload?.name, "Task name");
-        return ctx.run(() => {
-            const task = ctx.store.addTask(payload?.parentId, name, payload?.description);
-            return { task, state: ctx.store.getState() };
+        return ctx.run(store, () => {
+            const task = store.addTask(payload?.parentId, name, payload?.description);
+            return { task, state: store.getState() };
         });
     },
 
-    "tasks/update": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.updateTask(payload?.taskId, {
+    "tasks/update": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "tasks/update", payload);
+        return ctx.run(store, () => {
+            store.updateTask(payload?.taskId, {
                 name: payload?.name,
                 description: payload?.description,
                 baseVersion: payload?.baseVersion,
             });
-            return ctx.store.getState();
-        }),
-
-    "tasks/set-completion": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.setTaskCompletion(payload?.taskId, Boolean(payload?.completed));
-            return ctx.store.getState();
-        }),
-
-    "tasks/remove": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.removeTask(payload?.taskId);
-            return ctx.store.getState();
-        }),
-
-    "tasks/create-subplan": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.createSubplan(payload?.taskId);
-            return ctx.store.getState();
-        }),
-
-    "tasks/paste": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.pasteTasks(payload?.parentId, payload?.tasks ?? [], payload?.dependencies ?? []);
-            return ctx.store.getState();
-        }),
-
-    "dependencies/add": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.addDependency(payload?.sourceId, payload?.targetId);
-            return ctx.store.getState();
-        }),
-
-    "dependencies/remove": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.removeDependency(payload?.sourceId, payload?.targetId);
-            return ctx.store.getState();
-        }),
-
-    "dependencies/update": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.updateDependency(payload?.oldSource, payload?.oldTarget, payload?.newSource, payload?.newTarget);
-            return ctx.store.getState();
-        }),
-
-    "inbox/add": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.addIdea(typeof payload?.text === "string" ? payload.text : "");
-            return ctx.store.getState();
-        }),
-
-    "inbox/update": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.updateIdea(ideaRef(payload), payload?.text ?? "", payload?.expectedText);
-            return ctx.store.getState();
-        }),
-
-    "inbox/remove": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.removeIdea(ideaRef(payload), payload?.expectedText);
-            return ctx.store.getState();
-        }),
-
-    "inbox/promote": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.promoteIdea(ideaRef(payload), payload?.parentId, payload?.expectedText);
-            return ctx.store.getState();
-        }),
-
-    "inbox/promote-all": (ctx, payload): ProjectState =>
-        ctx.run(() => {
-            ctx.store.promoteAllIdeas(payload?.parentId);
-            return ctx.store.getState();
-        }),
-
-    undo: (ctx): ProjectState =>
-        ctx.run(() => {
-            ctx.store.undo();
-            return ctx.store.getState();
-        }),
-
-    "projects/new": (ctx, payload): ProjectState => {
-        assertSwitchConfirmed(ctx, payload);
-        return ctx.run(() => {
-            ctx.store.reset();
-            return ctx.store.getState();
+            return store.getState();
         });
     },
 
-    "projects/save": async (ctx, payload): Promise<{ projects: string[] }> => {
-        const filename = requireString(payload?.filename, "Filename");
-        const state = ctx.store.getState();
-        await ctx.project.saveProject(filename, state.goal, state.inbox);
-        ctx.run(() => ctx.store.setActiveProject(filename));
-        return { projects: await ctx.project.listExistingProjects() };
+    "tasks/set-completion": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "tasks/set-completion", payload);
+        return ctx.run(store, () => {
+            store.setTaskCompletion(payload?.taskId, Boolean(payload?.completed));
+            return store.getState();
+        });
     },
 
-    "projects/delete": async (ctx, payload): Promise<{ projects: string[]; state: ProjectState }> => {
-        const filename = requireString(payload?.filename, "Filename");
-        await ctx.project.deleteProject(filename);
+    "tasks/remove": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "tasks/remove", payload);
+        return ctx.run(store, () => {
+            store.removeTask(payload?.taskId);
+            return store.getState();
+        });
+    },
 
-        // The work stays on screen; it simply has no file behind it any more,
-        // which is what a null active project means everywhere else.
-        if (ctx.store.activeProject === filename) {
-            ctx.run(() => ctx.store.setActiveProject(null));
+    "tasks/create-subplan": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "tasks/create-subplan", payload);
+        return ctx.run(store, () => {
+            store.createSubplan(payload?.taskId);
+            return store.getState();
+        });
+    },
+
+    "tasks/paste": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "tasks/paste", payload);
+        return ctx.run(store, () => {
+            store.pasteTasks(payload?.parentId, payload?.tasks ?? [], payload?.dependencies ?? []);
+            return store.getState();
+        });
+    },
+
+    "dependencies/add": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "dependencies/add", payload);
+        return ctx.run(store, () => {
+            store.addDependency(payload?.sourceId, payload?.targetId);
+            return store.getState();
+        });
+    },
+
+    "dependencies/remove": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "dependencies/remove", payload);
+        return ctx.run(store, () => {
+            store.removeDependency(payload?.sourceId, payload?.targetId);
+            return store.getState();
+        });
+    },
+
+    "dependencies/update": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "dependencies/update", payload);
+        return ctx.run(store, () => {
+            store.updateDependency(payload?.oldSource, payload?.oldTarget, payload?.newSource, payload?.newTarget);
+            return store.getState();
+        });
+    },
+
+    "inbox/add": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "inbox/add", payload);
+        return ctx.run(store, () => {
+            store.addIdea(typeof payload?.text === "string" ? payload.text : "");
+            return store.getState();
+        });
+    },
+
+    "inbox/update": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "inbox/update", payload);
+        return ctx.run(store, () => {
+            store.updateIdea(ideaRef(payload), payload?.text ?? "", payload?.expectedText);
+            return store.getState();
+        });
+    },
+
+    "inbox/remove": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "inbox/remove", payload);
+        return ctx.run(store, () => {
+            store.removeIdea(ideaRef(payload), payload?.expectedText);
+            return store.getState();
+        });
+    },
+
+    "inbox/promote": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "inbox/promote", payload);
+        return ctx.run(store, () => {
+            store.promoteIdea(ideaRef(payload), payload?.parentId, payload?.expectedText);
+            return store.getState();
+        });
+    },
+
+    "inbox/promote-all": (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "inbox/promote-all", payload);
+        return ctx.run(store, () => {
+            store.promoteAllIdeas(payload?.parentId);
+            return store.getState();
+        });
+    },
+
+    undo: (ctx, payload): ProjectState => {
+        const store = resolveProject(ctx, "undo", payload);
+        return ctx.run(store, () => {
+            store.undo();
+            return store.getState();
+        });
+    },
+
+    /**
+     * Opens an empty project. It joins the caller's own view, so starting one
+     * changes nothing for anybody else who is connected.
+     */
+    "projects/new": async (ctx): Promise<ProjectState> => {
+        const store = await ctx.workspace.createDraft();
+        return store.getState();
+    },
+
+    "projects/save": async (ctx, payload): Promise<{ projects: string[]; state: ProjectState }> => {
+        const store = resolveProject(ctx, "projects/save", payload);
+        const filename = requireString(payload?.filename, "Filename");
+        const saved = await ctx.workspace.save(store.key, filename, ctx.author);
+        return { projects: await ctx.project.listExistingProjects(), state: saved.getState() };
+    },
+
+    /**
+     * Opens a saved project, reading it from disk if nothing has it open yet.
+     * The caller adds it to its own view; everybody else's view is untouched.
+     */
+    "projects/open": async (ctx, payload): Promise<ProjectState> => {
+        const filename = requireString(payload?.filename, "Filename");
+        const store = await ctx.workspace.open(filename);
+        return store.getState();
+    },
+
+    /** Re-reads an open project from disk, discarding what it holds. */
+    "projects/reload": async (ctx, payload): Promise<ProjectState> => {
+        const store = resolveProject(ctx, "projects/reload", payload);
+        const reloaded = await ctx.workspace.reload(store.key);
+        return reloaded.getState();
+    },
+
+    "projects/delete": async (ctx, payload): Promise<{ projects: string[]; state?: ProjectState }> => {
+        const filename = requireString(payload?.filename, "Filename");
+        const store = await ctx.workspace.delete(filename);
+        const projects = await ctx.project.listExistingProjects();
+        return store ? { projects, state: store.getState() } : { projects };
+    },
+
+    /**
+     * Chooses which open project MCP acts on. A person picks it in the web UI,
+     * so an assistant and the people watching work on the same plan.
+     */
+    "assistant/target": (ctx, payload): { assistantProject: string | null } => {
+        const key = payload?.projectKey;
+        if (key !== null && typeof key !== "string") {
+            throw new InvalidCommandError("projectKey is required: a project key, or null to leave it unset");
         }
-        return { projects: await ctx.project.listExistingProjects(), state: ctx.store.getState() };
-    },
-
-    "projects/restore": async (ctx, payload): Promise<ProjectState> => {
-        assertSwitchConfirmed(ctx, payload);
-        const filename = payload?.filename;
-        const { goal, inbox } = await ctx.project.restoreProject(filename);
-        return ctx.run(() => {
-            ctx.store.load(goal, inbox, filename);
-            return ctx.store.getState();
-        });
+        ctx.workspace.setAssistantProject(key === "" ? null : key);
+        return { assistantProject: ctx.workspace.assistantProject };
     },
 };
+
+/**
+ * Which project a payload names, for callers outside dispatch. A refused write
+ * comes back carrying the authoritative state of the project it was aimed at,
+ * and that needs resolving the same way the write itself did.
+ */
+const projectFor = (deps: CommandDeps, name: CommandName, payload: unknown): ProjectStore =>
+    resolveProject({ ...deps, author: null, run: (_store, fn) => fn() }, name, payload);
 
 const isCommandName = (name: string): name is CommandName => Object.prototype.hasOwnProperty.call(COMMANDS, name);
 
@@ -274,7 +339,9 @@ const dispatchCommand = async (
     const ctx: CommandContext = {
         ...deps,
         author,
-        run: <T>(fn: () => T): T => (author ? deps.store.runAs(author, fn) : fn()),
+        // Attribution is per project: the author lands on the store the command
+        // resolved to, which is the one whose undo stack has to know about it.
+        run: <T>(store: ProjectStore, fn: () => T): T => (author ? store.runAs(author, fn) : fn()),
     };
 
     return await COMMANDS[name](ctx, payload);
@@ -284,9 +351,9 @@ export {
     COMMANDS,
     dispatchCommand,
     isCommandName,
+    projectFor,
     InvalidCommandError,
     UnknownCommandError,
-    ConfirmRequiredError,
     CommandDeps,
     CommandContext,
 };

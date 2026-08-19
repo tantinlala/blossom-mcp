@@ -1,18 +1,18 @@
 import { Router, Request, Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ProjectStore } from "../state/projectStore";
+import { Workspace } from "../state/workspace";
 import { createMcpServer } from "./mcpServer";
 
 /**
  * Mounts the MCP server over stateless Streamable HTTP. A fresh transport and
  * server instance is created per request (required in stateless mode to avoid
- * request-id collisions); all real state lives in the shared ProjectStore.
+ * request-id collisions); all real state lives in the shared Workspace.
  */
-const createMcpRouter = (store: ProjectStore): Router => {
+const createMcpRouter = (workspace: Workspace): Router => {
     const router = Router();
 
     router.post("/", async (req: Request, res: Response) => {
-        const server = createMcpServer(store);
+        const server = createMcpServer(workspace);
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
         res.on("close", () => {
