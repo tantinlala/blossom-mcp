@@ -5,27 +5,34 @@ import Header from "./Header";
 
 describe("Header component", () => {
     const mockProps = {
-        existingProjects: ["Project 1", "Project 2"],
-        selectedProject: "Project 1",
-        handleProjectChange: jest.fn(),
+        savedProjects: ["Project 1", "Project 2"],
+        openProjects: ["Project 1"],
+        assistantProject: null,
+        focusedProject: "Project 1",
+        onOpenProject: jest.fn(),
+        onCloseProject: jest.fn(),
+        onNewProject: jest.fn(),
         onDeleteProject: jest.fn(),
+        onChooseAssistantProject: jest.fn(),
         onSave: jest.fn(),
-        onRestore: jest.fn(),
+        onReload: jest.fn(),
         saveState: "saved" as const,
         connectionState: "open" as const,
     };
 
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
+
     it("renders correctly", () => {
         render(<Header {...mockProps} />);
 
-        // Check if the app title is rendered
         expect(screen.getByText("Blossom")).toBeInTheDocument();
         expect(screen.getByTestId("brand-mark")).toBeInTheDocument();
 
-        // Check if project dropdown is rendered showing the current project
-        expect(screen.getByRole("combobox")).toHaveTextContent("Project 1");
+        // The board selector says what is on the board
+        expect(screen.getByTestId("board-selector")).toHaveTextContent("Project 1");
 
-        // Check if buttons are rendered
         expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
         expect(screen.getByRole("button", { name: /reload/i })).toBeInTheDocument();
     });
@@ -36,15 +43,23 @@ describe("Header component", () => {
         expect(mockProps.onSave).toHaveBeenCalled();
     });
 
-    it("calls onRestore when Reload button is clicked", () => {
+    it("calls onReload when Reload button is clicked", () => {
         render(<Header {...mockProps} />);
         fireEvent.click(screen.getByRole("button", { name: /reload/i }));
-        expect(mockProps.onRestore).toHaveBeenCalled();
+        expect(mockProps.onReload).toHaveBeenCalled();
     });
 
-    it("enables Reload button when no project is selected", () => {
-        render(<Header {...mockProps} selectedProject="" />);
-        expect(screen.getByRole("button", { name: /reload/i })).toBeEnabled();
+    it("has nothing to save or reload while the board is empty", () => {
+        render(<Header {...mockProps} openProjects={[]} focusedProject={null} />);
+
+        expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+        expect(screen.getByRole("button", { name: /reload/i })).toBeDisabled();
+    });
+
+    it("says which project it saves when the board holds several", () => {
+        render(<Header {...mockProps} openProjects={["Project 1", "Project 2"]} focusedProject="Project 2" />);
+
+        expect(screen.getByRole("button", { name: "Save Project 2" })).toBeInTheDocument();
     });
 
     it("reports whether there is anything unsaved", () => {
@@ -64,23 +79,5 @@ describe("Header component", () => {
 
         rerender(<Header {...mockProps} connectionState="offline" />);
         expect(screen.getByTestId("connection-state")).toHaveTextContent("Reconnecting");
-    });
-
-    it("passes the chosen project name up when the dropdown changes", () => {
-        render(<Header {...mockProps} />);
-
-        fireEvent.mouseDown(screen.getByRole("combobox"));
-        fireEvent.click(screen.getByTestId("project-option-Project 2"));
-
-        expect(mockProps.handleProjectChange).toHaveBeenCalledWith("Project 2");
-    });
-
-    it("passes a project up to be deleted", () => {
-        render(<Header {...mockProps} />);
-
-        fireEvent.mouseDown(screen.getByRole("combobox"));
-        fireEvent.click(screen.getByTestId("delete-project-Project 2"));
-
-        expect(mockProps.onDeleteProject).toHaveBeenCalledWith("Project 2");
     });
 });

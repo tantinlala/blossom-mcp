@@ -1,5 +1,11 @@
 # API Endpoints
 
+## Naming a project
+
+The server holds several projects open at once, and each session looks at its own set of them, so every project-scoped write names the project it means with **`projectKey`**. A project's key is its filename once a file holds it, and a minted `Untitled` name before that. The web UI always sends it: the person clicking knows which board lane they clicked in.
+
+Failing that, the server works the project out from the ids in the payload — a task id or an `ideaId` belongs to exactly one project — and, if only one project is open, from there being nothing else the caller could mean. Anything else comes back as **400** with code `invalid`, naming the command and listing the projects that are open. The goal sentinel settles nothing, since every project has a task under that id.
+
 ## Preconditions
 
 Writes that overwrite text carry a precondition, so one person cannot silently clobber another's edit:
@@ -10,7 +16,7 @@ Writes that overwrite text carry a precondition, so one person cannot silently c
 | `inbox/update`, `inbox/remove`, `inbox/promote` | `expectedText` | Text overwrite against an idea somebody else may have edited. |
 | everything else                                 | none           | Additive or commutative.                                      |
 
-`baseVersion` is captured when the local edit **begins**, not when it is sent — at send time it is always current and would catch nothing. Both are optional; omitting them leaves the write unguarded, so the last one wins.
+`baseVersion` is a version of the project being written to, captured when the local edit **begins**, not when it is sent — at send time it is always current and would catch nothing. Both are optional; omitting them leaves the write unguarded, so the last one wins.
 
 ## Collection ordering
 
@@ -18,6 +24,7 @@ Every collection the server returns has a stated order, so a caller reading one 
 
 | Collection                      | Order                                                              |
 | ------------------------------- | ------------------------------------------------------------------ |
+| `view.projects`                 | The order the session asked for them, which is its lane order.     |
 | `inbox`                         | **Newest first.** A freshly added idea is element 0.               |
 | `plan.tasksList`                | The order tasks were added to that plan.                           |
 | `plan.dependenciesList`         | The order the edges were added.                                    |
@@ -27,42 +34,54 @@ An inbox entry is `{ id, text }`. The `id` addresses that entry for as long as i
 
 ## REST API (`/api`)
 
-Used by the frontend as the **fallback transport**, while the realtime socket is not open; the socket carries the same commands under the same names (see below). Unless noted otherwise, every mutation returns `{ response: ProjectState }` where `ProjectState = { version, activeProject, goal, inbox }`.
+Used by the frontend as the **fallback transport**, while the realtime socket is not open; the socket carries the same commands under the same names (see below). Unless noted otherwise, every project mutation returns `{ response: ProjectState }` where `ProjectState = { version, key, savedToDisk, goal, inbox }`.
 
-Validation failures return 400, unknown task/project ids return 404, and a refused write returns **409** with `{ error, response }` — `response` being the server's authoritative state, so the client can rebase instead of guessing. A 409 may additionally carry `otherCount` (project switch).
+Validation failures return 400, unknown task/project/idea ids return 404, and a refused write returns **409** with `{ error, response }` — `response` being the server's authoritative copy of the project the write was aimed at, so the client can rebase. A conflict on a write whose project cannot be worked out omits `response`, leaving the client to read its board back.
 
-Every error body also carries a `code` drawn from the same `CommandErrorCode` union the socket uses, so a failure means the same thing on either transport. Statuses alone would not: `conflict`, `undo-blocked` and `confirm-required` all return 409.
+Every error body also carries a `code` drawn from the same `CommandErrorCode` union the socket uses, so a failure means the same thing on either transport. Statuses alone would not: `conflict` and `undo-blocked` both return 409.
 
 Mutations may send an `X-Blossom-Author` header (`{ id, kind }`) identifying the browser that made the change. There are no names and no authentication — it only lets undo tell one browser's work from another's.
 
 The three inbox commands take either an `ideaId` or an `index`; `ideaId` wins when both are sent, and a payload naming neither — or an `index` that is not an integer — returns 400 with code `invalid`. An `ideaId` the inbox no longer holds returns 404 with code `not-found`. The frontend addresses ideas by `ideaId`.
 
-| Endpoint                  | Method | Input                                            | Description                                                            |
-| ------------------------- | ------ | ------------------------------------------------ | ---------------------------------------------------------------------- |
-| **/state**                | GET    | None                                             | Returns the full current project state.                                |
-| **/state/version**        | GET    | None                                             | Returns `{ version }` — used by the degraded poll while offline.       |
-| **/goal**                 | POST   | `{ name, description?, baseVersion? }`           | Sets the goal name/description (creates an empty plan if none exists). |
-| **/tasks/add**            | POST   | `{ parentId, name, description? }`               | Adds a task; returns `{ task, state }`.                                |
-| **/tasks/update**         | POST   | `{ taskId, name?, description?, baseVersion? }`  | Updates a task's name/description.                                     |
-| **/tasks/set-completion** | POST   | `{ taskId, completed }`                          | Sets completion; parent completion propagates automatically.           |
-| **/tasks/remove**         | POST   | `{ taskId }`                                     | Deletes a task and any dependencies referencing it.                    |
-| **/tasks/create-subplan** | POST   | `{ taskId }`                                     | Gives a task an empty subplan.                                         |
-| **/tasks/paste**          | POST   | `{ parentId, tasks, dependencies }`              | Pastes copied tasks with freshly generated ids.                        |
-| **/dependencies/add**     | POST   | `{ sourceId, targetId }`                         | Adds a dependency (rejects self-deps and cycles).                      |
-| **/dependencies/remove**  | POST   | `{ sourceId, targetId }`                         | Removes a dependency.                                                  |
-| **/dependencies/update**  | POST   | `{ oldSource, oldTarget, newSource, newTarget }` | Rewires a dependency.                                                  |
-| **/inbox/add**            | POST   | `{ text }`                                       | Prepends an idea to the inbox.                                         |
-| **/inbox/update**         | POST   | `{ ideaId?, index?, text, expectedText? }`       | Edits an idea.                                                         |
-| **/inbox/remove**         | POST   | `{ ideaId?, index?, expectedText? }`             | Removes an idea.                                                       |
-| **/inbox/promote**        | POST   | `{ ideaId?, index?, parentId?, expectedText? }`  | Converts an idea into a task.                                          |
-| **/inbox/promote-all**    | POST   | `{ parentId? }`                                  | Converts every idea into a task in one mutation.                       |
-| **/undo**                 | POST   | None                                             | Undoes your most recent change; 409 if somebody else changed it since. |
-| **/projects**             | GET    | None                                             | Returns `{ projects: string[] }`.                                      |
-| **/projects/new**         | POST   | None                                             | Resets to a fresh empty project.                                       |
-| **/projects/save**        | POST   | `{ filename }`                                   | Saves current state to disk; returns `{ projects }`.                   |
-| **/projects/restore**     | POST   | `{ filename }`                                   | Loads a saved project into the store.                                  |
-| **/projects/delete**      | POST   | `{ filename }`                                   | Deletes a saved project's file; returns `{ projects, state }`.         |
-| **/projects/active**      | GET    | None                                             | Returns `{ activeProject }`.                                           |
+### Reads
+
+| Endpoint           | Method | Input           | Description                                                                                                                                                                                       |
+| ------------------ | ------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **/view**          | GET    | `?projects=a,b` | The board those projects make up: `{ projects: ProjectState[], assistantProject }`. Opens any that a file holds and the server does not have open yet; a name with nothing behind it is left out. |
+| **/view/versions** | GET    | `?projects=a,b` | `{ versions: { [key]: number } }` — read by the degraded poll while the socket is down.                                                                                                           |
+| **/projects**      | GET    | None            | `{ projects: string[], open: string[], assistantProject }` — every saved project, which are open, and the assistant's.                                                                            |
+
+### Writes
+
+Every endpoint below is `POST /api/<name>`, and the name is the same one the socket's `command` frames use.
+
+| Endpoint                  | Input                                                        | Description                                                                                                    |
+| ------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| **/goal**                 | `{ projectKey, name, description?, baseVersion? }`           | Sets the goal name/description (creates an empty plan if none exists).                                         |
+| **/tasks/add**            | `{ projectKey, parentId, name, description? }`               | Adds a task; returns `{ task, state }`.                                                                        |
+| **/tasks/update**         | `{ projectKey, taskId, name?, description?, baseVersion? }`  | Updates a task's name/description.                                                                             |
+| **/tasks/set-completion** | `{ projectKey, taskId, completed }`                          | Sets completion; parent completion propagates automatically.                                                   |
+| **/tasks/remove**         | `{ projectKey, taskId }`                                     | Deletes a task and any dependencies referencing it.                                                            |
+| **/tasks/create-subplan** | `{ projectKey, taskId }`                                     | Gives a task an empty subplan.                                                                                 |
+| **/tasks/paste**          | `{ projectKey, parentId, tasks, dependencies }`              | Pastes copied tasks with freshly generated ids.                                                                |
+| **/dependencies/add**     | `{ projectKey, sourceId, targetId }`                         | Adds a dependency (rejects self-deps and cycles).                                                              |
+| **/dependencies/remove**  | `{ projectKey, sourceId, targetId }`                         | Removes a dependency.                                                                                          |
+| **/dependencies/update**  | `{ projectKey, oldSource, oldTarget, newSource, newTarget }` | Rewires a dependency.                                                                                          |
+| **/inbox/add**            | `{ projectKey, text }`                                       | Prepends an idea to that project's inbox.                                                                      |
+| **/inbox/update**         | `{ projectKey, ideaId?, index?, text, expectedText? }`       | Edits an idea.                                                                                                 |
+| **/inbox/remove**         | `{ projectKey, ideaId?, index?, expectedText? }`             | Removes an idea.                                                                                               |
+| **/inbox/promote**        | `{ projectKey, ideaId?, index?, parentId?, expectedText? }`  | Converts an idea into a task.                                                                                  |
+| **/inbox/promote-all**    | `{ projectKey, parentId? }`                                  | Converts every idea into a task in one mutation.                                                               |
+| **/undo**                 | `{ projectKey }`                                             | Undoes your most recent change to that project; 409 if somebody else changed it since.                         |
+| **/projects/new**         | None                                                         | Opens an empty project under a minted key, for the caller to put on its own board.                             |
+| **/projects/open**        | `{ filename }`                                               | Opens a saved project, reading it from disk if nothing has it open yet. 404 when no file holds it.             |
+| **/projects/reload**      | `{ projectKey }`                                             | Re-reads an open project from disk, discarding what it holds.                                                  |
+| **/projects/save**        | `{ projectKey, filename }`                                   | Writes a project to disk and puts it under that filename; returns `{ projects, state }`.                       |
+| **/projects/delete**      | `{ filename }`                                               | Deletes a saved project's file; returns `{ projects, state? }`, `state` present when the project is held open. |
+| **/assistant/target**     | `{ projectKey }` (or `null`)                                 | Chooses which open project MCP acts on; returns `{ assistantProject }`.                                        |
+
+Opening, creating, reloading and closing projects are per-session acts: they change what the caller is looking at and leave every other browser's board alone. Choosing the assistant's project is the one shared choice, and everybody is told when it moves.
 
 ## MCP Server (`/mcp`)
 
@@ -70,7 +89,7 @@ External chat applications connect over Streamable HTTP. Tools mirror the REST s
 
 | Tool                  | Params                                            | Returns                                               |
 | --------------------- | ------------------------------------------------- | ----------------------------------------------------- |
-| `get_project_state`   | —                                                 | Full state: goal tree, inbox, version, project.       |
+| `get_project_state`   | —                                                 | Full state: goal tree, inbox, version, project key.   |
 | `get_roadmap`         | `taskId?`                                         | One level of the plan (tasks + dependencies).         |
 | `get_next_tasks`      | —                                                 | Actionable (unblocked, incomplete leaf) tasks.        |
 | `set_goal`            | `name, description?`                              | `{ taskId, name, description }`                       |
@@ -96,7 +115,13 @@ External chat applications connect over Streamable HTTP. Tools mirror the REST s
 
 Every response also carries `version`. No mutating tool answers with the version alone: each echoes the entity it changed, names and all, so a caller can check that the write did what it meant. That is what catches a task built from the wrong text on the call that built it, rather than a hundred calls later.
 
-Project management — listing, saving, opening, creating, and deleting projects — is deliberately not exposed over MCP; only the user can do that, from the frontend. MCP therefore only ever operates on whichever project is currently active in the store.
+### Which project the assistant works on
+
+MCP acts on the one project a person has chosen for it in the web UI, from the control on that project's row in the projects menu. The choice is shared: everybody sees which project the assistant has, and every session is sent an `assistant-target` notice when it moves. It is read on each tool call, so moving the assistant takes effect on its next one.
+
+A workspace holding exactly one project needs no choice made, since there is nothing else the assistant could mean. With several open and no choice made, every tool answers with an error asking the user to pick one in the web UI, so nothing lands in a project nobody chose. `get_project_state` reports the `key` of the project being worked on, so the assistant can say which plan it changed.
+
+Project management — listing, saving, opening, creating, and deleting projects — is deliberately not exposed over MCP; only the user can do that, from the frontend.
 
 ### Addressing inbox ideas
 
@@ -177,12 +202,13 @@ The primary transport. Message types are defined in `@blossom/common/realtime.ts
 
 **Client → server**
 
-| Frame     | Payload                 | Description                                                  |
-| --------- | ----------------------- | ------------------------------------------------------------ |
-| `hello`   | `{ author }`            | Identifies the browser on this socket.                       |
-| `command` | `{ id, name, payload }` | Runs a mutation. `name` is the same name as the REST path.   |
-| `resync`  | None                    | Asks for a fresh snapshot (tab refocused, network returned). |
-| `pong`    | None                    | Answers the server's ping.                                   |
+| Frame       | Payload                 | Description                                                                                               |
+| ----------- | ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `hello`     | `{ author, view }`      | Identifies the browser on this socket and says which projects it is looking at. Answered with a snapshot. |
+| `subscribe` | `{ view }`              | Changes which projects this session is looking at. Answered with a snapshot.                              |
+| `command`   | `{ id, name, payload }` | Runs a mutation. `name` is the same name as the REST path.                                                |
+| `resync`    | None                    | Asks for a fresh snapshot (tab refocused, network returned).                                              |
+| `pong`      | None                    | Answers the server's ping.                                                                                |
 
 **Server → client**
 

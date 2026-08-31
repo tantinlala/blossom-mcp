@@ -4,9 +4,11 @@ import { mock, MockProxy } from "jest-mock-extended";
 import { GOAL_ID, Task } from "@blossom/common";
 import { createApiRouter } from "./api";
 import { ProjectStore } from "../state/projectStore";
+import { Workspace } from "../state/workspace";
 import { InvalidProjectNameError, Project, ProjectNotFoundError } from "../models/project";
 
 describe("api router", () => {
+    let workspace: Workspace;
     let store: ProjectStore;
     let project: MockProxy<Project>;
     let app: Express;
@@ -14,36 +16,71 @@ describe("api router", () => {
     const buildApp = (): Express => {
         const built = express();
         built.use(express.json());
-        built.use("/api", createApiRouter(store, project));
+        built.use("/api", createApiRouter(workspace, project));
         return built;
     };
 
-    beforeEach(() => {
-        store = new ProjectStore();
+    beforeEach(async () => {
         project = mock<Project>();
+        project.listExistingProjects.mockResolvedValue([]);
+        project.projectExists.mockResolvedValue(false);
+        workspace = new Workspace(project);
+        // One project open, so a payload naming none is unambiguous - which is
+        // exactly the shape a session looking at a single project sends.
+        store = await workspace.createDraft();
         app = buildApp();
     });
 
-    describe("GET /api/state", () => {
-        it("should return the full project state", async () => {
-            const res = await request(app).get("/api/state");
+    describe("GET /api/view", () => {
+        it("should return the projects named, and which one the assistant works on", async () => {
+            const res = await request(app).get(`/api/view?projects=${store.key}`);
 
             expect(res.status).toBe(200);
-            expect(res.body.response.version).toBe(1);
-            expect(res.body.response.goal.id).toBe(GOAL_ID);
-            expect(res.body.response.goal.plan).toBeNull();
-            expect(res.body.response.inbox).toEqual([]);
+            expect(res.body.response.projects).toHaveLength(1);
+            expect(res.body.response.projects[0].key).toBe(store.key);
+            expect(res.body.response.projects[0].goal.id).toBe(GOAL_ID);
+            expect(res.body.response.assistantProject).toBeNull();
+        });
+
+        it("should open a saved project the server does not hold yet", async () => {
+            project.projectExists.mockResolvedValue(true);
+            project.restoreProject.mockResolvedValue({
+                goal: { id: GOAL_ID, name: "From disk", completionState: false, plan: null as any },
+                inbox: [],
+            });
+
+            const res = await request(app).get("/api/view?projects=Trip");
+
+            expect(res.body.response.projects.map((entry: any) => entry.key)).toEqual(["Trip"]);
+        });
+
+        it("should leave out a project name with nothing behind it", async () => {
+            const res = await request(app).get(`/api/view?projects=${store.key},Gone`);
+
+            expect(res.body.response.projects.map((entry: any) => entry.key)).toEqual([store.key]);
+        });
+
+        it("should return an empty board when no projects are named", async () => {
+            const res = await request(app).get("/api/view");
+
+            expect(res.body.response.projects).toEqual([]);
         });
     });
 
-    describe("GET /api/state/version", () => {
-        it("should return only the version", async () => {
+    describe("GET /api/view/versions", () => {
+        it("should return each named project's version", async () => {
             store.setGoal("Goal");
 
-            const res = await request(app).get("/api/state/version");
+            const res = await request(app).get(`/api/view/versions?projects=${store.key}`);
 
             expect(res.status).toBe(200);
-            expect(res.body.response).toEqual({ version: 2 });
+            expect(res.body.response.versions).toEqual({ [store.key]: 2 });
+        });
+
+        it("should leave out a project the server does not hold", async () => {
+            const res = await request(app).get("/api/view/versions?projects=Gone");
+
+            expect(res.body.response.versions).toEqual({});
         });
     });
 
@@ -225,7 +262,11 @@ describe("api router", () => {
             const res = await request(app).get("/api/projects");
 
             expect(res.status).toBe(200);
-            expect(res.body.response).toEqual({ projects: ["project1", "project2"] });
+            expect(res.body.response).toEqual({
+                projects: ["project1", "project2"],
+                open: [store.key],
+                assistantProject: null,
+            });
         });
 
         it("should return 500 when listing fails", async () => {
@@ -238,17 +279,19 @@ describe("api router", () => {
     });
 
     describe("POST /api/projects/new", () => {
-        it("should reset the store and return the empty state", async () => {
+        it("should open an empty project alongside the one already open", async () => {
             store.setGoal("Goal");
             store.addIdea("idea");
 
             const res = await request(app).post("/api/projects/new").send({});
 
             expect(res.status).toBe(200);
+            expect(res.body.response.key).toBe("Untitled 2");
+            expect(res.body.response.savedToDisk).toBe(false);
             expect(res.body.response.goal.name).toBe("");
-            expect(res.body.response.goal.plan).toBeNull();
             expect(res.body.response.inbox).toEqual([]);
-            expect(res.body.response.activeProject).toBeNull();
+            // The project that was already open is untouched
+            expect(store.getState().goal.name).toBe("Goal");
         });
     });
 
@@ -260,7 +303,7 @@ describe("api router", () => {
             expect(project.saveProject).not.toHaveBeenCalled();
         });
 
-        it("should save, set the active project and return the projects list", async () => {
+        it("should save and put the project under the filename it was written to", async () => {
             store.setGoal("Goal");
             store.addIdea("idea");
             project.listExistingProjects.mockResolvedValue(["myProject"]);
@@ -268,13 +311,15 @@ describe("api router", () => {
             const res = await request(app).post("/api/projects/save").send({ filename: "myProject" });
 
             expect(res.status).toBe(200);
-            expect(res.body.response).toEqual({ projects: ["myProject"] });
+            expect(res.body.response.projects).toEqual(["myProject"]);
+            expect(res.body.response.state.key).toBe("myProject");
+            expect(res.body.response.state.savedToDisk).toBe(true);
             expect(project.saveProject).toHaveBeenCalledWith(
                 "myProject",
                 expect.objectContaining({ id: GOAL_ID, name: "Goal" }),
                 [{ id: expect.any(String), text: "idea" }],
             );
-            expect(store.activeProject).toBe("myProject");
+            expect(workspace.keys()).toEqual(["myProject"]);
         });
 
         it("should return 500 when saving fails", async () => {
@@ -286,20 +331,24 @@ describe("api router", () => {
         });
     });
 
-    describe("POST /api/projects/restore", () => {
-        it("should load the restored project into the store", async () => {
-            const restoredGoal: Task = {
-                id: "",
-                name: "Restored Goal",
-                completionState: false,
-                plan: { tasksList: [], dependenciesList: [] },
-            };
+    describe("POST /api/projects/open", () => {
+        const restoredGoal: Task = {
+            id: "",
+            name: "Restored Goal",
+            completionState: false,
+            plan: { tasksList: [], dependenciesList: [] },
+        };
+
+        beforeEach(() => {
+            project.projectExists.mockResolvedValue(true);
             project.restoreProject.mockResolvedValue({
                 goal: restoredGoal,
                 inbox: [{ id: "idea-1", text: "saved idea" }],
             });
+        });
 
-            const res = await request(app).post("/api/projects/restore").send({ filename: "myProject" });
+        it("should read the project from disk and key it by its filename", async () => {
+            const res = await request(app).post("/api/projects/open").send({ filename: "myProject" });
 
             expect(res.status).toBe(200);
             expect(project.restoreProject).toHaveBeenCalledWith("myProject");
@@ -307,7 +356,48 @@ describe("api router", () => {
             expect(res.body.response.goal.id).toBe(GOAL_ID);
             expect(res.body.response.goal.name).toBe("Restored Goal");
             expect(res.body.response.inbox).toEqual([{ id: "idea-1", text: "saved idea" }]);
-            expect(res.body.response.activeProject).toBe("myProject");
+            expect(res.body.response.key).toBe("myProject");
+            expect(res.body.response.savedToDisk).toBe(true);
+        });
+
+        it("should leave the project already open exactly as it was", async () => {
+            store.setGoal("Mine");
+
+            await request(app).post("/api/projects/open").send({ filename: "myProject" });
+
+            expect(store.getState().goal.name).toBe("Mine");
+        });
+
+        it("should return 404 for a filename with nothing behind it", async () => {
+            project.projectExists.mockResolvedValue(false);
+
+            const res = await request(app).post("/api/projects/open").send({ filename: "gone" });
+
+            expect(res.status).toBe(404);
+            expect(res.body.code).toBe("not-found");
+        });
+    });
+
+    describe("POST /api/projects/reload", () => {
+        it("should re-read the project from disk, discarding what is on screen", async () => {
+            project.projectExists.mockResolvedValue(true);
+            project.restoreProject.mockResolvedValue({
+                goal: { id: GOAL_ID, name: "On disk", completionState: false, plan: null as any },
+                inbox: [],
+            });
+            store.setGoal("Only in memory");
+
+            const res = await request(app).post("/api/projects/reload").send({ projectKey: store.key });
+
+            expect(res.status).toBe(200);
+            expect(res.body.response.goal.name).toBe("On disk");
+        });
+
+        it("should return 404 for a project the server does not hold", async () => {
+            const res = await request(app).post("/api/projects/reload").send({ projectKey: "Gone" });
+
+            expect(res.status).toBe(404);
+            expect(res.body.code).toBe("not-found");
         });
     });
 
@@ -320,7 +410,6 @@ describe("api router", () => {
         });
 
         it("should delete the file and return the projects that remain", async () => {
-            store.setActiveProject("keptProject");
             project.listExistingProjects.mockResolvedValue(["keptProject"]);
 
             const res = await request(app).post("/api/projects/delete").send({ filename: "oldProject" });
@@ -328,22 +417,20 @@ describe("api router", () => {
             expect(res.status).toBe(200);
             expect(project.deleteProject).toHaveBeenCalledWith("oldProject");
             expect(res.body.response.projects).toEqual(["keptProject"]);
-            // Deleting some other project leaves the open one alone
-            expect(res.body.response.state.activeProject).toBe("keptProject");
-            expect(store.activeProject).toBe("keptProject");
+            // Nobody had that project open, so there is no state to report back
+            expect(res.body.response.state).toBeUndefined();
         });
 
         it("should leave the open project on screen with no file behind it", async () => {
             store.setGoal("Ship it");
-            store.setActiveProject("myProject");
+            await request(app).post("/api/projects/save").send({ filename: "myProject" });
             project.listExistingProjects.mockResolvedValue([]);
 
             const res = await request(app).post("/api/projects/delete").send({ filename: "myProject" });
 
             expect(res.status).toBe(200);
-            expect(res.body.response.state.activeProject).toBeNull();
+            expect(res.body.response.state.savedToDisk).toBe(false);
             expect(res.body.response.state.goal.name).toBe("Ship it");
-            expect(store.activeProject).toBeNull();
         });
 
         it("should return 404 when the project has no file", async () => {
@@ -365,14 +452,38 @@ describe("api router", () => {
         });
     });
 
-    describe("GET /api/projects/active", () => {
-        it("should return the active project name", async () => {
-            store.setActiveProject("myProject");
-
-            const res = await request(app).get("/api/projects/active");
+    describe("POST /api/assistant/target", () => {
+        it("should choose which project the assistant works on", async () => {
+            const res = await request(app).post("/api/assistant/target").send({ projectKey: store.key });
 
             expect(res.status).toBe(200);
-            expect(res.body.response).toEqual({ activeProject: "myProject" });
+            expect(res.body.response).toEqual({ assistantProject: store.key });
+        });
+
+        it("should return 404 for a project the server does not hold", async () => {
+            const res = await request(app).post("/api/assistant/target").send({ projectKey: "Gone" });
+
+            expect(res.status).toBe(404);
+            expect(res.body.code).toBe("not-found");
+        });
+
+        it("should return 400 when the payload names neither a key nor null", async () => {
+            const res = await request(app).post("/api/assistant/target").send({});
+
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe("invalid");
+        });
+    });
+
+    describe("writes that do not say which project they mean", () => {
+        it("should return 400 naming the ambiguity when several projects are open", async () => {
+            await workspace.createDraft();
+
+            const res = await request(app).post("/api/undo").send({});
+
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe("invalid");
+            expect(res.body.error).toContain("projectKey");
         });
     });
 

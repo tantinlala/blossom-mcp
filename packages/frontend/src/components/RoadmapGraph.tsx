@@ -20,18 +20,28 @@ import { Breadcrumbs, Button, Link, Paper, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import AutoAwesomeMosaicIcon from "@mui/icons-material/AutoAwesomeMosaic";
 import ChecklistIcon from "@mui/icons-material/Checklist";
+import FlagIcon from "@mui/icons-material/Flag";
 import InboxIcon from "@mui/icons-material/Inbox";
 
 import ContextMenu from "./ContextMenu";
 import StatusLegend from "./StatusLegend";
 import CanvasEmptyState from "./CanvasEmptyState";
+import BoardEmptyState from "./BoardEmptyState";
 import { getLayoutedElements } from "../utils/layouter";
 import { createTaskNode, createTaskNodeFromExisting, createEdge } from "../utils/taskNodeUtils";
-import { GOAL_ID, createGoalNode } from "../utils/goalNodeUtils";
+import { createGoalNode, laneNodeId, parseGoalNodeId } from "../utils/goalNodeUtils";
 import { TaskAndState, TaskState } from "../types/extendedTasks";
-import { Dependency, Task } from "@blossom/common";
-import { Roadmap } from "../types/roadmap";
-import TaskNode, { EDGE_TYPE, EDGE_WIDTH_HIGHLIGHTED, EDGE_WIDTH_SELECTED, DIMMED_OPACITY, Position } from "./TaskNode";
+import { Dependency, GOAL_ID, Task } from "@blossom/common";
+import { Board, BoardLane, TaskRef } from "../types/roadmap";
+import TaskNode, {
+    EDGE_TYPE,
+    EDGE_WIDTH_HIGHLIGHTED,
+    EDGE_WIDTH_SELECTED,
+    DIMMED_OPACITY,
+    GOAL_NODE_TYPE,
+    Position,
+} from "./TaskNode";
+import GoalNode, { UNNAMED_GOAL_LABEL } from "./GoalNode";
 import { useGraphHighlight } from "../hooks/useGraphHighlight";
 import { Direction, nextTaskInDirection } from "../utils/spatialNavigation";
 import { PromptForText } from "../hooks/useTextPrompt";
@@ -42,8 +52,6 @@ const MENU_OFFSET_THRESHOLD = 200;
 
 // Leaves a margin around the graph when fitting it into the viewport
 const FIT_VIEW_PADDING = 0.15;
-
-const UNNAMED_GOAL_LABEL = "Goal";
 
 // Toolbars float over the canvas, so they need their own surface to stay legible.
 const CANVAS_TOOLBAR_SX = {
@@ -76,11 +84,12 @@ const GOAL_PROMPT = { title: "Name your goal", label: "Goal", defaultValue: "New
 
 const NODE_TYPE_MAPPING = {
     customTaskNode: TaskNode,
+    goalNode: GoalNode,
 };
 
 /** Mirrors the node fills so the minimap reads as a shrunken copy of the graph. */
 const miniMapNodeColor = (node: Node): string => {
-    if (node.id === GOAL_ID) {
+    if (node.type === GOAL_NODE_TYPE) {
         return palette.goal.fill;
     }
     if (node.data?.taskState === TaskState.COMPLETED) {
@@ -123,28 +132,50 @@ const withoutDimming = (node: Node): Node => {
     return { ...node, style };
 };
 
+/** The goal entry a plan always carries, which anchors that project's lane. */
+const goalEntryOf = (lane: BoardLane): TaskAndState | undefined =>
+    lane.roadmap.tasksList.find((entry) => entry.task.id === GOAL_ID);
+
 interface RoadmapGraphProps {
-    presentlyShownRoadmap: Roadmap;
-    handleSetGoal: (goalName: string) => void;
-    handleAddTask: (taskName: string) => Promise<Task | null>;
-    handleRemoveTask: (taskId: string) => void;
-    handleConnect: (source: string, target: string) => Promise<void>;
-    handleUpdateEdge: (oldSource: string, oldTarget: string, newSource: string, newTarget: string) => void;
-    handleRemoveEdge: (source: string, target: string) => Promise<void>;
-    handleToggleComplete: (taskId: string) => void;
-    handleChangeRoadmapContext: (taskId: string) => void;
-    handleCreatePlanForTask: (taskId: string) => void;
-    handleSelectTask: (taskId: string) => void;
+    board: Board;
+    handleSetGoal: (projectKey: string, goalName: string) => void;
+    handleAddTask: (projectKey: string, taskName: string) => Promise<Task | null>;
+    handleRemoveTask: (ref: TaskRef) => void;
+    handleConnect: (projectKey: string, source: string, target: string) => Promise<void>;
+    handleUpdateEdge: (
+        projectKey: string,
+        oldSource: string,
+        oldTarget: string,
+        newSource: string,
+        newTarget: string,
+    ) => void;
+    handleRemoveEdge: (projectKey: string, source: string, target: string) => Promise<void>;
+    handleToggleComplete: (ref: TaskRef) => void;
+    handleChangeRoadmapContext: (ref: TaskRef) => void;
+    handleCreatePlanForTask: (ref: TaskRef) => void;
+    handleSelectTask: (ref: TaskRef) => void;
     showTaskDetails: () => void;
     showNextTasks: () => void;
     toggleInbox: () => void;
-    handlePaste: (tasks: Task[], dependencies: Dependency[]) => void;
-    handleUndo: () => void;
+    handlePaste: (projectKey: string, tasks: Task[], dependencies: Dependency[]) => void;
+    handleUndo: (projectKey: string) => void;
     promptForText: PromptForText;
+    /**
+     * Which project the toolbar and the keyboard act on. App resolves it, so the
+     * canvas and the actions outside it always name the same project.
+     */
+    focusedProject: string | null;
+    /** Says something worth knowing that is not an error. */
+    notify?: (message: string) => void;
+    /**
+     * Which project the selection implies, or null while nothing is picked out.
+     * App reads it to follow the person around the board.
+     */
+    onSelectionProjectChange?: (projectKey: string | null) => void;
 }
 
 const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
-    presentlyShownRoadmap,
+    board,
     handleSetGoal,
     handleAddTask,
     handleRemoveTask,
@@ -161,6 +192,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     handlePaste,
     handleUndo,
     promptForText,
+    focusedProject,
+    notify,
+    onSelectionProjectChange,
 }) => {
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -189,7 +223,47 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
     const nodesInitialized = useNodesInitialized();
 
     /**
-     * Rebuilds the graph from the plan every time the server sends one.
+     * What each node on the canvas stands for: which project it belongs to and
+     * which task inside it. Node ids are canvas ids - a task's own id, or a
+     * project-qualified goal id - so this is what turns a click back into
+     * something the server can be asked about.
+     */
+    const nodeIndex = useMemo(() => {
+        const index = new Map<string, { ref: TaskRef; entry?: TaskAndState }>();
+        for (const lane of board.lanes) {
+            for (const entry of lane.roadmap.tasksList) {
+                index.set(laneNodeId(lane.projectKey, entry.task.id), {
+                    ref: { projectKey: lane.projectKey, taskId: entry.task.id },
+                    entry,
+                });
+            }
+        }
+        return index;
+    }, [board]);
+
+    const refFor = useCallback((nodeId: string): TaskRef | null => nodeIndex.get(nodeId)?.ref ?? null, [nodeIndex]);
+
+    const laneOrder = useMemo(() => board.lanes.map((lane) => lane.projectKey), [board]);
+
+    const focusedLane = useMemo(
+        () => board.lanes.find((lane) => lane.projectKey === focusedProject) ?? null,
+        [board, focusedProject],
+    );
+
+    /** The project holding whatever is picked out, if anything is. */
+    const selectionProject = useMemo(
+        () => (selectedNodes.length > 0 ? (refFor(selectedNodes[0])?.projectKey ?? null) : null),
+        [selectedNodes, refFor],
+    );
+
+    // Picking a task out is what says which project is being worked in, and only
+    // the canvas knows what has been picked.
+    useEffect(() => {
+        onSelectionProjectChange?.(selectionProject);
+    }, [selectionProject, onSelectionProjectChange]);
+
+    /**
+     * Rebuilds the graph from the board every time the server sends a project.
      *
      * A task already on the canvas keeps its own node object, which is what
      * carries its position and the size ReactFlow measured for it. A node handed
@@ -201,47 +275,63 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
      * it into a node would leave it faded once the tracing stops.
      */
     useEffect(() => {
-        const newEdges: Edge[] = presentlyShownRoadmap.dependenciesList.map((dependency: Dependency) =>
-            createEdge(dependency.source, dependency.target),
+        const newEdges: Edge[] = board.lanes.flatMap((lane) =>
+            lane.roadmap.dependenciesList.map((dependency: Dependency) =>
+                createEdge(
+                    laneNodeId(lane.projectKey, dependency.source),
+                    laneNodeId(lane.projectKey, dependency.target),
+                ),
+            ),
         );
 
         setNodes((currentNodes: Node[]) => {
             const newNodes: Node[] = [];
 
-            presentlyShownRoadmap.tasksList.forEach((task: TaskAndState) => {
-                const existingNode = currentNodes.find((node) => node.id === task.task.id);
+            board.lanes.forEach((lane) => {
+                lane.roadmap.tasksList.forEach((task: TaskAndState) => {
+                    const nodeId = laneNodeId(lane.projectKey, task.task.id);
+                    const existingNode = currentNodes.find((node) => node.id === nodeId);
 
-                if (task.task.id === GOAL_ID) {
-                    if (!task.task.name) {
+                    // Every lane is anchored by its goal, named or not, so the
+                    // project a band of the canvas belongs to is always readable.
+                    if (task.task.id === GOAL_ID) {
+                        if (existingNode && showsGoal(existingNode, task.task.name)) {
+                            newNodes.push(existingNode);
+                            return;
+                        }
+                        newNodes.push(
+                            existingNode
+                                ? {
+                                      ...withoutDimming(existingNode),
+                                      data: { ...existingNode.data, label: task.task.name },
+                                  }
+                                : createGoalNode(lane.projectKey, task.task.name),
+                        );
                         return;
                     }
-                    if (existingNode && showsGoal(existingNode, task.task.name)) {
+
+                    if (existingNode && showsTask(existingNode, task)) {
                         newNodes.push(existingNode);
                         return;
                     }
                     newNodes.push(
                         existingNode
-                            ? { ...withoutDimming(existingNode), data: { ...existingNode.data, label: task.task.name } }
-                            : createGoalNode(task.task.name),
+                            ? createTaskNodeFromExisting(task, withoutDimming(existingNode))
+                            : createTaskNode(
+                                  task,
+                                  lane.projectKey,
+                                  { x: 0, y: 0 },
+                                  () => handleToggleComplete({ projectKey: lane.projectKey, taskId: task.task.id }),
+                                  false,
+                              ),
                     );
-                    return;
-                }
-
-                if (existingNode && showsTask(existingNode, task)) {
-                    newNodes.push(existingNode);
-                    return;
-                }
-                newNodes.push(
-                    existingNode
-                        ? createTaskNodeFromExisting(task, withoutDimming(existingNode))
-                        : createTaskNode(task, { x: 0, y: 0 }, handleToggleComplete, false),
-                );
+                });
             });
 
             return newNodes;
         });
         setEdges(newEdges);
-    }, [presentlyShownRoadmap, setNodes, setEdges, handleToggleComplete]);
+    }, [board, setNodes, setEdges, handleToggleComplete]);
 
     /**
      * Keeps every task on the canvas measured.
@@ -288,33 +378,104 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         return () => document.removeEventListener("visibilitychange", remeasureWhenVisible);
     }, [updateNodeInternals]);
 
+    /**
+     * Adds a dependency between two nodes on the canvas.
+     *
+     * A dependency orders two tasks inside one plan, so an edge drawn from one
+     * project to another is refused here, where both ends are known, and the
+     * person is told which two projects they joined.
+     */
+    const connectNodes = useCallback(
+        async (sourceNodeId: string, targetNodeId: string) => {
+            const source = refFor(sourceNodeId);
+            const target = refFor(targetNodeId);
+            if (!source || !target) {
+                return;
+            }
+            if (source.projectKey !== target.projectKey) {
+                notify?.(
+                    `A dependency orders two tasks in one project. ${source.projectKey} and ${target.projectKey} are separate projects.`,
+                );
+                return;
+            }
+            await handleConnect(source.projectKey, source.taskId, target.taskId);
+        },
+        [refFor, handleConnect, notify],
+    );
+
     // When the user connects two nodes, call a callback to add the edge to the
     // plan. Nothing here waits on the round trip: the edge arrives with the plan
     // the server sends back, and a refusal is reported from the APIClient.
     const onConnect = useCallback(
         (newConnection) => {
-            void handleConnect(newConnection.source, newConnection.target);
+            void connectNodes(newConnection.source, newConnection.target);
         },
-        [handleConnect],
+        [connectNodes],
+    );
+
+    const removeEdgeBetween = useCallback(
+        async (sourceNodeId: string, targetNodeId: string) => {
+            const source = refFor(sourceNodeId);
+            const target = refFor(targetNodeId);
+            if (!source || !target || source.projectKey !== target.projectKey) {
+                return;
+            }
+            await handleRemoveEdge(source.projectKey, source.taskId, target.taskId);
+        },
+        [refFor, handleRemoveEdge],
     );
 
     const showDetails = useCallback(
-        (taskId: string) => {
-            handleSelectTask(taskId);
+        (nodeId: string) => {
+            const taskRef = refFor(nodeId);
+            if (!taskRef) {
+                return;
+            }
+            handleSelectTask(taskRef);
             toggleTaskDetails();
         },
-        [handleSelectTask, toggleTaskDetails],
+        [refFor, handleSelectTask, toggleTaskDetails],
     );
 
     // Hover and selection refer to the plan being left behind, and the ids in
     // them do not exist in the plan being entered.
     const changeContext = useCallback(
-        (taskId: string) => {
+        (taskRef: TaskRef) => {
             setHoveredNodeId(null);
             setSelectedNodes([]);
-            handleChangeRoadmapContext(taskId);
+            handleChangeRoadmapContext(taskRef);
         },
         [handleChangeRoadmapContext],
+    );
+
+    const changeContextTo = useCallback(
+        (nodeId: string) => {
+            const taskRef = refFor(nodeId);
+            if (taskRef) {
+                changeContext(taskRef);
+            }
+        },
+        [refFor, changeContext],
+    );
+
+    const removeTaskAt = useCallback(
+        (nodeId: string) => {
+            const taskRef = refFor(nodeId);
+            if (taskRef) {
+                handleRemoveTask(taskRef);
+            }
+        },
+        [refFor, handleRemoveTask],
+    );
+
+    const createPlanAt = useCallback(
+        (nodeId: string) => {
+            const taskRef = refFor(nodeId);
+            if (taskRef) {
+                handleCreatePlanForTask(taskRef);
+            }
+        },
+        [refFor, handleCreatePlanForTask],
     );
 
     const onNodeContextMenu = useCallback(
@@ -322,21 +483,21 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             // Prevent native context menu from showing
             event.preventDefault();
 
-            const taskEntry = presentlyShownRoadmap.tasksList.find((entry) => entry.task.id === node.id);
+            const indexed = nodeIndex.get(node.id);
 
             // The goal node is the plan itself - it can neither be nested nor removed
             let createPlanForTaskCallback = null;
             let openSubplanCallback = null;
             let deleteCallback = null;
-            if (node.id !== GOAL_ID) {
-                deleteCallback = handleRemoveTask;
+            if (parseGoalNodeId(node.id) === null) {
+                deleteCallback = removeTaskAt;
                 // A task holds at most one subplan, so offering to add a second
                 // would be an action the backend quietly ignores. Offer the way
                 // into the existing one instead.
-                if (taskEntry?.task.plan) {
-                    openSubplanCallback = changeContext;
+                if (indexed?.entry?.task.plan) {
+                    openSubplanCallback = changeContextTo;
                 } else {
-                    createPlanForTaskCallback = handleCreatePlanForTask;
+                    createPlanForTaskCallback = createPlanAt;
                 }
             }
 
@@ -352,7 +513,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 openSubplanCallback,
                 deleteCallback,
                 showDetailsCallback: showDetails,
-                name: taskEntry?.task.name ?? UNNAMED_GOAL_LABEL,
+                name: indexed?.entry?.task.name || UNNAMED_GOAL_LABEL,
                 id: node.id,
                 top: y < pane.height - MENU_OFFSET_THRESHOLD ? y : undefined,
                 left: x < pane.width - MENU_OFFSET_THRESHOLD ? x : undefined,
@@ -360,7 +521,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 bottom: y >= pane.height - MENU_OFFSET_THRESHOLD ? pane.height - y : undefined,
             });
         },
-        [handleCreatePlanForTask, handleRemoveTask, presentlyShownRoadmap, showDetails, changeContext],
+        [nodeIndex, removeTaskAt, createPlanAt, changeContextTo, showDetails],
     );
 
     // Close the context menu if it's open whenever the window is clicked.
@@ -375,9 +536,25 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     const onReconnect = useCallback(
         (oldConnection, newConnection) => {
-            handleUpdateEdge(oldConnection.source, oldConnection.target, newConnection.source, newConnection.target);
+            const oldSource = refFor(oldConnection.source);
+            const oldTarget = refFor(oldConnection.target);
+            const newSource = refFor(newConnection.source);
+            const newTarget = refFor(newConnection.target);
+            if (!oldSource || !oldTarget || !newSource || !newTarget) {
+                return;
+            }
+            const project = oldSource.projectKey;
+            if (
+                oldTarget.projectKey !== project ||
+                newSource.projectKey !== project ||
+                newTarget.projectKey !== project
+            ) {
+                notify?.("A dependency orders two tasks in one project, so it cannot be moved to another.");
+                return;
+            }
+            handleUpdateEdge(project, oldSource.taskId, oldTarget.taskId, newSource.taskId, newTarget.taskId);
         },
-        [handleUpdateEdge],
+        [refFor, handleUpdateEdge, notify],
     );
 
     /**
@@ -391,7 +568,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
      */
     const onLayout = useCallback(() => {
         setNodes((currentNodes) => {
-            const { nodes: layoutedNodes } = getLayoutedElements(currentNodes, edgesRef.current);
+            const { nodes: layoutedNodes } = getLayoutedElements(currentNodes, edgesRef.current, laneOrder);
             return layoutedNodes.map(withoutDimming);
         });
 
@@ -399,7 +576,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         // firing mouse-leave, which would strand the highlight and leave the
         // graph dimmed until the user happened to move the mouse.
         setHoveredNodeId(null);
-    }, [setNodes]);
+    }, [setNodes, laneOrder]);
 
     // What the layouter actually reads: which tasks are on the canvas, how big
     // each one turned out to be, and what joins them. Positions are left out, so
@@ -413,8 +590,8 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             .map((edge) => `${edge.source}>${edge.target}`)
             .sort()
             .join(",");
-        return `${nodeIds}|${edgeIds}`;
-    }, [nodes, edges]);
+        return `${nodeIds}|${edgeIds}|${laneOrder.join(",")}`;
+    }, [nodes, edges, laneOrder]);
 
     // Every shape the graph takes owes itself a layout, because where a task sits
     // is decided by what it connects to: a task and its dependencies arrive in
@@ -456,11 +633,12 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     const onNodeClick = useCallback(
         (event, node: Node) => {
-            if (node.id !== GOAL_ID) {
-                handleSelectTask(node.id);
+            const taskRef = refFor(node.id);
+            if (taskRef && taskRef.taskId !== GOAL_ID) {
+                handleSelectTask(taskRef);
             }
         },
-        [handleSelectTask],
+        [refFor, handleSelectTask],
     );
 
     /**
@@ -486,16 +664,17 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     /** Picks a task out, the way clicking it does. */
     const highlightTask = useCallback(
-        (taskId: string) => {
-            setNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: node.id === taskId })));
+        (nodeId: string) => {
+            setNodes((currentNodes) => currentNodes.map((node) => ({ ...node, selected: node.id === nodeId })));
             deselectEdges();
             // Arriving by keyboard says as much about which task is being worked
             // on as clicking it does, so the details panel follows either way.
-            if (taskId !== GOAL_ID) {
-                handleSelectTask(taskId);
+            const taskRef = refFor(nodeId);
+            if (taskRef && taskRef.taskId !== GOAL_ID) {
+                handleSelectTask(taskRef);
             }
         },
-        [setNodes, deselectEdges, handleSelectTask],
+        [setNodes, deselectEdges, refFor, handleSelectTask],
     );
 
     // A task asked for while its plan was still being swapped in gets the
@@ -530,28 +709,35 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
     const onNodeDoubleClick = useCallback(
         (event, node: Node) => {
-            if (node.id !== GOAL_ID) {
-                changeContext(node.id);
+            const taskRef = refFor(node.id);
+            if (taskRef && taskRef.taskId !== GOAL_ID) {
+                changeContext(taskRef);
             }
         },
-        [changeContext],
+        [refFor, changeContext],
     );
 
     const onCreateTask = useCallback(async (): Promise<Task | null> => {
+        if (!focusedProject) {
+            return null;
+        }
         const taskLabel = await promptForText(TASK_PROMPT);
         if (!taskLabel) {
             return null;
         }
-        return await handleAddTask(taskLabel);
-    }, [handleAddTask, promptForText]);
+        return await handleAddTask(focusedProject, taskLabel);
+    }, [handleAddTask, promptForText, focusedProject]);
 
     const onCreateGoal = useCallback(async () => {
+        if (!focusedProject) {
+            return;
+        }
         const goalLabel = await promptForText(GOAL_PROMPT);
         if (!goalLabel) {
             return;
         }
-        handleSetGoal(goalLabel);
-    }, [handleSetGoal, promptForText]);
+        handleSetGoal(focusedProject, goalLabel);
+    }, [handleSetGoal, promptForText, focusedProject]);
 
     /**
      * Adds a task and wires it into the plan.
@@ -588,21 +774,30 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 return;
             }
 
-            const draggedFromId = connectionState.fromNode.id;
+            const draggedFrom = refFor(connectionState.fromNode.id);
+            if (!draggedFrom) {
+                return;
+            }
             if (connectionState.fromPosition === Position.Right) {
-                await createTaskWithEdges((newTask) => handleConnect(draggedFromId, newTask.id));
+                await createTaskWithEdges((newTask) =>
+                    handleConnect(draggedFrom.projectKey, draggedFrom.taskId, newTask.id),
+                );
             } else if (connectionState.fromPosition === Position.Left) {
-                await createTaskWithEdges((newTask) => handleConnect(newTask.id, draggedFromId));
+                await createTaskWithEdges((newTask) =>
+                    handleConnect(draggedFrom.projectKey, newTask.id, draggedFrom.taskId),
+                );
             }
         },
-        [createTaskWithEdges, handleConnect],
+        [createTaskWithEdges, handleConnect, refFor],
     );
 
     const onCrumbClick = useCallback(
         (taskId: string) => () => {
-            changeContext(taskId);
+            if (focusedProject) {
+                changeContext({ projectKey: focusedProject, taskId });
+            }
         },
-        [changeContext],
+        [changeContext, focusedProject],
     );
 
     // Find connecting edge between two selected nodes
@@ -613,34 +808,37 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         [edges],
     );
 
+    /**
+     * Copies the picked-out tasks, along with the dependencies that run between
+     * them inside one project. A dependency belongs to the plan it lives in, so a
+     * pair of tasks selected across two lanes carries no edge between them.
+     */
     const handleCopy = useCallback(async () => {
         if (selectedNodes.length === 0) return;
 
         const tasksToCopy: Task[] = [];
         const dependenciesToCopy: Dependency[] = [];
 
-        // 1. Identify selected tasks
         selectedNodes.forEach((nodeId) => {
-            if (nodeId === GOAL_ID) return; // Don't copy the goal node
-
-            // Find the task in the presently shown roadmap
-            // Note: presentlyShownRoadmap.tasksList contains TaskAndState objects
-            const taskAndState = presentlyShownRoadmap.tasksList.find((t) => t.task.id === nodeId);
-            if (taskAndState) {
-                tasksToCopy.push(taskAndState.task);
+            const indexed = nodeIndex.get(nodeId);
+            if (!indexed || indexed.ref.taskId === GOAL_ID) return;
+            if (indexed.entry) {
+                tasksToCopy.push(indexed.entry.task);
             }
         });
 
         if (tasksToCopy.length === 0) return;
 
-        // 2. Identify dependencies between selected tasks
-        presentlyShownRoadmap.dependenciesList.forEach((dep) => {
-            if (selectedNodes.includes(dep.source) && selectedNodes.includes(dep.target)) {
-                dependenciesToCopy.push(dep);
-            }
+        board.lanes.forEach((lane) => {
+            lane.roadmap.dependenciesList.forEach((dependency) => {
+                const source = laneNodeId(lane.projectKey, dependency.source);
+                const target = laneNodeId(lane.projectKey, dependency.target);
+                if (selectedNodes.includes(source) && selectedNodes.includes(target)) {
+                    dependenciesToCopy.push(dependency);
+                }
+            });
         });
 
-        // 3. Write to clipboard
         const clipboardData = {
             tasks: tasksToCopy,
             dependencies: dependenciesToCopy,
@@ -652,7 +850,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             console.error("Failed to copy to clipboard:", err);
             throw err; // Propagate error so handleCut can detect failure
         }
-    }, [selectedNodes, presentlyShownRoadmap]);
+    }, [selectedNodes, nodeIndex, board]);
 
     const handleCut = useCallback(async () => {
         try {
@@ -660,8 +858,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
 
             // Delete selected nodes only if copy succeeded
             selectedNodes.forEach((nodeId) => {
-                if (nodeId !== GOAL_ID) {
-                    handleRemoveTask(nodeId);
+                const taskRef = refFor(nodeId);
+                if (taskRef && taskRef.taskId !== GOAL_ID) {
+                    handleRemoveTask(taskRef);
                 }
             });
             // Also clear selection
@@ -670,23 +869,27 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             console.error("Cut operation failed:", err);
             // Don't delete nodes if copy failed
         }
-    }, [handleCopy, handleRemoveTask, selectedNodes, setSelectedNodes]);
+    }, [handleCopy, handleRemoveTask, refFor, selectedNodes, setSelectedNodes]);
 
+    /** Pasted tasks are given fresh ids, so they land in whichever project is in focus. */
     const handlePasteAction = useCallback(async () => {
+        if (!focusedProject) {
+            return;
+        }
         try {
             const text = await navigator.clipboard.readText();
             if (!text) return;
 
             const data = JSON.parse(text);
             if (data && Array.isArray(data.tasks) && Array.isArray(data.dependencies)) {
-                handlePaste(data.tasks, data.dependencies);
+                handlePaste(focusedProject, data.tasks, data.dependencies);
             } else {
                 console.error("Clipboard data is invalid or malformed. Paste aborted.");
             }
         } catch (err) {
             console.error("Failed to paste from clipboard:", err);
         }
-    }, [handlePaste]);
+    }, [handlePaste, focusedProject]);
 
     // Handle keyboard events for copy/cut/paste and task creation
     const handleKeyDown = useCallback(
@@ -694,7 +897,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             // Undo: Ctrl+Z or Cmd+Z
             if ((event.ctrlKey || event.metaKey) && event.key === "z" && !event.shiftKey) {
                 event.preventDefault();
-                handleUndo();
+                if (focusedProject) {
+                    handleUndo(focusedProject);
+                }
                 return;
             }
 
@@ -705,13 +910,14 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 // Delete selected edges
                 const selectedEdgesList = edges.filter((edge) => edge.selected);
                 selectedEdgesList.forEach((edge) => {
-                    void handleRemoveEdge(edge.source, edge.target);
+                    void removeEdgeBetween(edge.source, edge.target);
                 });
 
                 // Delete selected nodes
                 selectedNodes.forEach((nodeId) => {
-                    if (nodeId !== GOAL_ID) {
-                        handleRemoveTask(nodeId);
+                    const taskRef = refFor(nodeId);
+                    if (taskRef && taskRef.taskId !== GOAL_ID) {
+                        handleRemoveTask(taskRef);
                     }
                 });
                 setSelectedNodes([]);
@@ -749,11 +955,11 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             // it is clear where you came out.
             if (event.key === "Enter" && event.shiftKey) {
                 event.preventDefault();
-                const ancestors = presentlyShownRoadmap.ancestors;
-                if (ancestors.length > 1) {
+                const ancestors = focusedLane?.roadmap.ancestors ?? [];
+                if (focusedProject && ancestors.length > 1) {
                     const planLeft = ancestors[ancestors.length - 1].id;
-                    changeContext(ancestors[ancestors.length - 2].id);
-                    highlightOnArrivalRef.current = planLeft;
+                    changeContext({ projectKey: focusedProject, taskId: ancestors[ancestors.length - 2].id });
+                    highlightOnArrivalRef.current = laneNodeId(focusedProject, planLeft);
                 }
                 return;
             }
@@ -776,6 +982,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             if (selectedNodes.length === 1) {
                 const selectedNodeId = selectedNodes[0];
                 const selectedNode = nodes.find((node) => node.id === selectedNodeId);
+                const indexed = nodeIndex.get(selectedNodeId);
 
                 if (!selectedNode) return;
 
@@ -784,27 +991,26 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 // something to complete, so it takes no part in either.
                 if (event.key === "Enter") {
                     event.preventDefault();
-                    const taskEntry = presentlyShownRoadmap.tasksList.find((entry) => entry.task.id === selectedNodeId);
-                    if (selectedNodeId === GOAL_ID || !taskEntry) {
+                    if (!indexed || indexed.ref.taskId === GOAL_ID || !indexed.entry) {
                         return;
                     }
-                    if (taskEntry.task.plan) {
-                        changeContext(selectedNodeId);
+                    if (indexed.entry.task.plan) {
+                        changeContext(indexed.ref);
                     } else {
-                        handleToggleComplete(selectedNodeId);
+                        handleToggleComplete(indexed.ref);
                     }
                     return;
                 }
 
                 // Tab or Space key handling for creating a new task
-                if (event.key === "Tab" || event.key === " ") {
+                if ((event.key === "Tab" || event.key === " ") && indexed) {
                     event.preventDefault();
 
                     const feedsIntoSelection = event.key === "Tab";
                     await createTaskWithEdges((newTask) =>
                         feedsIntoSelection
-                            ? handleConnect(newTask.id, selectedNodeId)
-                            : handleConnect(selectedNodeId, newTask.id),
+                            ? handleConnect(indexed.ref.projectKey, newTask.id, indexed.ref.taskId)
+                            : handleConnect(indexed.ref.projectKey, indexed.ref.taskId, newTask.id),
                     );
                 }
             } else if (selectedNodes.length === 2 && (event.key === "Tab" || event.key === " ")) {
@@ -816,16 +1022,15 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 const edge = findConnectingEdge(nodeId1, nodeId2) || findConnectingEdge(nodeId2, nodeId1);
 
                 if (edge) {
-                    const sourceId = edge.source;
-                    const targetId = edge.target;
-                    const sourceNode = nodes.find((node) => node.id === sourceId);
-                    const targetNode = nodes.find((node) => node.id === targetId);
+                    const source = refFor(edge.source);
+                    const target = refFor(edge.target);
 
-                    if (sourceNode && targetNode) {
+                    if (source && target && source.projectKey === target.projectKey) {
+                        const project = source.projectKey;
                         await createTaskWithEdges(async (newTask) => {
-                            await handleRemoveEdge(sourceId, targetId);
-                            await handleConnect(sourceId, newTask.id);
-                            await handleConnect(newTask.id, targetId);
+                            await handleRemoveEdge(project, source.taskId, target.taskId);
+                            await handleConnect(project, source.taskId, newTask.id);
+                            await handleConnect(project, newTask.id, target.taskId);
                         });
                     }
                 }
@@ -835,7 +1040,10 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             selectedNodes,
             nodes,
             edges,
-            presentlyShownRoadmap,
+            nodeIndex,
+            refFor,
+            focusedLane,
+            focusedProject,
             createTaskWithEdges,
             selectNeighbour,
             clearHighlight,
@@ -844,6 +1052,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             handleConnect,
             handleRemoveTask,
             handleRemoveEdge,
+            removeEdgeBetween,
             findConnectingEdge,
             handleCopy,
             handleCut,
@@ -861,7 +1070,7 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         onChange,
     });
 
-    let goalNodeExists = useMemo(() => nodes.find((node) => node.id === GOAL_ID), [nodes]);
+    const focusedGoalNamed = useMemo(() => !!(focusedLane && goalEntryOf(focusedLane)?.task.name), [focusedLane]);
 
     const onNodeMouseEnter = useCallback((event, node: Node) => setHoveredNodeId(node.id), []);
     const onNodeMouseLeave = useCallback(() => setHoveredNodeId(null), []);
@@ -933,6 +1142,10 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
         );
     }, [edges, highlight, isTracingChain]);
 
+    // A board holding one project needs no saying which; holding several, every
+    // action says which lane it lands in.
+    const focusLabel = board.lanes.length > 1 && focusedProject ? ` to ${focusedProject}` : "";
+
     return (
         <ReactFlow
             ref={ref}
@@ -968,27 +1181,27 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
             <Background />
             <Controls />
             <MiniMap pannable zoomable nodeColor={miniMapNodeColor} nodeStrokeWidth={0} />
-            <Panel position="top-left">
-                <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
-                    {goalNodeExists ? (
-                        <Button size="small" startIcon={<AddIcon />} onClick={onCreateTask}>
-                            Add Task
-                        </Button>
-                    ) : (
-                        <Button size="small" startIcon={<AddIcon />} onClick={onCreateGoal}>
-                            Add Goal
-                        </Button>
-                    )}
-                    {goalNodeExists && (
+            {focusedLane && (
+                <Panel position="top-left">
+                    <Paper elevation={0} sx={CANVAS_TOOLBAR_SX}>
+                        {focusedGoalNamed ? (
+                            <Button size="small" startIcon={<AddIcon />} onClick={onCreateTask}>
+                                {`Add Task${focusLabel}`}
+                            </Button>
+                        ) : (
+                            <Button size="small" startIcon={<FlagIcon />} onClick={onCreateGoal}>
+                                {`Name Goal${focusLabel}`}
+                            </Button>
+                        )}
                         <Button size="small" startIcon={<AutoAwesomeMosaicIcon />} onClick={() => onLayout()}>
                             Autoformat
                         </Button>
-                    )}
-                </Paper>
-            </Panel>
+                    </Paper>
+                </Panel>
+            )}
             {/* The gap between the two toolbars, so the path is read as belonging to
                 the canvas as a whole and grows in both directions from the centre */}
-            {presentlyShownRoadmap.ancestors.length > 0 && (
+            {focusedLane && focusedLane.roadmap.ancestors.length > 0 && (
                 <Panel position="top-center">
                     <Breadcrumbs
                         aria-label="plan location"
@@ -1001,9 +1214,9 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                             color: "text.secondary",
                         }}
                     >
-                        {presentlyShownRoadmap.ancestors.map((crumb, index) => {
-                            const label = crumb.name || UNNAMED_GOAL_LABEL;
-                            const isCurrent = index === presentlyShownRoadmap.ancestors.length - 1;
+                        {focusedLane.roadmap.ancestors.map((crumb, index) => {
+                            const label = crumb.name || focusedLane.projectKey;
+                            const isCurrent = index === focusedLane.roadmap.ancestors.length - 1;
                             return isCurrent ? (
                                 <Typography key={crumb.id} color="text.primary" sx={{ fontSize: "inherit" }}>
                                     {label}
@@ -1036,12 +1249,17 @@ const RoadmapGraph: React.FC<RoadmapGraphProps> = ({
                 </Paper>
             </Panel>
             {/* Bottom-centre keeps it clear of the zoom controls and the minimap */}
-            {goalNodeExists && (
+            {focusedGoalNamed && (
                 <Panel position="bottom-center">
                     <StatusLegend />
                 </Panel>
             )}
-            {!goalNodeExists && (
+            {board.lanes.length === 0 && (
+                <Panel position="top-center" style={{ top: "35%" }}>
+                    <BoardEmptyState />
+                </Panel>
+            )}
+            {board.lanes.length === 1 && !focusedGoalNamed && (
                 <Panel position="top-center" style={{ top: "35%" }}>
                     <CanvasEmptyState onCreateGoal={onCreateGoal} />
                 </Panel>

@@ -27,6 +27,26 @@ describe("Project", () => {
         project = new Project(fileIO);
     });
 
+    describe("projectExists", () => {
+        it("should report a project with a file behind it", async () => {
+            fileIO.exists.mockResolvedValue(true);
+
+            expect(await project.projectExists("testProject")).toBe(true);
+            expect(fileIO.exists).toHaveBeenCalledWith("./projects/testProject.txt");
+        });
+
+        it("should report a project with nothing behind it", async () => {
+            fileIO.exists.mockResolvedValue(false);
+
+            expect(await project.projectExists("gone")).toBe(false);
+        });
+
+        it("should refuse a name that addresses a file outside the projects folder", async () => {
+            await expect(project.projectExists("../escape")).rejects.toBeInstanceOf(InvalidProjectNameError);
+            expect(fileIO.exists).not.toHaveBeenCalled();
+        });
+    });
+
     it("should save a project in v3 format", async () => {
         fileIO.exists.mockResolvedValue(true);
         const inbox = [

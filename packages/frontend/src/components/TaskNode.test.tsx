@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { ReactFlowProvider } from "@xyflow/react";
 import TaskNode, { appearanceForState } from "./TaskNode";
@@ -10,7 +10,6 @@ const renderNode = (data: Record<string, any>, selected = false) =>
     render(
         <ReactFlowProvider>
             <TaskNode
-                id="t1"
                 selected={selected}
                 data={{
                     label: "Book lodging",
@@ -49,6 +48,16 @@ describe("appearanceForState", () => {
 });
 
 describe("TaskNode", () => {
+    it("ticks the task off through the callback the node was built with", () => {
+        const onToggleComplete = jest.fn();
+        renderNode({ onToggleComplete });
+
+        fireEvent.click(screen.getByRole("checkbox"));
+
+        // The callback already knows which task in which project it belongs to.
+        expect(onToggleComplete).toHaveBeenCalledWith();
+    });
+
     it("shows a completion checkbox only for tasks without a subplan", () => {
         renderNode({ hasPlan: false });
         expect(screen.getByRole("checkbox")).toBeInTheDocument();

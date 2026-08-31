@@ -1,4 +1,4 @@
-import { ProjectState, Task } from "./types";
+import { ProjectState, Task, ViewState } from "./types";
 
 // Path the realtime WebSocket server is mounted at.
 export const REALTIME_PATH = "/ws";
@@ -6,7 +6,7 @@ export const REALTIME_PATH = "/ws";
 // Bumped when a frame's shape changes incompatibly. Clients that see a
 // different version from the server tell the user to reload rather than
 // silently misinterpreting frames.
-export const REALTIME_PROTOCOL_VERSION = 1;
+export const REALTIME_PROTOCOL_VERSION = 2;
 
 /**
  * Every mutation both the REST API and the socket can execute. The name
@@ -32,8 +32,10 @@ export type CommandName =
     | "undo"
     | "projects/new"
     | "projects/save"
-    | "projects/restore"
-    | "projects/delete";
+    | "projects/open"
+    | "projects/reload"
+    | "projects/delete"
+    | "assistant/target";
 
 export const COMMAND_NAMES: CommandName[] = [
     "goal",
@@ -54,9 +56,18 @@ export const COMMAND_NAMES: CommandName[] = [
     "undo",
     "projects/new",
     "projects/save",
-    "projects/restore",
+    "projects/open",
+    "projects/reload",
     "projects/delete",
+    "assistant/target",
 ];
+
+/**
+ * Which project a command acts on. Every project-scoped command carries one:
+ * the server holds several projects open at once, and a session may be looking
+ * at any number of them.
+ */
+export type ProjectScoped = { projectKey?: string };
 
 /** What each command puts in REST's `{ response }` and the socket's `result`. */
 export type CommandResultMap = {
@@ -76,11 +87,15 @@ export type CommandResultMap = {
     "inbox/promote": ProjectState;
     "inbox/promote-all": ProjectState;
     undo: ProjectState;
+    /** The project that was opened, ready for the caller to add to its view. */
     "projects/new": ProjectState;
-    "projects/save": { projects: string[] };
-    "projects/restore": ProjectState;
-    /** `state` carries the active project, which the deleted file may have been. */
-    "projects/delete": { projects: string[]; state: ProjectState };
+    /** `state` carries the key the project answers to after being written. */
+    "projects/save": { projects: string[]; state: ProjectState };
+    "projects/open": ProjectState;
+    "projects/reload": ProjectState;
+    /** `state` is present when the deleted file's project is held open. */
+    "projects/delete": { projects: string[]; state?: ProjectState };
+    "assistant/target": { assistantProject: string | null };
 };
 
 /**
@@ -101,14 +116,12 @@ export const MCP_AUTHOR: Author = {
 };
 
 export type CommandErrorCode =
-    /** The referenced task or project does not exist. */
+    /** The referenced task, project or idea does not exist. */
     | "not-found"
     /** The payload was malformed or the operation is not allowed. */
     | "invalid"
     /** A precondition (baseVersion / expectedText) did not hold. */
     | "conflict"
-    /** Others are connected; resend with `confirmed: true` to go ahead. */
-    | "confirm-required"
     /** Someone else changed the project after the caller's last change. */
     | "undo-blocked"
     | "unknown-command"
@@ -117,13 +130,17 @@ export type CommandErrorCode =
 export type CommandError = {
     code: CommandErrorCode;
     message: string;
-    /** Set on `confirm-required`: how many other browsers are connected. */
-    otherCount?: number;
 };
 
 export type ClientMessage =
-    /** Identifies the browser on this socket. Sent immediately after it opens. */
-    | { type: "hello"; author: Author }
+    /**
+     * Identifies the browser on this socket and says which projects it is
+     * looking at. Sent immediately after the socket opens; the server answers
+     * with a snapshot of that view.
+     */
+    | { type: "hello"; author: Author; view: string[] }
+    /** Changes which projects this session is looking at. Answered with a snapshot. */
+    | { type: "subscribe"; view: string[] }
     /** Run a mutation. `id` correlates the reply. */
     | { type: "command"; id: string; name: CommandName; payload: unknown }
     /** Ask for a fresh snapshot (tab became visible again, came back online). */
@@ -132,16 +149,26 @@ export type ClientMessage =
 
 export type ServerMessage =
     /**
-     * Sent on connect and in reply to `resync`. Applied unconditionally by the
-     * client - unlike `state`, it is not subject to the version guard, so a
-     * server restart (which resets the version counter) still resyncs.
+     * The whole view, sent in answer to `hello`, `subscribe` and `resync`.
+     * Applied unconditionally by the client - unlike `state`, it is not subject
+     * to the version guard, so a server restart (which resets the version
+     * counters) still resyncs.
      */
-    | { type: "snapshot"; protocolVersion: number; serverId: string; state: ProjectState }
-    /** A change happened, from any writer: this client, another client, or MCP. */
+    | { type: "snapshot"; protocolVersion: number; serverId: string; view: ViewState }
+    /**
+     * One project in this session's view changed, from any writer: this client,
+     * another client, or MCP.
+     */
     | { type: "state"; state: ProjectState; author?: Author }
-    /** `author` is whoever caused it, so a client can tell its own switch apart. */
-    | { type: "notice"; kind: "project-switched"; project: string | null; author?: Author }
+    /**
+     * A project this session is looking at answers to a new key, because it was
+     * written to disk under a different filename. `author` is whoever caused it,
+     * so a client can tell its own save apart.
+     */
+    | { type: "notice"; kind: "project-renamed"; from: string; to: string; author?: Author }
+    /** Which project MCP acts on, which is the same for everybody. */
+    | { type: "notice"; kind: "assistant-target"; project: string | null; author?: Author }
     | { type: "result"; id: string; result: unknown }
     /** `state` is authoritative at the point of failure, so conflicts self-heal. */
-    | { type: "error"; id: string; error: CommandError; state: ProjectState }
+    | { type: "error"; id: string; error: CommandError; state?: ProjectState }
     | { type: "ping" };

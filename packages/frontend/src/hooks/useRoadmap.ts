@@ -1,43 +1,46 @@
 import { useCallback, useState } from "react";
-import { PlanManager } from "../utils/PlanManager";
+import { WorkspaceManager } from "../utils/WorkspaceManager";
 import { APIClient } from "../utils/APIClient";
 import { Task, Dependency, ProjectState } from "@blossom/common";
-import { NextTask, Roadmap } from "../types/roadmap";
+import { Board, NextTask, TaskRef } from "../types/roadmap";
 
-const EMPTY_ROADMAP: Roadmap = {
-    tasksList: [],
-    dependenciesList: [],
-    isSubplan: false,
-    ancestors: [],
-};
+const EMPTY_BOARD: Board = { lanes: [] };
+
+/** A task on the board, and which project it belongs to. */
+export interface SelectedTask {
+    ref: TaskRef;
+    task: Task;
+}
 
 export function useRoadmap(
-    planManager: PlanManager,
+    workspace: WorkspaceManager,
     apiClient: APIClient,
-    applyState: (state: ProjectState) => void,
+    applyProject: (state: ProjectState) => void,
     notify?: (message: string) => void,
 ) {
-    const [presentlyShownRoadmap, setPresentlyShownRoadmap] = useState<Roadmap>(EMPTY_ROADMAP);
+    const [board, setBoard] = useState<Board>(EMPTY_BOARD);
     const [unblockedTasks, setUnblockedTasks] = useState<NextTask[]>([]);
-    const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+    const [selectedTask, setSelectedTask] = useState<SelectedTask | null>(null);
 
-    // Runs on every applied server state, so both the graph and the "next task"
-    // list stay in step with the plan. Snapshotting the list when its panel
+    // Runs on every applied project state, so both the board and the "next task"
+    // list stay in step with the plans. Snapshotting the list when its panel
     // opened instead left it stale as soon as anything changed underneath it,
     // including edits arriving over MCP.
-    const syncRoadmap = useCallback(() => {
-        setPresentlyShownRoadmap({ ...planManager.presentContextRoadmap });
-        setUnblockedTasks(planManager.allUnblockedTasks);
-    }, [planManager]);
+    const syncBoard = useCallback(() => {
+        setBoard(workspace.board());
+        setUnblockedTasks(workspace.allUnblockedTasks());
+    }, [workspace]);
 
-    // Applies a mutation response. On failure the APIClient returns undefined
-    // (e.g. the task was deleted by somebody else first). A refusal comes back
-    // with the server's own state and an explanation, both already handled
-    // centrally; anything else is unexplained, so refetch to avoid staying stale.
+    /**
+     * Applies a mutation response. On failure the APIClient returns undefined
+     * (e.g. the task was deleted by somebody else first). A refusal comes back
+     * with the server's own state and an explanation, both already handled
+     * centrally; anything else is unexplained, so refetch to avoid staying stale.
+     */
     const applyResult = useCallback(
-        async (result: ProjectState | undefined): Promise<boolean> => {
+        async (projectKey: string, result: ProjectState | undefined): Promise<boolean> => {
             if (result) {
-                applyState(result);
+                applyProject(result);
                 return true;
             }
 
@@ -47,157 +50,182 @@ export function useRoadmap(
             }
 
             notify?.("That did not work. Refreshing the project.");
-            const state = await apiClient.getState();
+            const view = await apiClient.getView([projectKey]);
+            const state = view?.projects.find((project) => project.key === projectKey);
             if (state) {
-                applyState(state);
+                applyProject(state);
             }
             return false;
         },
-        [apiClient, applyState, notify],
+        [apiClient, applyProject, notify],
     );
 
     const setGoal = useCallback(
-        async (goalName: string) => {
-            await applyResult(await apiClient.setGoal(goalName));
+        async (projectKey: string, goalName: string) => {
+            await applyResult(projectKey, await apiClient.setGoal(projectKey, goalName));
         },
         [apiClient, applyResult],
     );
 
+    /** Adds a task to the plan level the project is drilled into. */
     const addTask = useCallback(
-        async (taskName: string): Promise<Task | null> => {
-            const result = await apiClient.addTask(planManager.presentContextGoal.id, taskName);
+        async (projectKey: string, taskName: string): Promise<Task | null> => {
+            const planManager = workspace.planManagerFor(projectKey);
+            if (!planManager) {
+                return null;
+            }
+            const result = await apiClient.addTask(projectKey, planManager.presentContextGoal.id, taskName);
             if (!result) {
                 notify?.("Could not add that task.");
                 return null;
             }
-            applyState(result.state);
+            applyProject(result.state);
             return result.task;
         },
-        [planManager, apiClient, applyState, notify],
+        [workspace, apiClient, applyProject, notify],
     );
 
     const removeTask = useCallback(
-        async (taskId: string) => {
-            await applyResult(await apiClient.removeTask(taskId));
+        async (ref: TaskRef) => {
+            await applyResult(ref.projectKey, await apiClient.removeTask(ref.projectKey, ref.taskId));
         },
         [apiClient, applyResult],
     );
 
     const connect = useCallback(
-        async (source: string, target: string) => {
-            await applyResult(await apiClient.addDependency(source, target));
+        async (projectKey: string, source: string, target: string) => {
+            await applyResult(projectKey, await apiClient.addDependency(projectKey, source, target));
         },
         [apiClient, applyResult],
     );
 
     const removeEdge = useCallback(
-        async (source: string, target: string) => {
-            await applyResult(await apiClient.removeDependency(source, target));
+        async (projectKey: string, source: string, target: string) => {
+            await applyResult(projectKey, await apiClient.removeDependency(projectKey, source, target));
         },
         [apiClient, applyResult],
     );
 
     const updateEdge = useCallback(
-        async (oldSource: string, oldTarget: string, newSource: string, newTarget: string) => {
-            await applyResult(await apiClient.updateDependency(oldSource, oldTarget, newSource, newTarget));
+        async (projectKey: string, oldSource: string, oldTarget: string, newSource: string, newTarget: string) => {
+            await applyResult(
+                projectKey,
+                await apiClient.updateDependency(projectKey, oldSource, oldTarget, newSource, newTarget),
+            );
         },
         [apiClient, applyResult],
     );
 
     const toggleComplete = useCallback(
-        async (taskId: string) => {
-            const task = planManager.findTask(taskId);
-            if (!task) {
+        async (ref: TaskRef) => {
+            const found = workspace.findTask(ref.taskId);
+            if (!found) {
                 return;
             }
-            await applyResult(await apiClient.setTaskCompletion(taskId, !task.completionState));
+            await applyResult(
+                ref.projectKey,
+                await apiClient.setTaskCompletion(ref.projectKey, ref.taskId, !found.task.completionState),
+            );
         },
-        [planManager, apiClient, applyResult],
+        [workspace, apiClient, applyResult],
     );
 
     const changeContextToWithinTask = useCallback(
-        (taskId: string) => {
-            planManager.changeContextToWithinTask(taskId);
-            syncRoadmap();
+        (ref: TaskRef) => {
+            workspace.planManagerFor(ref.projectKey)?.changeContextToWithinTask(ref.taskId);
+            syncBoard();
         },
-        [planManager, syncRoadmap],
+        [workspace, syncBoard],
     );
 
     const changeContextToParent = useCallback(
-        (taskId: string) => {
-            planManager.changeContextToParent(taskId);
-            syncRoadmap();
+        (ref: TaskRef) => {
+            workspace.planManagerFor(ref.projectKey)?.changeContextToParent(ref.taskId);
+            syncBoard();
         },
-        [planManager, syncRoadmap],
+        [workspace, syncBoard],
     );
 
     const createPlanForTask = useCallback(
-        async (taskId: string) => {
-            await applyResult(await apiClient.createSubplan(taskId));
+        async (ref: TaskRef) => {
+            await applyResult(ref.projectKey, await apiClient.createSubplan(ref.projectKey, ref.taskId));
         },
         [apiClient, applyResult],
     );
 
     const selectTask = useCallback(
-        (taskId: string): void => {
-            const task = planManager.findTaskInPresentContext(taskId);
-            if (task) {
-                setSelectedTask({ ...task });
-                return;
-            }
-            setSelectedTask(null);
+        (ref: TaskRef): void => {
+            const task = workspace.findTaskInContext(ref);
+            setSelectedTask(task ? { ref, task: { ...task } } : null);
         },
-        [planManager],
+        [workspace],
     );
 
     const updateTaskDetails = useCallback(
-        async (taskId: string, name: string, description?: string, completionState?: boolean): Promise<void> => {
+        async (name: string, description?: string, completionState?: boolean): Promise<void> => {
             if (!selectedTask) {
                 return;
             }
+            const { ref } = selectedTask;
 
             if (name || description !== undefined) {
-                await applyResult(await apiClient.updateTask(taskId, name || undefined, description));
+                await applyResult(
+                    ref.projectKey,
+                    await apiClient.updateTask(ref.projectKey, ref.taskId, name || undefined, description),
+                );
             }
 
-            if (completionState !== undefined && selectedTask.completionState !== completionState) {
-                await applyResult(await apiClient.setTaskCompletion(taskId, completionState));
+            if (completionState !== undefined && selectedTask.task.completionState !== completionState) {
+                await applyResult(
+                    ref.projectKey,
+                    await apiClient.setTaskCompletion(ref.projectKey, ref.taskId, completionState),
+                );
             }
 
-            const updatedTask = planManager.findTaskInPresentContext(taskId);
+            const updatedTask = workspace.findTaskInContext(ref);
             if (updatedTask) {
-                setSelectedTask({ ...updatedTask });
+                setSelectedTask({ ref, task: { ...updatedTask } });
             }
         },
-        [planManager, apiClient, selectedTask, applyResult],
+        [workspace, apiClient, selectedTask, applyResult],
     );
 
     const handlePaste = useCallback(
-        async (tasks: Task[], dependencies: Dependency[]) => {
-            await applyResult(await apiClient.pasteTasks(planManager.presentContextGoal.id, tasks, dependencies));
+        async (projectKey: string, tasks: Task[], dependencies: Dependency[]) => {
+            const planManager = workspace.planManagerFor(projectKey);
+            if (!planManager) {
+                return;
+            }
+            await applyResult(
+                projectKey,
+                await apiClient.pasteTasks(projectKey, planManager.presentContextGoal.id, tasks, dependencies),
+            );
         },
-        [planManager, apiClient, applyResult],
+        [workspace, apiClient, applyResult],
     );
 
-    const handleUndo = useCallback(async () => {
-        const state = await apiClient.undo();
-        if (!state) {
-            return;
-        }
-        applyState(state);
+    const handleUndo = useCallback(
+        async (projectKey: string) => {
+            const state = await apiClient.undo(projectKey);
+            if (!state) {
+                return;
+            }
+            applyProject(state);
 
-        setSelectedTask((prev) => {
-            if (!prev) return null;
-            const found = planManager.findTaskInPresentContext(prev.id);
-            return found ? { ...found } : null;
-        });
-    }, [planManager, apiClient, applyState]);
+            setSelectedTask((previous) => {
+                if (!previous) return null;
+                const found = workspace.findTaskInContext(previous.ref);
+                return found ? { ref: previous.ref, task: { ...found } } : null;
+            });
+        },
+        [workspace, apiClient, applyProject],
+    );
 
     return {
-        presentlyShownRoadmap,
+        board,
         unblockedTasks,
         selectedTask,
-        syncRoadmap,
+        syncBoard,
         setSelectedTask,
         setGoal,
         addTask,

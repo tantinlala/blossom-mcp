@@ -1,7 +1,7 @@
 import { APIClient } from "../utils/APIClient";
-import { PlanManager } from "../utils/PlanManager";
+import { WorkspaceManager } from "../utils/WorkspaceManager";
 import { RealtimeClient } from "../utils/RealtimeClient";
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import NextTasksDrawer from "./NextTasksDrawer";
 import TaskDetailsDrawer from "./TaskDetailsDrawer";
 import Header from "./Header";
@@ -11,7 +11,7 @@ import InboxPanel from "./InboxPanel";
 import { useRoadmap } from "../hooks/useRoadmap";
 import { useInbox } from "../hooks/useInbox";
 import { useServerSync } from "../hooks/useServerSync";
-import { useProjectManagement } from "../hooks/useProjectManagement";
+import { useBoardProjects } from "../hooks/useBoardProjects";
 import { useSidePanel } from "../hooks/useSidePanel";
 import { useTextPrompt } from "../hooks/useTextPrompt";
 import { useConfirm } from "../hooks/useConfirm";
@@ -23,34 +23,42 @@ import NoticeSnackbar from "./NoticeSnackbar";
 
 const App = ({
     apiClient,
-    planManager,
+    workspace,
     realtime,
 }: {
     apiClient: APIClient;
-    planManager: PlanManager;
+    workspace: WorkspaceManager;
     realtime: RealtimeClient;
 }) => {
     const { notice, notify, dismissNotice } = useNotices();
     const { promptForText, dialogProps } = useTextPrompt();
     const { askForConfirmation, dialogProps: confirmDialogProps } = useConfirm();
 
-    const sync = useServerSync({ apiClient, planManager, realtime, notify });
-    const roadmap = useRoadmap(planManager, apiClient, sync.applyState, notify);
+    // Which project is being worked in, as far as anything outside the canvas has
+    // been told: the one holding whatever was last picked out, or the one a person
+    // has just started. It gives way to the first lane when it names no project
+    // the board holds, so a board that changes underneath never strands it.
+    const [claimedProject, setClaimedProject] = useState<string | null>(null);
+
+    const sync = useServerSync({ apiClient, workspace, realtime, notify });
+    const roadmap = useRoadmap(workspace, apiClient, sync.applyProject, notify);
     const inbox = useInbox({
         apiClient,
-        planManager,
-        applyState: sync.applyState,
+        workspace,
+        applyProject: sync.applyProject,
         notify,
     });
     const panel = useSidePanel();
-    const project = useProjectManagement({
+    const projects = useBoardProjects({
         apiClient,
-        applyState: sync.applyState,
-        setSelectedTask: roadmap.setSelectedTask,
+        realtime,
+        workspace,
+        addProject: sync.addProject,
+        removeProject: sync.removeProject,
+        applyProject: sync.applyProject,
+        markSaved: sync.markSaved,
         promptForText,
         askForConfirmation,
-        markSaved: sync.markSaved,
-        markNeverSaved: sync.markNeverSaved,
         notify,
     });
 
@@ -63,41 +71,66 @@ const App = ({
     // useServerSync is created before the hooks that own React state, so the
     // setters it fans state out to are registered here
     const { registerTargets } = sync;
-    const { syncRoadmap } = roadmap;
-    const { applyRemoteInbox } = inbox;
-    const { applyActiveProject } = project;
+    const { syncBoard } = roadmap;
+    const { applyRemoteInbox, applyInboxView } = inbox;
+    const { applyAssistantProject } = projects;
     useEffect(() => {
-        registerTargets({ applyRemoteInbox, applyActiveProject, syncRoadmap });
-    }, [registerTargets, applyRemoteInbox, applyActiveProject, syncRoadmap]);
+        registerTargets({ applyRemoteInbox, applyInboxView, syncBoard, applyAssistantProject });
+    }, [registerTargets, applyRemoteInbox, applyInboxView, syncBoard, applyAssistantProject]);
 
-    // Opening or creating a project replaces what everyone connected is looking
-    // at, so the server refuses to do it unattended and asks through here.
-    useEffect(() => {
-        apiClient.setConfirmHandler(async (otherCount: number) => {
-            const others = otherCount === 1 ? "Somebody else is" : `${otherCount} other people are`;
-            return await askForConfirmation({
-                title: "Switch everyone's project?",
-                message: `${others} working on this project right now. Opening another one changes what they see too.`,
-                confirmLabel: "Switch anyway",
-            });
-        });
-    }, [apiClient, askForConfirmation]);
-
-    const { initializeApp } = project;
+    const { initializeApp } = projects;
     useEffect(() => {
         initializeApp();
     }, [initializeApp]);
 
+    /**
+     * The one project every action names. Resolving it here keeps the canvas
+     * toolbar and the header aligned on the same project.
+     */
+    const focusedProject = useMemo(() => {
+        const lanes = roadmap.board.lanes.map((lane) => lane.projectKey);
+        if (claimedProject && lanes.includes(claimedProject)) {
+            return claimedProject;
+        }
+        return lanes[0] ?? null;
+    }, [claimedProject, roadmap.board]);
+
+    const onSave = useCallback(() => projects.onSave(focusedProject), [projects, focusedProject]);
+    const onReload = useCallback(() => projects.onReload(focusedProject), [projects, focusedProject]);
+
+    // Picking a task out says which project is being worked in; putting the
+    // selection down leaves it where it was, so the toolbar does not jump.
+    const onSelectionProjectChange = useCallback((projectKey: string | null) => {
+        if (projectKey) {
+            setClaimedProject(projectKey);
+        }
+    }, []);
+
+    /** Starting a project puts a lane on the board with nothing in it yet. */
+    const onNewProject = useCallback(async () => {
+        const key = await projects.startNewProject();
+        if (key) {
+            setClaimedProject(key);
+        }
+    }, [projects]);
+
+    const multiProject = roadmap.board.lanes.length > 1;
+
     return (
         <div style={{ height: "100vh", width: "100vw", display: "flex", flexDirection: "column" }}>
             <Header
-                existingProjects={project.existingProjects}
-                selectedProject={project.selectedProject}
-                handleProjectChange={project.handleProjectChange}
-                onDeleteProject={project.deleteProject}
-                onSave={project.onSave}
-                onRestore={project.onRestore}
-                saveState={sync.saveState}
+                savedProjects={projects.savedProjects}
+                openProjects={projects.openProjects}
+                assistantProject={projects.assistantProject}
+                focusedProject={focusedProject}
+                onOpenProject={projects.openProject}
+                onCloseProject={projects.closeProject}
+                onNewProject={onNewProject}
+                onDeleteProject={projects.deleteProject}
+                onChooseAssistantProject={projects.chooseAssistantProject}
+                onSave={onSave}
+                onReload={onReload}
+                saveState={sync.saveStateOf(focusedProject)}
                 connectionState={sync.connectionState}
             />
 
@@ -106,7 +139,7 @@ const App = ({
                 <div data-testid="roadmapGraph" style={{ flex: 3, minWidth: 0, height: "100%", overflow: "auto" }}>
                     <ReactFlowProvider>
                         <RoadmapGraph
-                            presentlyShownRoadmap={roadmap.presentlyShownRoadmap}
+                            board={roadmap.board}
                             handleSetGoal={roadmap.setGoal}
                             handleAddTask={roadmap.addTask}
                             handleRemoveTask={roadmap.removeTask}
@@ -123,6 +156,9 @@ const App = ({
                             handlePaste={roadmap.handlePaste}
                             handleUndo={roadmap.handleUndo}
                             promptForText={promptForText}
+                            focusedProject={focusedProject}
+                            notify={notify}
+                            onSelectionProjectChange={onSelectionProjectChange}
                         />
                     </ReactFlowProvider>
                 </div>
@@ -132,6 +168,7 @@ const App = ({
                     open={panel.activePanel === "nextTasks"}
                     onClose={panel.closeActivePanel}
                     shownTasks={roadmap.unblockedTasks}
+                    showProjectKeys={multiProject}
                     toggleCompletion={roadmap.toggleComplete}
                     changeContext={roadmap.changeContextToParent}
                 />
@@ -141,12 +178,13 @@ const App = ({
                     onClose={panel.closeActivePanel}
                     selectedTask={roadmap.selectedTask}
                     updateTaskDetails={roadmap.updateTaskDetails}
+                    showProjectKey={multiProject}
                 />
 
                 <InboxPanel
                     open={panel.activePanel === "inbox"}
                     onClose={panel.closeActivePanel}
-                    ideaList={inbox.ideaList}
+                    groups={inbox.ideaGroups}
                     addIdea={inbox.addIdea}
                     addAllIdeasToPlan={inbox.addAllIdeasToPlan}
                     changeIdea={inbox.changeIdea}

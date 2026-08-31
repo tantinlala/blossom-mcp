@@ -11,6 +11,8 @@ const DESCRIPTION_PLACEHOLDER = "Add a description for this task...";
 
 interface TaskDetailsFormProps {
     name: string;
+    /** Which project the task belongs to, named when a board holds more than one. */
+    projectKey?: string;
     description: string;
     completionState: boolean;
     hasSubplan: boolean;
@@ -23,6 +25,7 @@ interface TaskDetailsFormProps {
 
 const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
     name,
+    projectKey,
     description,
     completionState,
     hasSubplan,
@@ -48,6 +51,16 @@ const TaskDetailsForm: React.FC<TaskDetailsFormProps> = ({
 
     return (
         <Box sx={{ p: 2, display: "flex", flexDirection: "column", height: "100%" }}>
+            {projectKey && (
+                <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    data-testid="task-details-project"
+                    sx={{ mb: 1, textTransform: "uppercase", letterSpacing: "0.04em" }}
+                >
+                    {projectKey}
+                </Typography>
+            )}
             <Box sx={{ mb: 3 }}>
                 <Typography variant="subtitle2" color="text.secondary">
                     Name

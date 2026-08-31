@@ -6,7 +6,7 @@ import { SaveState } from "../hooks/useServerSync";
 import { ConnectionState } from "../utils/RealtimeClient";
 import { palette, shadows } from "../theme/tokens";
 import ConnectionIndicator from "./ConnectionIndicator";
-import ProjectSelector from "./ProjectSelector";
+import BoardSelector from "./BoardSelector";
 import BrandMark from "./BrandMark";
 
 const SAVE_STATE_LABEL: Record<SaveState, string> = {
@@ -23,26 +23,44 @@ const SAVE_STATE_COLOR: Record<SaveState, string> = {
 };
 
 interface HeaderProps {
-    existingProjects: string[];
-    selectedProject: string;
-    handleProjectChange: (filename: string) => void;
+    savedProjects: string[];
+    openProjects: string[];
+    assistantProject: string | null;
+    /**
+     * The project Save and Reload act on: the one holding whatever is picked out
+     * on the board, and the only project there when nothing is.
+     */
+    focusedProject: string | null;
+    onOpenProject: (filename: string) => void;
+    onCloseProject: (projectKey: string) => void;
+    onNewProject: () => void;
     onDeleteProject: (filename: string) => void;
+    onChooseAssistantProject: (projectKey: string | null) => void;
     onSave: () => void;
-    onRestore: () => void;
+    onReload: () => void;
     saveState: SaveState;
     connectionState: ConnectionState;
 }
 
 const Header: React.FC<HeaderProps> = ({
-    existingProjects,
-    selectedProject,
-    handleProjectChange,
+    savedProjects,
+    openProjects,
+    assistantProject,
+    focusedProject,
+    onOpenProject,
+    onCloseProject,
+    onNewProject,
     onDeleteProject,
+    onChooseAssistantProject,
     onSave,
-    onRestore,
+    onReload,
     saveState,
     connectionState,
 }) => {
+    // A board of one needs no saying which project Save writes to. Holding
+    // several, the buttons say which lane they land in.
+    const focusSuffix = openProjects.length > 1 && focusedProject ? ` ${focusedProject}` : "";
+
     return (
         <Paper
             square
@@ -59,7 +77,7 @@ const Header: React.FC<HeaderProps> = ({
                 zIndex: 1,
             }}
         >
-            {/* Three columns of equal weight so the project selector sits centred */}
+            {/* Three columns of equal weight so the board selector sits centred */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, flex: 1 }}>
                 <BrandMark />
                 <Typography variant="h6" sx={{ letterSpacing: "-0.015em" }}>
@@ -68,11 +86,15 @@ const Header: React.FC<HeaderProps> = ({
             </Box>
 
             <Box sx={{ display: "flex", justifyContent: "center", flex: 1 }}>
-                <ProjectSelector
-                    existingProjects={existingProjects}
-                    selectedProject={selectedProject}
-                    onSelect={handleProjectChange}
+                <BoardSelector
+                    savedProjects={savedProjects}
+                    openProjects={openProjects}
+                    assistantProject={assistantProject}
+                    onOpen={onOpenProject}
+                    onClose={onCloseProject}
+                    onNewProject={onNewProject}
                     onDelete={onDeleteProject}
+                    onChooseAssistantProject={onChooseAssistantProject}
                 />
             </Box>
 
@@ -97,15 +119,21 @@ const Header: React.FC<HeaderProps> = ({
                 </Box>
 
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                    <Button variant="contained" startIcon={<SaveIcon />} onClick={onSave}>
-                        Save
+                    <Button
+                        variant="contained"
+                        startIcon={<SaveIcon />}
+                        onClick={onSave}
+                        disabled={focusedProject === null}
+                    >
+                        {`Save${focusSuffix}`}
                     </Button>
-                    {/* Selecting a project loads it; this re-reads it from disk, discarding edits */}
+                    {/* Opening a project loads it; this re-reads it from disk, discarding edits */}
                     <Tooltip title="Discard changes and reload this project from disk">
                         <Button
                             variant="outlined"
                             startIcon={<RefreshIcon />}
-                            onClick={onRestore}
+                            onClick={onReload}
+                            disabled={focusedProject === null}
                             // Neutral, so blue stays the mark of the primary action
                             sx={{
                                 color: "text.secondary",

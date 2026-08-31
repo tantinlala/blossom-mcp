@@ -73,11 +73,15 @@ const makeNestedGoal = (): Task => ({
     },
 });
 
+// The project every plan in these tests belongs to. A board can hold several,
+// so each task a plan hands out says which one it came from.
+const PROJECT = "Trip";
+
 describe("PlanManager", () => {
     let planManager: PlanManager;
 
     beforeEach(() => {
-        planManager = new PlanManager();
+        planManager = new PlanManager(PROJECT);
     });
 
     describe("reset and initialized", () => {
@@ -431,6 +435,17 @@ describe("PlanManager", () => {
     });
 
     describe("allUnblockedTasks", () => {
+        it("stamps each startable task with the project its plan belongs to", () => {
+            planManager.applyServerState(makeGoal());
+
+            const projects = new Set(planManager.allUnblockedTasks.map((entry) => entry.projectKey));
+            expect([...projects]).toEqual([PROJECT]);
+        });
+
+        it("reports which project it belongs to", () => {
+            expect(planManager.projectKey).toBe(PROJECT);
+        });
+
         it("returns an empty list when uninitialized", () => {
             expect(planManager.allUnblockedTasks).toEqual([]);
         });

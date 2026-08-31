@@ -1,98 +1,9 @@
 import { Router, Request, Response } from "express";
-import { Author, CommandErrorCode, COMMAND_NAMES } from "@blossom/common";
-import { InvalidProjectNameError, Project, ProjectNotFoundError } from "../models/project";
-import {
-    ProjectStore,
-    TaskNotFoundError,
-    IdeaNotFoundError,
-    InvalidBatchError,
-    InvalidDependencyError,
-    InvalidMoveError,
-    InvalidIndexError,
-    VersionConflictError,
-    UndoBlockedError,
-} from "../state/projectStore";
-import {
-    CommandDeps,
-    ConfirmRequiredError,
-    dispatchCommand,
-    InvalidCommandError,
-    UnknownCommandError,
-} from "../state/commands";
-
-const Status = {
-    OK: 200,
-    BAD_REQUEST: 400,
-    NOT_FOUND: 404,
-    CONFLICT: 409,
-    INTERNAL: 500,
-};
-
-// The socket reports a precise CommandErrorCode, so HTTP carries the same one
-// rather than making the client re-infer it from a status shared by several
-// distinct failures.
-const errorCode = (error: unknown): CommandErrorCode => {
-    if (
-        error instanceof TaskNotFoundError ||
-        error instanceof IdeaNotFoundError ||
-        error instanceof ProjectNotFoundError
-    ) {
-        return "not-found";
-    }
-    if (error instanceof InvalidCommandError || error instanceof InvalidProjectNameError) {
-        return "invalid";
-    }
-    if (error instanceof UnknownCommandError) {
-        return "unknown-command";
-    }
-    if (error instanceof VersionConflictError) {
-        return "conflict";
-    }
-    if (error instanceof UndoBlockedError) {
-        return "undo-blocked";
-    }
-    if (error instanceof ConfirmRequiredError) {
-        return "confirm-required";
-    }
-    if (
-        error instanceof InvalidDependencyError ||
-        error instanceof InvalidMoveError ||
-        error instanceof InvalidIndexError ||
-        error instanceof InvalidBatchError
-    ) {
-        return "invalid";
-    }
-    return "internal";
-};
-
-const errorStatus = (error: unknown): number => {
-    if (
-        error instanceof TaskNotFoundError ||
-        error instanceof IdeaNotFoundError ||
-        error instanceof ProjectNotFoundError
-    ) {
-        return Status.NOT_FOUND;
-    }
-    if (
-        error instanceof InvalidDependencyError ||
-        error instanceof InvalidMoveError ||
-        error instanceof InvalidIndexError ||
-        error instanceof InvalidBatchError ||
-        error instanceof InvalidCommandError ||
-        error instanceof InvalidProjectNameError ||
-        error instanceof UnknownCommandError
-    ) {
-        return Status.BAD_REQUEST;
-    }
-    if (
-        error instanceof VersionConflictError ||
-        error instanceof UndoBlockedError ||
-        error instanceof ConfirmRequiredError
-    ) {
-        return Status.CONFLICT;
-    }
-    return Status.INTERNAL;
-};
+import { Author, COMMAND_NAMES, ViewState } from "@blossom/common";
+import { Project } from "../models/project";
+import { Workspace } from "../state/workspace";
+import { CommandDeps, dispatchCommand, projectFor } from "../state/commands";
+import { errorCode, errorStatus, Status } from "../state/errorCodes";
 
 // Identity is advisory: it distinguishes the author of a change so undo can
 // refuse to revert somebody else's work. Anyone may send any id, so treat it as
@@ -113,9 +24,22 @@ const readAuthor = (req: Request): Author | null => {
     return null;
 };
 
-const createApiRouter = (store: ProjectStore, project: Project, deps: Partial<CommandDeps> = {}): Router => {
+/**
+ * Which projects a read is asking about, from `?projects=a,b`. The order given
+ * is the order they come back in, which is the order the board draws its lanes.
+ */
+const readProjectKeys = (req: Request): string[] => {
+    const raw = req.query.projects;
+    const joined = Array.isArray(raw) ? raw.join(",") : typeof raw === "string" ? raw : "";
+    return joined
+        .split(",")
+        .map((key) => key.trim())
+        .filter((key) => key !== "");
+};
+
+const createApiRouter = (workspace: Workspace, project: Project): Router => {
     const router = Router();
-    const commandDeps: CommandDeps = { store, project, ...deps };
+    const commandDeps: CommandDeps = { workspace, project };
 
     // Every mutation is a command, and every command is reachable at
     // POST /api/<command name>, so the REST surface and the socket's command
@@ -132,40 +56,56 @@ const createApiRouter = (store: ProjectStore, project: Project, deps: Partial<Co
                     code: errorCode(error),
                 };
                 // A rejected write leaves the client holding stale state, so
-                // hand back the authoritative copy for it to rebase onto.
+                // hand back the authoritative copy of the project it named.
                 if (status === Status.CONFLICT) {
-                    body.response = store.getState();
-                }
-                if (error instanceof ConfirmRequiredError) {
-                    body.otherCount = error.otherCount;
+                    try {
+                        body.response = projectFor(commandDeps, name, req.body).getState();
+                    } catch {
+                        // A conflict on a project that cannot be resolved leaves
+                        // the client to ask for the view it is looking at.
+                    }
                 }
                 res.status(status).json(body);
             }
         });
     }
 
-    router.get("/state", (req: Request, res: Response) => {
-        res.json({ response: store.getState() });
-    });
-
-    router.get("/state/version", (req: Request, res: Response) => {
-        res.json({ response: { version: store.getVersion() } });
-    });
-
-    router.get("/projects", async (req: Request, res: Response) => {
+    /** The projects a session is looking at, plus which one MCP acts on. */
+    router.get("/view", async (req: Request, res: Response) => {
         try {
-            const projects = await project.listExistingProjects();
-            res.json({ response: { projects } });
+            const opened = await workspace.openMany(readProjectKeys(req));
+            const view: ViewState = workspace.viewState(opened);
+            res.json({ response: view });
         } catch (error) {
             res.status(Status.INTERNAL).json({ error: String(error) });
         }
     });
 
-    router.get("/projects/active", (req: Request, res: Response) => {
-        res.json({ response: { activeProject: store.activeProject } });
+    /** The version of each named project, read by the poll that runs while the socket is down. */
+    router.get("/view/versions", (req: Request, res: Response) => {
+        const versions: Record<string, number> = {};
+        for (const key of readProjectKeys(req)) {
+            const store = workspace.get(key);
+            if (store) {
+                versions[key] = store.getVersion();
+            }
+        }
+        res.json({ response: { versions } });
+    });
+
+    /** Every saved project, which ones are open, and which one MCP acts on. */
+    router.get("/projects", async (req: Request, res: Response) => {
+        try {
+            const projects = await project.listExistingProjects();
+            res.json({
+                response: { projects, open: workspace.keys(), assistantProject: workspace.assistantProject },
+            });
+        } catch (error) {
+            res.status(Status.INTERNAL).json({ error: String(error) });
+        }
     });
 
     return router;
 };
 
-export { createApiRouter };
+export { createApiRouter, readProjectKeys };

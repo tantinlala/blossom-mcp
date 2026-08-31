@@ -19,6 +19,7 @@ const BADGE_ICON_SIZE = 14;
 
 // Node type constants
 export const NODE_TYPE = "customTaskNode";
+export const GOAL_NODE_TYPE = "goalNode";
 
 // Position constants
 export const SOURCE_HANDLE_POSITION = Position.Right;
@@ -69,10 +70,10 @@ const handleStyle = {
     border: `1.5px solid ${palette.edge.marker}`,
 };
 
-const TaskNode = ({ data, id, selected }) => {
+const TaskNode = ({ data, selected }) => {
     const onCheckboxClick = useCallback(() => {
-        data.onToggleComplete(id);
-    }, [data, id]);
+        data.onToggleComplete();
+    }, [data]);
 
     const { background, color } = appearanceForState(data.taskState);
     const isCompleted = data.taskState === TaskState.COMPLETED;

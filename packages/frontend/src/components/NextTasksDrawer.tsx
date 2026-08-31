@@ -1,21 +1,29 @@
 import React from "react";
 import { Box, Checkbox, List, ListItem, ListItemButton, ListItemText, Tooltip, Typography } from "@mui/material";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
-import { NextTask } from "../types/roadmap";
+import { NextTask, TaskRef } from "../types/roadmap";
 import SidePanel from "./SidePanel";
 
 interface NextTaskDrawerProps {
     open: boolean;
     onClose: () => void;
+    /** Every startable task across the board, project by project. */
     shownTasks: NextTask[];
-    toggleCompletion: (taskId: string) => void;
-    changeContext: (taskId: string) => void;
+    /** Whether a task needs saying which project it belongs to. */
+    showProjectKeys: boolean;
+    toggleCompletion: (ref: TaskRef) => void;
+    changeContext: (ref: TaskRef) => void;
 }
 
+/**
+ * The tasks that can be started now. A board can hold several projects, so each
+ * task carries the plan it lives in and, when it matters, the project as well.
+ */
 const NextTasksDrawer: React.FC<NextTaskDrawerProps> = ({
     open,
     onClose,
     shownTasks,
+    showProjectKeys,
     toggleCompletion,
     changeContext,
 }) => {
@@ -27,7 +35,7 @@ const NextTasksDrawer: React.FC<NextTaskDrawerProps> = ({
                         No tasks to show!
                     </Typography>
                 )}
-                {shownTasks.map(({ task, path }) => (
+                {shownTasks.map(({ task, path, projectKey }) => (
                     <ListItem
                         key={task.id}
                         disablePadding
@@ -35,7 +43,7 @@ const NextTasksDrawer: React.FC<NextTaskDrawerProps> = ({
                         secondaryAction={
                             <Tooltip title="Go to the plan this task lives in">
                                 <ListItemButton
-                                    onClick={() => changeContext(task.id)}
+                                    onClick={() => changeContext({ projectKey, taskId: task.id })}
                                     data-testid={`change-context-button-${task.id}`}
                                     sx={{ minWidth: 0, borderRadius: 1, p: 1, flexGrow: 0 }}
                                 >
@@ -48,7 +56,7 @@ const NextTasksDrawer: React.FC<NextTaskDrawerProps> = ({
                             <Checkbox
                                 size="small"
                                 checked={task.completionState}
-                                onChange={() => toggleCompletion(task.id)}
+                                onChange={() => toggleCompletion({ projectKey, taskId: task.id })}
                                 slotProps={{ input: { "aria-label": `Mark ${task.name} complete` } }}
                                 data-testid={`task-checkbox-${task.id}`}
                             />
@@ -56,7 +64,11 @@ const NextTasksDrawer: React.FC<NextTaskDrawerProps> = ({
                                 primary={task.name}
                                 // Startable tasks are nested in subplans, so the name
                                 // alone does not say where to find one
-                                secondary={path.length > 0 ? path.map((crumb) => crumb.name).join(" / ") : null}
+                                secondary={
+                                    [...(showProjectKeys ? [projectKey] : []), ...path.map((crumb) => crumb.name)].join(
+                                        " / ",
+                                    ) || null
+                                }
                                 slotProps={{
                                     primary: { variant: "body2" },
                                     secondary: { variant: "caption", noWrap: true },

@@ -1,9 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { mock, MockProxy } from "jest-mock-extended";
 import { GOAL_ID, Task } from "@blossom/common";
 import { createMcpServer, MAX_TOP_LEVEL_TASKS } from "./mcpServer";
 import { ProjectStore } from "../state/projectStore";
+import { Workspace } from "../state/workspace";
+import { Project } from "../models/project";
 
 const EXPECTED_TOOLS = [
     "get_project_state",
@@ -36,13 +39,15 @@ const EXPECTED_TOOLS = [
 const MUTATING_TOOLS = EXPECTED_TOOLS.filter((name) => !name.startsWith("get_"));
 
 describe("mcpServer", () => {
+    let project: MockProxy<Project>;
+    let workspace: Workspace;
     let store: ProjectStore;
     let server: McpServer;
     let client: Client;
 
     const connect = async () => {
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-        server = createMcpServer(store);
+        server = createMcpServer(workspace);
         client = new Client({ name: "test", version: "1.0" });
         await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     };
@@ -53,13 +58,94 @@ describe("mcpServer", () => {
 
     const parseResult = (result: any) => JSON.parse(result.content[0].text);
 
-    beforeEach(() => {
-        store = new ProjectStore();
+    beforeEach(async () => {
+        project = mock<Project>();
+        project.listExistingProjects.mockResolvedValue([]);
+        project.projectExists.mockResolvedValue(false);
+        workspace = new Workspace(project);
+        // One project open, which is the one the assistant works on: with nothing
+        // else there, no choice has to have been made.
+        store = await workspace.createDraft();
     });
 
     afterEach(async () => {
         await client.close();
         await server.close();
+    });
+
+    describe("which project the assistant works on", () => {
+        it("reads and writes the project a person chose in the web UI", async () => {
+            const house = await workspace.createDraft();
+            workspace.setAssistantProject(house.key);
+            await connect();
+
+            await callTool("set_goal", { name: "Redecorate" });
+
+            expect(house.getState().goal.name).toBe("Redecorate");
+            expect(store.getState().goal.name).toBe("");
+        });
+
+        it("names the project it is working on, so it can say which plan it changed", async () => {
+            await connect();
+
+            const state = parseResult(await callTool("get_project_state"));
+
+            expect(state.key).toBe(store.key);
+            expect(state.savedToDisk).toBe(false);
+        });
+
+        it("follows the choice as it moves, without reconnecting", async () => {
+            const house = await workspace.createDraft();
+            workspace.setAssistantProject(store.key);
+            await connect();
+            await callTool("set_goal", { name: "Trip" });
+
+            workspace.setAssistantProject(house.key);
+            await callTool("set_goal", { name: "Redecorate" });
+
+            expect(store.getState().goal.name).toBe("Trip");
+            expect(house.getState().goal.name).toBe("Redecorate");
+        });
+
+        it("asks the user to pick one when several projects are open and none has been chosen", async () => {
+            await workspace.createDraft();
+            await connect();
+
+            const result = await callTool("get_project_state");
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("Ask the user to pick one");
+        });
+
+        it("says the same when asked to write, so nothing lands in a project nobody chose", async () => {
+            await workspace.createDraft();
+            await connect();
+
+            const result = await callTool("add_inbox_idea", { text: "an idea" });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("Ask the user to pick one");
+        });
+
+        it("reports the same for a plan level it cannot reach", async () => {
+            await workspace.createDraft();
+            await connect();
+
+            const result = await callTool("get_roadmap");
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("Ask the user to pick one");
+        });
+
+        it("reports the same for the actionable tasks", async () => {
+            await workspace.createDraft();
+            await connect();
+
+            const result = await callTool("get_next_tasks");
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain("Ask the user to pick one");
+        });
     });
 
     it("should list every tool", async () => {
@@ -81,6 +167,7 @@ describe("mcpServer", () => {
         expect(instructions).toContain("Phase 2: Task Identification");
         expect(instructions).toContain("Phase 3: Plan Structuring");
         expect(instructions).toContain("user-only");
+        expect(instructions).toContain("the one project the user has chosen for you");
     });
 
     it("should leave the move into plan structuring to the user", async () => {

@@ -1,504 +1,453 @@
 import { renderHook, act } from "@testing-library/react";
 import { useRoadmap } from "./useRoadmap";
-import { PlanManager } from "../utils/PlanManager";
+import { WorkspaceManager } from "../utils/WorkspaceManager";
 import { APIClient } from "../utils/APIClient";
-import { GOAL_ID, ProjectState, Task } from "@blossom/common";
+import { GOAL_ID, ProjectState, Task, TaskState } from "@blossom/common";
 
-jest.mock("../utils/PlanManager");
 jest.mock("../utils/APIClient");
 
-const makeState = (version = 1): ProjectState => ({
+const TRIP = "Trip";
+const HOUSE = "House";
+
+const makeGoal = (tasks: Task[] = []): Task => ({
+    name: "Goal",
+    id: GOAL_ID,
+    completionState: false,
+    plan: { tasksList: tasks, dependenciesList: [] },
+});
+
+const makeState = (version = 1, key = TRIP, goal: Task = makeGoal()): ProjectState => ({
     version,
-    activeProject: null,
-    goal: { name: "Goal", id: GOAL_ID, completionState: false, plan: { tasksList: [], dependenciesList: [] } },
+    key,
+    savedToDisk: true,
+    goal,
     inbox: [],
 });
 
+const leaf = (id: string, name: string, completionState = false): Task => ({
+    id,
+    name,
+    completionState,
+    plan: null as any,
+});
+
 describe("useRoadmap", () => {
-    let mockedPlanManager: jest.Mocked<PlanManager>;
+    let workspace: WorkspaceManager;
     let mockedAPIClient: jest.Mocked<APIClient>;
-    let mockApplyState: jest.Mock;
+    let mockApplyProject: jest.Mock;
     let mockNotify: jest.Mock;
 
     beforeEach(() => {
         jest.clearAllMocks();
-        mockedPlanManager = new PlanManager() as jest.Mocked<PlanManager>;
+        // The view-model is pure: it holds the plans and derives the board, and
+        // does no I/O, so the hook is exercised against the real thing.
+        workspace = new WorkspaceManager();
         mockedAPIClient = new APIClient() as jest.Mocked<APIClient>;
-        mockApplyState = jest.fn();
+        mockApplyProject = jest.fn();
         mockNotify = jest.fn();
         mockedAPIClient.lastFailure.mockReturnValue(null);
-
-        Object.defineProperty(mockedPlanManager, "presentContextGoal", {
-            get: jest.fn().mockReturnValue({ name: "Goal", id: GOAL_ID, completionState: false, plan: null }),
-            configurable: true,
-        });
-        Object.defineProperty(mockedPlanManager, "presentContextRoadmap", {
-            get: jest.fn().mockReturnValue({ tasksList: [], dependenciesList: [], isSubplan: false }),
-            configurable: true,
-        });
-        Object.defineProperty(mockedPlanManager, "allUnblockedTasks", {
-            get: jest.fn().mockReturnValue([]),
-            configurable: true,
-        });
     });
 
-    const render = () => renderHook(() => useRoadmap(mockedPlanManager, mockedAPIClient, mockApplyState, mockNotify));
+    /** Puts projects on the board, as the sync hook would from a server view. */
+    const openBoard = (...projects: ProjectState[]) => workspace.applyView({ projects, assistantProject: null });
 
-    it("initializes with empty roadmap state", () => {
+    const render = () => renderHook(() => useRoadmap(workspace, mockedAPIClient, mockApplyProject, mockNotify));
+
+    it("initializes with an empty board", () => {
         const { result } = render();
 
-        expect(result.current.presentlyShownRoadmap).toEqual({
-            tasksList: [],
-            dependenciesList: [],
-            isSubplan: false,
-            ancestors: [],
-        });
+        expect(result.current.board).toEqual({ lanes: [] });
         expect(result.current.unblockedTasks).toEqual([]);
         expect(result.current.selectedTask).toBeNull();
     });
 
-    it("syncRoadmap copies presentContextRoadmap from planManager", () => {
-        const mockRoadmap = {
-            tasksList: [{ task: { id: "1", name: "Task 1", completionState: false, plan: null }, state: 2 }],
-            dependenciesList: [],
-            isSubplan: false,
-        };
-        Object.defineProperty(mockedPlanManager, "presentContextRoadmap", {
-            get: jest.fn().mockReturnValue(mockRoadmap),
-            configurable: true,
+    describe("syncBoard", () => {
+        it("draws one lane per project on the board, in lane order", () => {
+            openBoard(makeState(1, TRIP, makeGoal([leaf("t1", "Pack")])), makeState(1, HOUSE, makeGoal()));
+            const { result } = render();
+
+            act(() => result.current.syncBoard());
+
+            expect(result.current.board.lanes.map((lane) => lane.projectKey)).toEqual([TRIP, HOUSE]);
+            expect(result.current.board.lanes[0].roadmap.tasksList.map((entry) => entry.task.id)).toEqual([
+                "t1",
+                GOAL_ID,
+            ]);
         });
 
-        const { result } = render();
+        it("refreshes the startable tasks across every project alongside the board", () => {
+            openBoard(
+                makeState(1, TRIP, makeGoal([leaf("t1", "Pack")])),
+                makeState(1, HOUSE, makeGoal([leaf("h1", "Choose paint")])),
+            );
+            const { result } = render();
 
-        act(() => {
-            result.current.syncRoadmap();
+            act(() => result.current.syncBoard());
+
+            expect(result.current.unblockedTasks.map((next) => [next.projectKey, next.task.id])).toEqual([
+                [TRIP, "t1"],
+                [HOUSE, "h1"],
+            ]);
         });
 
-        expect(result.current.presentlyShownRoadmap).toEqual(mockRoadmap);
-        expect(result.current.presentlyShownRoadmap).not.toBe(mockRoadmap);
+        it("marks a blocked task as blocked in the lane it belongs to", () => {
+            const goal = makeGoal([leaf("t1", "Pack"), leaf("t2", "Fly")]);
+            goal.plan.dependenciesList = [{ source: "t1", target: "t2" }];
+            openBoard(makeState(1, TRIP, goal));
+            const { result } = render();
+
+            act(() => result.current.syncBoard());
+
+            const states = new Map(
+                result.current.board.lanes[0].roadmap.tasksList.map((entry) => [entry.task.id, entry.state]),
+            );
+            expect(states.get("t1")).toBe(TaskState.UNBLOCKED);
+            expect(states.get("t2")).toBe(TaskState.BLOCKED);
+        });
     });
 
-    it("syncRoadmap refreshes the unblocked task list alongside the graph", () => {
-        // Every applied server state runs syncRoadmap, so the "next task" list
-        // cannot go stale while its panel is open.
-        const unblockedTasks = [{ id: "t1", name: "Task 1", completionState: false, plan: null }];
-        Object.defineProperty(mockedPlanManager, "allUnblockedTasks", {
-            get: jest.fn().mockReturnValue(unblockedTasks),
-            configurable: true,
+    describe("writes, each naming the project it lands in", () => {
+        beforeEach(() => {
+            openBoard(makeState(1, TRIP, makeGoal([leaf("t1", "Pack")])), makeState(1, HOUSE, makeGoal()));
         });
 
-        const { result } = render();
-        expect(result.current.unblockedTasks).toEqual([]);
+        it("setGoal calls the API and applies the returned state", async () => {
+            const state = makeState(2, HOUSE);
+            mockedAPIClient.setGoal.mockResolvedValue(state);
+            const { result } = render();
 
-        act(() => {
-            result.current.syncRoadmap();
+            await act(async () => result.current.setGoal(HOUSE, "Redecorate"));
+
+            expect(mockedAPIClient.setGoal).toHaveBeenCalledWith(HOUSE, "Redecorate");
+            expect(mockApplyProject).toHaveBeenCalledWith(state);
         });
 
-        expect(result.current.unblockedTasks).toEqual(unblockedTasks);
+        it("setGoal reports the failure and reads that project back when the write is unexplained", async () => {
+            mockedAPIClient.setGoal.mockResolvedValue(undefined);
+            const fresh = makeState(9, TRIP);
+            mockedAPIClient.getView.mockResolvedValue({ projects: [fresh], assistantProject: null });
+            const { result } = render();
+
+            await act(async () => result.current.setGoal(TRIP, "Get to Lisbon"));
+
+            expect(mockNotify).toHaveBeenCalledWith("That did not work. Refreshing the project.");
+            expect(mockedAPIClient.getView).toHaveBeenCalledWith([TRIP]);
+            expect(mockApplyProject).toHaveBeenCalledWith(fresh);
+        });
+
+        it("leaves a refused write to be repaired centrally rather than reading it back", async () => {
+            mockedAPIClient.setGoal.mockResolvedValue(undefined);
+            mockedAPIClient.lastFailure.mockReturnValue({
+                code: "conflict",
+                message: "Someone got there first",
+                state: makeState(4, TRIP),
+            });
+            const { result } = render();
+
+            await act(async () => result.current.setGoal(TRIP, "Get to Lisbon"));
+
+            expect(mockedAPIClient.getView).not.toHaveBeenCalled();
+            expect(mockNotify).not.toHaveBeenCalled();
+        });
+
+        it("addTask posts to the plan level that project is drilled into", async () => {
+            const task = leaf("new-1", "Book flights");
+            mockedAPIClient.addTask.mockResolvedValue({ task, state: makeState(2, TRIP) });
+            const { result } = render();
+
+            let created: Task | null = null;
+            await act(async () => {
+                created = await result.current.addTask(TRIP, "Book flights");
+            });
+
+            expect(mockedAPIClient.addTask).toHaveBeenCalledWith(TRIP, GOAL_ID, "Book flights");
+            expect(created).toEqual(task);
+        });
+
+        it("addTask returns nothing for a project the board does not hold", async () => {
+            const { result } = render();
+
+            let created: Task | null = null;
+            await act(async () => {
+                created = await result.current.addTask("SomebodyElsesProject", "Book flights");
+            });
+
+            expect(created).toBeNull();
+            expect(mockedAPIClient.addTask).not.toHaveBeenCalled();
+        });
+
+        it("addTask returns null and reports the failure when the API call fails", async () => {
+            mockedAPIClient.addTask.mockResolvedValue(undefined);
+            const { result } = render();
+
+            let created: Task | null = null;
+            await act(async () => {
+                created = await result.current.addTask(TRIP, "Book flights");
+            });
+
+            expect(created).toBeNull();
+            expect(mockNotify).toHaveBeenCalledWith("Could not add that task.");
+        });
+
+        it("removeTask names the project the task belongs to", async () => {
+            mockedAPIClient.removeTask.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+
+            await act(async () => result.current.removeTask({ projectKey: TRIP, taskId: "t1" }));
+
+            expect(mockedAPIClient.removeTask).toHaveBeenCalledWith(TRIP, "t1");
+        });
+
+        it("connect adds a dependency inside one project", async () => {
+            mockedAPIClient.addDependency.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+
+            await act(async () => result.current.connect(TRIP, "t1", GOAL_ID));
+
+            expect(mockedAPIClient.addDependency).toHaveBeenCalledWith(TRIP, "t1", GOAL_ID);
+        });
+
+        it("removeEdge removes a dependency inside one project", async () => {
+            mockedAPIClient.removeDependency.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+
+            await act(async () => result.current.removeEdge(TRIP, "t1", GOAL_ID));
+
+            expect(mockedAPIClient.removeDependency).toHaveBeenCalledWith(TRIP, "t1", GOAL_ID);
+        });
+
+        it("updateEdge rewires a dependency inside one project", async () => {
+            mockedAPIClient.updateDependency.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+
+            await act(async () => result.current.updateEdge(TRIP, "a", "b", "c", "d"));
+
+            expect(mockedAPIClient.updateDependency).toHaveBeenCalledWith(TRIP, "a", "b", "c", "d");
+        });
+
+        it("createPlanForTask gives a task a subplan", async () => {
+            mockedAPIClient.createSubplan.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+
+            await act(async () => result.current.createPlanForTask({ projectKey: TRIP, taskId: "t1" }));
+
+            expect(mockedAPIClient.createSubplan).toHaveBeenCalledWith(TRIP, "t1");
+        });
+
+        it("handlePaste pastes into the plan level that project is drilled into", async () => {
+            mockedAPIClient.pasteTasks.mockResolvedValue(makeState(2, HOUSE));
+            const tasks = [leaf("copied", "Copied")];
+            const { result } = render();
+
+            await act(async () => result.current.handlePaste(HOUSE, tasks, []));
+
+            expect(mockedAPIClient.pasteTasks).toHaveBeenCalledWith(HOUSE, GOAL_ID, tasks, []);
+        });
     });
 
-    it("setGoal calls the API and applies the returned state", async () => {
-        const state = makeState(2);
-        mockedAPIClient.setGoal.mockResolvedValue(state);
+    describe("toggleComplete", () => {
+        it("sends the inverse completion state for the task", async () => {
+            openBoard(makeState(1, TRIP, makeGoal([leaf("t1", "Pack", false)])));
+            mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
 
-        const { result } = render();
+            await act(async () => result.current.toggleComplete({ projectKey: TRIP, taskId: "t1" }));
 
-        await act(async () => {
-            await result.current.setGoal("My new goal");
+            expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith(TRIP, "t1", true);
         });
 
-        expect(mockedAPIClient.setGoal).toHaveBeenCalledWith("My new goal");
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-        expect(mockNotify).not.toHaveBeenCalled();
+        it("sends false for a completed task", async () => {
+            openBoard(makeState(1, TRIP, makeGoal([leaf("t1", "Pack", true)])));
+            mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+
+            await act(async () => result.current.toggleComplete({ projectKey: TRIP, taskId: "t1" }));
+
+            expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith(TRIP, "t1", false);
+        });
+
+        it("does nothing when the task is not on the board", async () => {
+            openBoard(makeState(1, TRIP, makeGoal()));
+            const { result } = render();
+
+            await act(async () => result.current.toggleComplete({ projectKey: TRIP, taskId: "gone" }));
+
+            expect(mockedAPIClient.setTaskCompletion).not.toHaveBeenCalled();
+        });
     });
 
-    it("setGoal reports the failure and refetches state when the API call fails", async () => {
-        const refetched = makeState(3);
-        mockedAPIClient.setGoal.mockResolvedValue(undefined);
-        mockedAPIClient.getState.mockResolvedValue(refetched);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.setGoal("My new goal");
+    describe("the selected task", () => {
+        beforeEach(() => {
+            openBoard(makeState(1, TRIP, makeGoal([leaf("t1", "Pack")])), makeState(1, HOUSE, makeGoal()));
         });
 
-        expect(mockNotify).toHaveBeenCalledWith("That did not work. Refreshing the project.");
-        expect(mockApplyState).toHaveBeenCalledWith(refetched);
+        it("carries the project the task belongs to", () => {
+            const { result } = render();
+
+            act(() => result.current.selectTask({ projectKey: TRIP, taskId: "t1" }));
+
+            expect(result.current.selectedTask).toEqual({
+                ref: { projectKey: TRIP, taskId: "t1" },
+                task: expect.objectContaining({ id: "t1", name: "Pack" }),
+            });
+        });
+
+        it("is nothing when the task is not in that project's plan level", () => {
+            const { result } = render();
+
+            act(() => result.current.selectTask({ projectKey: HOUSE, taskId: "t1" }));
+
+            expect(result.current.selectedTask).toBeNull();
+        });
+
+        it("applies an edit to the project holding the selected task", async () => {
+            mockedAPIClient.updateTask.mockResolvedValue(makeState(2, TRIP));
+            mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(3, TRIP));
+            const { result } = render();
+            act(() => result.current.selectTask({ projectKey: TRIP, taskId: "t1" }));
+
+            await act(async () => result.current.updateTaskDetails("Pack lightly", "One bag", true));
+
+            expect(mockedAPIClient.updateTask).toHaveBeenCalledWith(TRIP, "t1", "Pack lightly", "One bag");
+            expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith(TRIP, "t1", true);
+        });
+
+        it("does nothing when no task is selected", async () => {
+            const { result } = render();
+
+            await act(async () => result.current.updateTaskDetails("Pack lightly"));
+
+            expect(mockedAPIClient.updateTask).not.toHaveBeenCalled();
+        });
+
+        it("leaves completion alone when it already reads that way", async () => {
+            mockedAPIClient.updateTask.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+            act(() => result.current.selectTask({ projectKey: TRIP, taskId: "t1" }));
+
+            await act(async () => result.current.updateTaskDetails("Pack lightly", "One bag", false));
+
+            expect(mockedAPIClient.setTaskCompletion).not.toHaveBeenCalled();
+        });
+
+        it("leaves the name and description alone when neither was given", async () => {
+            mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(2, TRIP));
+            const { result } = render();
+            act(() => result.current.selectTask({ projectKey: TRIP, taskId: "t1" }));
+
+            await act(async () => result.current.updateTaskDetails("", undefined, true));
+
+            expect(mockedAPIClient.updateTask).not.toHaveBeenCalled();
+            expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalled();
+        });
+
+        it("re-reads the task from the plan after an edit", async () => {
+            mockedAPIClient.updateTask.mockImplementation(async () => {
+                workspace.applyProject(makeState(2, TRIP, makeGoal([leaf("t1", "Pack lightly")])));
+                return makeState(2, TRIP);
+            });
+            const { result } = render();
+            act(() => result.current.selectTask({ projectKey: TRIP, taskId: "t1" }));
+
+            await act(async () => result.current.updateTaskDetails("Pack lightly", "One bag"));
+
+            expect(result.current.selectedTask!.task.name).toBe("Pack lightly");
+        });
     });
 
-    it("addTask posts to the API with the present context id and applies the returned state", async () => {
-        const newTask: Task = { id: "t1", name: "New Task", completionState: false, plan: null };
-        const state = makeState(2);
-        mockedAPIClient.addTask.mockResolvedValue({ task: newTask, state });
-
-        const { result } = render();
-
-        let returnedTask: Task | null = null;
-        await act(async () => {
-            returnedTask = await result.current.addTask("New Task");
+    describe("handleUndo", () => {
+        beforeEach(() => {
+            openBoard(makeState(1, TRIP, makeGoal([leaf("t1", "Pack")])));
         });
 
-        expect(mockedAPIClient.addTask).toHaveBeenCalledWith(GOAL_ID, "New Task");
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-        expect(returnedTask).toEqual(newTask);
+        it("undoes within one project and applies the state it returns", async () => {
+            const state = makeState(2, TRIP);
+            mockedAPIClient.undo.mockResolvedValue(state);
+            const { result } = render();
+
+            await act(async () => result.current.handleUndo(TRIP));
+
+            expect(mockedAPIClient.undo).toHaveBeenCalledWith(TRIP);
+            expect(mockApplyProject).toHaveBeenCalledWith(state);
+        });
+
+        it("does nothing when the API call fails", async () => {
+            mockedAPIClient.undo.mockResolvedValue(undefined);
+            const { result } = render();
+
+            await act(async () => result.current.handleUndo(TRIP));
+
+            expect(mockApplyProject).not.toHaveBeenCalled();
+        });
+
+        it("clears the selected task when the undo took it away", async () => {
+            mockedAPIClient.undo.mockImplementation(async () => {
+                workspace.applyProject(makeState(2, TRIP, makeGoal()));
+                return makeState(2, TRIP);
+            });
+            const { result } = render();
+            act(() => result.current.selectTask({ projectKey: TRIP, taskId: "t1" }));
+
+            await act(async () => result.current.handleUndo(TRIP));
+
+            expect(result.current.selectedTask).toBeNull();
+        });
     });
 
-    it("addTask returns null and reports the failure when the API call fails", async () => {
-        mockedAPIClient.addTask.mockResolvedValue(undefined);
+    describe("drilling into a plan", () => {
+        const withSubplan = (): Task =>
+            makeGoal([
+                {
+                    id: "sub",
+                    name: "Prepare",
+                    completionState: false,
+                    plan: { tasksList: [leaf("inner", "Sort paperwork")], dependenciesList: [] },
+                },
+            ]);
 
-        const { result } = render();
+        it("moves one lane into a subplan, leaving the others where they are", () => {
+            openBoard(makeState(1, TRIP, withSubplan()), makeState(1, HOUSE, makeGoal([leaf("h1", "Choose paint")])));
+            const { result } = render();
 
-        let returnedTask: Task | null = null;
-        await act(async () => {
-            returnedTask = await result.current.addTask("New Task");
+            act(() => result.current.changeContextToWithinTask({ projectKey: TRIP, taskId: "sub" }));
+
+            expect(result.current.board.lanes[0].roadmap.tasksList.map((entry) => entry.task.id)).toEqual([
+                "inner",
+                GOAL_ID,
+            ]);
+            expect(result.current.board.lanes[0].roadmap.ancestors.map((crumb) => crumb.id)).toEqual([GOAL_ID, "sub"]);
+            expect(result.current.board.lanes[1].roadmap.tasksList.map((entry) => entry.task.id)).toEqual([
+                "h1",
+                GOAL_ID,
+            ]);
         });
 
-        expect(returnedTask).toBeNull();
-        expect(mockNotify).toHaveBeenCalledWith("Could not add that task.");
-        expect(mockApplyState).not.toHaveBeenCalled();
-    });
+        it("moves a lane to the plan a task lives in, which is how the next-tasks list navigates", () => {
+            openBoard(makeState(1, TRIP, withSubplan()));
+            const { result } = render();
 
-    it("removeTask calls the API and applies the returned state", async () => {
-        const state = makeState(2);
-        mockedAPIClient.removeTask.mockResolvedValue(state);
+            act(() => result.current.changeContextToParent({ projectKey: TRIP, taskId: "inner" }));
 
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.removeTask("t1");
+            expect(result.current.board.lanes[0].roadmap.ancestors.map((crumb) => crumb.id)).toEqual([GOAL_ID, "sub"]);
         });
 
-        expect(mockedAPIClient.removeTask).toHaveBeenCalledWith("t1");
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-        expect(mockNotify).not.toHaveBeenCalled();
-        expect(mockedAPIClient.getState).not.toHaveBeenCalled();
-    });
+        it("steps a lane back out to the top level", () => {
+            openBoard(makeState(1, TRIP, withSubplan()));
+            const { result } = render();
+            act(() => result.current.changeContextToWithinTask({ projectKey: TRIP, taskId: "sub" }));
 
-    it("removeTask reports the failure and refetches state when the API call fails", async () => {
-        const refetchedState = makeState(3);
-        mockedAPIClient.removeTask.mockResolvedValue(undefined);
-        mockedAPIClient.getState.mockResolvedValue(refetchedState);
+            act(() => result.current.changeContextToParent({ projectKey: TRIP, taskId: "sub" }));
 
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.removeTask("t1");
+            expect(result.current.board.lanes[0].roadmap.ancestors.map((crumb) => crumb.id)).toEqual([GOAL_ID]);
         });
 
-        expect(mockNotify).toHaveBeenCalledWith("That did not work. Refreshing the project.");
-        expect(mockedAPIClient.getState).toHaveBeenCalled();
-        expect(mockApplyState).toHaveBeenCalledWith(refetchedState);
-    });
+        it("ignores a project the board does not hold", () => {
+            openBoard(makeState(1, TRIP, withSubplan()));
+            const { result } = render();
 
-    it("connect calls addDependency and applies the returned state", async () => {
-        const state = makeState(2);
-        mockedAPIClient.addDependency.mockResolvedValue(state);
+            act(() => result.current.changeContextToWithinTask({ projectKey: "Nothing", taskId: "sub" }));
 
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.connect("source1", "target1");
+            expect(result.current.board.lanes[0].roadmap.ancestors.map((crumb) => crumb.id)).toEqual([GOAL_ID]);
         });
-
-        expect(mockedAPIClient.addDependency).toHaveBeenCalledWith("source1", "target1");
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-    });
-
-    it("removeEdge calls removeDependency and applies the returned state", async () => {
-        const state = makeState(2);
-        mockedAPIClient.removeDependency.mockResolvedValue(state);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.removeEdge("source1", "target1");
-        });
-
-        expect(mockedAPIClient.removeDependency).toHaveBeenCalledWith("source1", "target1");
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-    });
-
-    it("updateEdge calls updateDependency and applies the returned state", async () => {
-        const state = makeState(2);
-        mockedAPIClient.updateDependency.mockResolvedValue(state);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.updateEdge("s1", "t1", "s2", "t2");
-        });
-
-        expect(mockedAPIClient.updateDependency).toHaveBeenCalledWith("s1", "t1", "s2", "t2");
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-    });
-
-    it("createPlanForTask calls createSubplan and applies the returned state", async () => {
-        const state = makeState(2);
-        mockedAPIClient.createSubplan.mockResolvedValue(state);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.createPlanForTask("t1");
-        });
-
-        expect(mockedAPIClient.createSubplan).toHaveBeenCalledWith("t1");
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-    });
-
-    it("createPlanForTask reports the failure and refetches state", async () => {
-        const refetchedState = makeState(3);
-        mockedAPIClient.createSubplan.mockResolvedValue(undefined);
-        mockedAPIClient.getState.mockResolvedValue(refetchedState);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.createPlanForTask("t1");
-        });
-
-        expect(mockNotify).toHaveBeenCalledWith("That did not work. Refreshing the project.");
-        expect(mockApplyState).toHaveBeenCalledWith(refetchedState);
-    });
-
-    it("toggleComplete sends the inverse completion state for the task", async () => {
-        const task: Task = { id: "t1", name: "Task 1", completionState: false, plan: null };
-        mockedPlanManager.findTask.mockReturnValue(task);
-        mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(2));
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.toggleComplete("t1");
-        });
-
-        expect(mockedPlanManager.findTask).toHaveBeenCalledWith("t1");
-        expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith("t1", true);
-    });
-
-    it("toggleComplete sends false for a completed task", async () => {
-        const task: Task = { id: "t1", name: "Task 1", completionState: true, plan: null };
-        mockedPlanManager.findTask.mockReturnValue(task);
-        mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(2));
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.toggleComplete("t1");
-        });
-
-        expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith("t1", false);
-    });
-
-    it("toggleComplete does nothing when the task is not found", async () => {
-        mockedPlanManager.findTask.mockReturnValue(null);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.toggleComplete("missing");
-        });
-
-        expect(mockedAPIClient.setTaskCompletion).not.toHaveBeenCalled();
-    });
-
-    it("selectTask sets selectedTask when found", () => {
-        const task: Task = { id: "t1", name: "Task 1", completionState: false, plan: null };
-        mockedPlanManager.findTaskInPresentContext.mockReturnValue(task);
-
-        const { result } = render();
-
-        act(() => {
-            result.current.selectTask("t1");
-        });
-
-        expect(result.current.selectedTask).toEqual(task);
-    });
-
-    it("selectTask sets null when not found", () => {
-        mockedPlanManager.findTaskInPresentContext.mockReturnValue(null);
-
-        const { result } = render();
-
-        act(() => {
-            result.current.selectTask("nonexistent");
-        });
-
-        expect(result.current.selectedTask).toBeNull();
-    });
-
-    it("updateTaskDetails updates name/description and toggles completion via the API", async () => {
-        const task: Task = { id: "t1", name: "Old Name", completionState: false, plan: null };
-        mockedPlanManager.findTaskInPresentContext.mockReturnValue(task);
-        mockedAPIClient.updateTask.mockResolvedValue(makeState(2));
-        mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(3));
-
-        const { result } = render();
-
-        act(() => {
-            result.current.selectTask("t1");
-        });
-
-        await act(async () => {
-            await result.current.updateTaskDetails("t1", "New Name", "New description", true);
-        });
-
-        expect(mockedAPIClient.updateTask).toHaveBeenCalledWith("t1", "New Name", "New description");
-        expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith("t1", true);
-        expect(mockApplyState).toHaveBeenCalledTimes(2);
-    });
-
-    it("updateTaskDetails does nothing when no task is selected", async () => {
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.updateTaskDetails("t1", "New Name");
-        });
-
-        expect(mockedAPIClient.updateTask).not.toHaveBeenCalled();
-        expect(mockedAPIClient.setTaskCompletion).not.toHaveBeenCalled();
-    });
-
-    it("updateTaskDetails skips setTaskCompletion when the completion state matches", async () => {
-        const task: Task = { id: "t1", name: "Name", completionState: false, plan: null };
-        mockedPlanManager.findTaskInPresentContext.mockReturnValue(task);
-        mockedAPIClient.updateTask.mockResolvedValue(makeState(2));
-
-        const { result } = render();
-
-        act(() => {
-            result.current.selectTask("t1");
-        });
-
-        await act(async () => {
-            await result.current.updateTaskDetails("t1", "Name", undefined, false);
-        });
-
-        expect(mockedAPIClient.setTaskCompletion).not.toHaveBeenCalled();
-        expect(mockedAPIClient.updateTask).toHaveBeenCalledWith("t1", "Name", undefined);
-    });
-
-    it("updateTaskDetails skips updateTask when name is empty and description undefined", async () => {
-        const task: Task = { id: "t1", name: "Name", completionState: false, plan: null };
-        mockedPlanManager.findTaskInPresentContext.mockReturnValue(task);
-        mockedAPIClient.setTaskCompletion.mockResolvedValue(makeState(2));
-
-        const { result } = render();
-
-        act(() => {
-            result.current.selectTask("t1");
-        });
-
-        await act(async () => {
-            await result.current.updateTaskDetails("t1", "", undefined, true);
-        });
-
-        expect(mockedAPIClient.updateTask).not.toHaveBeenCalled();
-        expect(mockedAPIClient.setTaskCompletion).toHaveBeenCalledWith("t1", true);
-    });
-
-    it("updateTaskDetails refreshes selectedTask from the plan manager", async () => {
-        const task: Task = { id: "t1", name: "Old Name", completionState: false, plan: null };
-        const updatedTask: Task = { id: "t1", name: "New Name", completionState: false, plan: null };
-        mockedPlanManager.findTaskInPresentContext
-            .mockReturnValueOnce(task) // selectTask
-            .mockReturnValueOnce(updatedTask); // refresh after update
-        mockedAPIClient.updateTask.mockResolvedValue(makeState(2));
-
-        const { result } = render();
-
-        act(() => {
-            result.current.selectTask("t1");
-        });
-
-        await act(async () => {
-            await result.current.updateTaskDetails("t1", "New Name");
-        });
-
-        expect(result.current.selectedTask).toEqual(updatedTask);
-    });
-
-    it("handlePaste calls pasteTasks with the present context id", async () => {
-        const tasks: Task[] = [{ id: "t1", name: "Pasted", completionState: false, plan: null }];
-        const deps = [{ source: "t1", target: "t2" }];
-        const state = makeState(2);
-        mockedAPIClient.pasteTasks.mockResolvedValue(state);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.handlePaste(tasks, deps);
-        });
-
-        expect(mockedAPIClient.pasteTasks).toHaveBeenCalledWith(GOAL_ID, tasks, deps);
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-    });
-
-    it("handleUndo applies the state returned by the API", async () => {
-        const state = makeState(2);
-        mockedAPIClient.undo.mockResolvedValue(state);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.handleUndo();
-        });
-
-        expect(mockedAPIClient.undo).toHaveBeenCalled();
-        expect(mockApplyState).toHaveBeenCalledWith(state);
-    });
-
-    it("handleUndo does nothing when the API call fails", async () => {
-        mockedAPIClient.undo.mockResolvedValue(undefined);
-
-        const { result } = render();
-
-        await act(async () => {
-            await result.current.handleUndo();
-        });
-
-        expect(mockApplyState).not.toHaveBeenCalled();
-    });
-
-    it("handleUndo clears selectedTask when the task no longer exists", async () => {
-        const task: Task = { id: "t1", name: "Task", completionState: false, plan: null };
-        mockedPlanManager.findTaskInPresentContext
-            .mockReturnValueOnce(task) // selectTask
-            .mockReturnValueOnce(null); // after undo the task is gone
-        mockedAPIClient.undo.mockResolvedValue(makeState(2));
-
-        const { result } = render();
-
-        act(() => {
-            result.current.selectTask("t1");
-        });
-        expect(result.current.selectedTask).toEqual(task);
-
-        await act(async () => {
-            await result.current.handleUndo();
-        });
-
-        expect(result.current.selectedTask).toBeNull();
-    });
-
-    it("changeContextToWithinTask stays synchronous via the plan manager", () => {
-        const { result } = render();
-
-        act(() => {
-            result.current.changeContextToWithinTask("t1");
-        });
-
-        expect(mockedPlanManager.changeContextToWithinTask).toHaveBeenCalledWith("t1");
-    });
-
-    it("changeContextToParent stays synchronous via the plan manager", () => {
-        const { result } = render();
-
-        act(() => {
-            result.current.changeContextToParent("t1");
-        });
-
-        expect(mockedPlanManager.changeContextToParent).toHaveBeenCalledWith("t1");
     });
 });

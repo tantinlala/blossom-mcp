@@ -1,12 +1,15 @@
-import { GOAL_ID, ProjectState, ServerMessage } from "@blossom/common";
+import { GOAL_ID, ProjectState, REALTIME_PROTOCOL_VERSION, ServerMessage, ViewState } from "@blossom/common";
 import { CommandFailure, RealtimeClient } from "./RealtimeClient";
 
-const makeState = (version: number): ProjectState => ({
+const makeState = (version: number, key = "Trip"): ProjectState => ({
     version,
-    activeProject: null,
+    key,
+    savedToDisk: true,
     goal: { name: "Goal", id: GOAL_ID, completionState: false, plan: { tasksList: [], dependenciesList: [] } },
     inbox: [],
 });
+
+const makeView = (...projects: ProjectState[]): ViewState => ({ projects, assistantProject: null });
 
 /**
  * A stand-in for the browser's WebSocket. jsdom provides a real one that would
@@ -96,29 +99,29 @@ describe("RealtimeClient", () => {
         expect(client.isOpen()).toBe(true);
     });
 
-    it("passes on a snapshot as one that must be applied unconditionally", () => {
+    it("passes on the whole board, which is applied unconditionally", () => {
         const socket = connect();
-        const updates: any[] = [];
-        client.onState((update) => updates.push(update));
+        const views: any[] = [];
+        client.onView((update) => views.push(update));
         socket.simulateOpen();
 
         socket.simulateMessage({
             type: "snapshot",
-            protocolVersion: 1,
+            protocolVersion: REALTIME_PROTOCOL_VERSION,
             serverId: "server-a",
-            state: makeState(4),
+            view: makeView(makeState(4)),
         });
 
-        expect(updates).toHaveLength(1);
-        expect(updates[0].isSnapshot).toBe(true);
-        expect(updates[0].serverId).toBe("server-a");
+        expect(views).toHaveLength(1);
+        expect(views[0].view.projects.map((project: ProjectState) => project.key)).toEqual(["Trip"]);
+        expect(views[0].serverId).toBe("server-a");
     });
 
     it("gives up and reports a mismatch when the server speaks another protocol", () => {
         const socket = connect();
-        const updates: any[] = [];
+        const views: any[] = [];
         let mismatches = 0;
-        client.onState((update) => updates.push(update));
+        client.onView((update) => views.push(update));
         client.onProtocolMismatch(() => mismatches++);
         socket.simulateOpen();
 
@@ -126,12 +129,12 @@ describe("RealtimeClient", () => {
             type: "snapshot",
             protocolVersion: 999,
             serverId: "server-a",
-            state: makeState(4),
+            view: makeView(makeState(4)),
         });
 
         expect(mismatches).toBe(1);
         // Frames of an unknown protocol cannot be trusted to mean what they look like.
-        expect(updates).toHaveLength(0);
+        expect(views).toHaveLength(0);
 
         // Reconnecting cannot fix a version mismatch, so it does not try.
         jest.advanceTimersByTime(60000);
@@ -150,12 +153,13 @@ describe("RealtimeClient", () => {
             author: { id: "ben", kind: "person" },
         });
 
-        expect(updates[0].isSnapshot).toBe(false);
+        expect(updates[0].state.key).toBe("Trip");
         expect(updates[0].author.id).toBe("ben");
     });
 
-    it("announces who this browser is as soon as the socket opens", () => {
+    it("announces who this browser is, and what it is looking at, as soon as the socket opens", () => {
         const socket = connect();
+        client.subscribe(["Trip", "House"]);
         client.identify({ id: "ana", kind: "person" });
 
         socket.simulateOpen();
@@ -163,7 +167,40 @@ describe("RealtimeClient", () => {
         expect(socket.parsedSends()).toContainEqual({
             type: "hello",
             author: { id: "ana", kind: "person" },
+            view: ["Trip", "House"],
         });
+    });
+
+    it("asks for the board even before it knows who this browser is", () => {
+        const socket = connect();
+        client.subscribe(["Trip"]);
+
+        socket.simulateOpen();
+
+        expect(socket.parsedSends()).toContainEqual({ type: "subscribe", view: ["Trip"] });
+    });
+
+    it("changes what it is looking at, and remembers it for the next connection", () => {
+        const socket = connect();
+        socket.simulateOpen();
+
+        client.subscribe(["House"]);
+
+        expect(socket.parsedSends()).toContainEqual({ type: "subscribe", view: ["House"] });
+        expect(client.subscribedView()).toEqual(["House"]);
+    });
+
+    it("asks for the same board again after reconnecting", () => {
+        const first = connect();
+        first.simulateOpen();
+        client.subscribe(["House"]);
+
+        first.simulateClose();
+        jest.advanceTimersByTime(2000);
+        const second = FakeSocket.instances[FakeSocket.instances.length - 1];
+        second.simulateOpen();
+
+        expect(second.parsedSends()).toContainEqual({ type: "subscribe", view: ["House"] });
     });
 
     it("resolves a command when its matching result arrives", async () => {
@@ -223,50 +260,72 @@ describe("RealtimeClient", () => {
         expect(socket.parsedSends()).toContainEqual({ type: "pong" });
     });
 
-    it("passes on a notice that somebody switched project", () => {
+    it("passes on a notice that a project answers to a new key", () => {
         const socket = connect();
         const notices: any[] = [];
         client.onNotice((notice) => notices.push(notice));
         socket.simulateOpen();
-        client.identify({ id: "this-browser", kind: "person" });
 
         socket.simulateMessage({
             type: "notice",
-            kind: "project-switched",
-            project: "q3",
-            author: { id: "another-browser", kind: "person" },
+            kind: "project-renamed",
+            from: "Untitled",
+            to: "q3",
+            author: { id: "ben", kind: "person" },
         });
 
-        expect(notices).toEqual([{ kind: "project-switched", project: "q3", byThisBrowser: false }]);
+        expect(notices).toEqual([{ kind: "project-renamed", from: "Untitled", to: "q3", byThisBrowser: false }]);
+    });
+
+    it("follows a renamed project, so the next connection asks for it by its new key", () => {
+        const socket = connect();
+        socket.simulateOpen();
+        client.subscribe(["Untitled", "House"]);
+
+        socket.simulateMessage({ type: "notice", kind: "project-renamed", from: "Untitled", to: "q3" });
+
+        expect(client.subscribedView()).toEqual(["q3", "House"]);
+    });
+
+    it("passes on which project the assistant works on", () => {
+        const socket = connect();
+        const notices: any[] = [];
+        client.onNotice((notice) => notices.push(notice));
+        socket.simulateOpen();
+
+        socket.simulateMessage({ type: "notice", kind: "assistant-target", project: "Trip" });
+
+        expect(notices).toEqual([{ kind: "assistant-target", project: "Trip", byThisBrowser: false }]);
     });
 
     it("marks a notice carrying this browser's own author as its own doing", () => {
         const socket = connect();
         const notices: any[] = [];
         client.onNotice((notice) => notices.push(notice));
+        client.identify({ id: "ana", kind: "person" });
         socket.simulateOpen();
-        client.identify({ id: "this-browser", kind: "person" });
 
         socket.simulateMessage({
             type: "notice",
-            kind: "project-switched",
-            project: "q3",
-            author: { id: "this-browser", kind: "person" },
+            kind: "project-renamed",
+            from: "Untitled",
+            to: "q3",
+            author: { id: "ana", kind: "person" },
         });
 
-        expect(notices).toEqual([{ kind: "project-switched", project: "q3", byThisBrowser: true }]);
+        expect(notices).toEqual([{ kind: "project-renamed", from: "Untitled", to: "q3", byThisBrowser: true }]);
     });
 
     it("treats an unattributed notice as somebody else's doing", () => {
         const socket = connect();
         const notices: any[] = [];
         client.onNotice((notice) => notices.push(notice));
+        client.identify({ id: "ana", kind: "person" });
         socket.simulateOpen();
-        client.identify({ id: "this-browser", kind: "person" });
 
-        socket.simulateMessage({ type: "notice", kind: "project-switched", project: "q3" });
+        socket.simulateMessage({ type: "notice", kind: "assistant-target", project: "Trip" });
 
-        expect(notices).toEqual([{ kind: "project-switched", project: "q3", byThisBrowser: false }]);
+        expect(notices).toEqual([{ kind: "assistant-target", project: "Trip", byThisBrowser: false }]);
     });
 
     it("reconnects after a drop, backing off before trying again", () => {
