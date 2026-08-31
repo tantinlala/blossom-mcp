@@ -84,9 +84,8 @@ const App = ({
     }, [initializeApp]);
 
     /**
-     * The one project every action names. Resolving it here, rather than in each
-     * place that acts, is what keeps the canvas toolbar and the header from
-     * naming different projects.
+     * The one project every action names. Resolving it here keeps the canvas
+     * toolbar and the header aligned on the same project.
      */
     const focusedProject = useMemo(() => {
         const lanes = roadmap.board.lanes.map((lane) => lane.projectKey);
